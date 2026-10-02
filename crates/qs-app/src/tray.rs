@@ -44,7 +44,7 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf]) -> Menu {
     let login =
         CheckMenuItem::with_id(ID_LOGIN, "Launch at Login", true, cfg.launch_at_login, None);
     let settings = MenuItem::with_id(ID_SETTINGS, "Settings…", true, None);
-    let quit = MenuItem::with_id(ID_QUIT, "Quit quickshort", true, None);
+    let quit = MenuItem::with_id(ID_QUIT, "Quit Quickshort", true, None);
     let _ = menu.append_items(&[
         &capture,
         &recent,
@@ -167,7 +167,7 @@ pub fn set_launch_at_login(enable: bool) -> Result<()> {
             std::fs::write(
                 &desk,
                 format!(
-                    "[Desktop Entry]\nType=Application\nName=quickshort\n\
+                    "[Desktop Entry]\nType=Application\nName=Quickshort\n\
                      Exec={}\nX-GNOME-Autostart-enabled=true\n",
                     exe.display()
                 ),

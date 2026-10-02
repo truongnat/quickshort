@@ -9,9 +9,10 @@ APP="$ROOT/quickshort.app"
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$TARGET/quickshort" "$APP/Contents/MacOS/quickshort"
 cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/packaging/macos/Quickshort.icns" "$APP/Contents/Resources/Quickshort.icns"
 # ad-hoc sign so Screen Recording permission sticks to this binary
 codesign --force --sign - "$APP" 2>/dev/null || true
 echo "built $APP"

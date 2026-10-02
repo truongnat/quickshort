@@ -13,7 +13,7 @@ use std::rc::Rc;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{CursorIcon, Icon, Window, WindowId};
 
 use crate::actions;
 use crate::config::Config;
@@ -107,18 +107,40 @@ pub struct Settings {
     /// folder picker is open — guard against re-entry (a queued second
     /// click would stack another modal on top)
     dialog_open: bool,
+    /// app logo at header size (physical px)
+    logo: Option<image::RgbaImage>,
     dirty: bool,
     closed: bool,
 }
 
+fn app_logo() -> Option<image::RgbaImage> {
+    image::load_from_memory(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/icon-256.png"
+    )))
+    .ok()
+    .map(|i| i.to_rgba8())
+}
+
 impl Settings {
     pub fn open(el: &ActiveEventLoop, cfg: &Config) -> Result<Self> {
-        let attrs = Window::default_attributes()
-            .with_title("quickshort Settings")
+        let logo = app_logo();
+        let mut attrs = Window::default_attributes()
+            .with_title("Quickshort Settings")
             .with_inner_size(winit::dpi::LogicalSize::new(W, H))
             .with_resizable(false)
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        if let Some(img) = &logo {
+            if let Ok(ic) = Icon::from_rgba(img.as_raw().clone(), img.width(), img.height()) {
+                attrs = attrs.with_window_icon(Some(ic));
+            }
+        }
         let win = Rc::new(el.create_window(attrs).context("settings window")?);
+        let scale = win.scale_factor();
+        let logo_px = (36.0 * scale) as u32;
+        let logo = logo.map(|i| {
+            image::imageops::resize(&i, logo_px, logo_px, image::imageops::FilterType::Lanczos3)
+        });
         win.set_cursor(CursorIcon::Default);
         let surf = SbContext::new(win.clone())
             .and_then(|c| Surface::new(&c, win.clone()))
@@ -137,6 +159,7 @@ impl Settings {
             pulse: 0.0,
             want_mod: false,
             dialog_open: false,
+            logo,
             dirty: true,
             closed: false,
         })
@@ -368,9 +391,22 @@ impl Settings {
             scale,
         };
 
-        // header: glyph + title
-        p.icon(&mut cv, MARGIN, 20.0, 36.0);
-        p.text(&mut cv, MARGIN + 48.0, 42.0, 17.0, "quickshort", FG);
+        // header: app logo + title
+        if let Some(logo) = &self.logo {
+            let (ox, oy) = ((MARGIN * scale) as i32, (20.0 * scale) as i32);
+            for (px, py, c) in logo.enumerate_pixels() {
+                let a = c[3] as f64 / 255.0;
+                if a <= 0.0 {
+                    continue;
+                }
+                let rgb =
+                    ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32;
+                cv.blend(ox + px as i32, oy + py as i32, rgb, a);
+            }
+        } else {
+            p.icon(&mut cv, MARGIN, 20.0, 36.0);
+        }
+        p.text(&mut cv, MARGIN + 48.0, 42.0, 17.0, "Quickshort", FG);
         p.text(
             &mut cv,
             MARGIN + 48.0,

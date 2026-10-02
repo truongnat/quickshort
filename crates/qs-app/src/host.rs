@@ -219,7 +219,7 @@ impl ApplicationHandler<HostEvent> for Host {
 
         let recents = actions::recent_captures(&self.cfg.save_dir(), tray::RECENT_MAX);
         let builder = tray_icon::TrayIcon::builder()
-            .with_tooltip("quickshort — region screenshot")
+            .with_tooltip("Quickshort — region screenshot")
             .with_menu(Box::new(tray::build_menu(&self.cfg, &recents)));
         // template icon = auto dark/light menu-bar tinting (macOS only)
         #[cfg(target_os = "macos")]

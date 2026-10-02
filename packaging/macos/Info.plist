@@ -3,9 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>quickshort</string>
+	<string>Quickshort</string>
 	<key>CFBundleDisplayName</key>
-	<string>quickshort</string>
+	<string>Quickshort</string>
+	<key>CFBundleIconFile</key>
+	<string>Quickshort</string>
 	<key>CFBundleIdentifier</key>
 	<string>ai.quickshort</string>
 	<key>CFBundleVersion</key>
@@ -22,7 +24,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>quickshort captures the screen region you select.</string>
+	<string>Quickshort captures the screen region you select.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>
