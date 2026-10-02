@@ -353,12 +353,12 @@ impl ApplicationHandler for App {
                     if h != tb.hover {
                         tb.hover = h;
                         self.dirty = true;
+                        self.wins[i].win.set_cursor(if h.is_some() {
+                            winit::window::CursorIcon::Pointer
+                        } else {
+                            winit::window::CursorIcon::Default
+                        });
                     }
-                    self.wins[i].win.set_cursor(if h.is_some() {
-                        winit::window::CursorIcon::Pointer
-                    } else {
-                        winit::window::CursorIcon::Default
-                    });
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => match state {

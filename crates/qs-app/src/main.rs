@@ -95,14 +95,13 @@ fn main() -> Result<()> {
             img.save(&path)?;
             eprintln!("saved {}", path.display());
         }
-        // Last: this blocks serving paste requests until the clipboard is
-        // replaced — Wayland clipboard dies with the owning process otherwise.
-        qs_overlay::Action::Copy => copy_to_clipboard(&img),
+        qs_overlay::Action::Copy => copy_image_to_clipboard(&img),
         qs_overlay::Action::Ocr => match qs_ocr::extract_text(&img) {
             Ok(t) if t.is_empty() => eprintln!("ocr: no text found"),
             Ok(t) => {
-                eprintln!("copied {} chars of text", t.chars().count());
+                let n = t.chars().count();
                 copy_text_to_clipboard(&t);
+                eprintln!("copied {n} chars of text to clipboard");
             }
             Err(e) => eprintln!("ocr failed: {e:#}"),
         },
@@ -110,7 +109,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn copy_to_clipboard(img: &image::RgbaImage) {
+/// On Wayland the clipboard dies with the owning process — `set().wait()`
+/// keeps us alive serving paste requests until another app takes over.
+fn copy_image_to_clipboard(img: &image::RgbaImage) {
     let data = arboard::ImageData {
         width: img.width() as usize,
         height: img.height() as usize,
@@ -125,16 +126,25 @@ fn copy_to_clipboard(img: &image::RgbaImage) {
         };
         set.image(data)
     });
-    match r {
-        Ok(Ok(())) => eprintln!("copied to clipboard"),
-        Ok(Err(e)) => eprintln!("clipboard set failed: {e}"),
-        Err(e) => eprintln!("clipboard unavailable: {e}"),
-    }
+    report_clipboard(r);
 }
 
 fn copy_text_to_clipboard(text: &str) {
-    match arboard::Clipboard::new().map(|mut c| c.set_text(text)) {
-        Ok(Ok(())) => {}
+    let r = arboard::Clipboard::new().map(|mut c| {
+        let set = c.set();
+        #[cfg(target_os = "linux")]
+        let set = {
+            use arboard::SetExtLinux;
+            set.wait()
+        };
+        set.text(text.to_string())
+    });
+    report_clipboard(r);
+}
+
+fn report_clipboard(r: Result<Result<(), arboard::Error>, arboard::Error>) {
+    match r {
+        Ok(Ok(())) => eprintln!("copied to clipboard"),
         Ok(Err(e)) => eprintln!("clipboard set failed: {e}"),
         Err(e) => eprintln!("clipboard unavailable: {e}"),
     }

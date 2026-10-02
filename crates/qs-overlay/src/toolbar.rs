@@ -138,25 +138,43 @@ impl Toolbar {
     /// Paint buttons into the physical surface. `vrect` = this window's monitor
     /// rect in virtual coords; parts outside this monitor clip naturally.
     pub fn paint(&self, buf: &mut [u32], sw: usize, sh: usize, vrect: Rect, scale: f64) {
+        let mut cv = Canvas {
+            buf,
+            w: sw,
+            h: sh,
+            scale,
+        };
         for (i, (action, r)) in self.buttons.iter().enumerate() {
             let cx = (r.x as f64 + r.w as f64 / 2.0 - vrect.x as f64) * scale;
             let cy = (r.y as f64 + r.h as f64 / 2.0 - vrect.y as f64) * scale;
-            paint_button(buf, sw, sh, cx, cy, R * scale, scale, self.hover == Some(i), *action);
+            paint_button(&mut cv, cx, cy, R * scale, self.hover == Some(i), *action);
         }
     }
 }
 
-#[inline]
-fn blend(buf: &mut [u32], sw: usize, sh: usize, x: i32, y: i32, rgb: u32, a: f64) {
-    if x < 0 || y < 0 || x >= sw as i32 || y >= sh as i32 || a <= 0.0 {
-        return;
+/// Physical-px drawing target shared by the icon primitives below.
+struct Canvas<'a> {
+    buf: &'a mut [u32],
+    w: usize,
+    h: usize,
+    scale: f64,
+}
+
+impl Canvas<'_> {
+    /// Alpha-blend packed 0xRRGGBB into one physical pixel (per-channel mix —
+    /// no cross-channel carry).
+    #[inline]
+    fn blend(&mut self, x: i32, y: i32, rgb: u32, a: f64) {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 || a <= 0.0 {
+            return;
+        }
+        let i = y as usize * self.w + x as usize;
+        let d = self.buf[i];
+        let mix = |s: u8, d: u8| (s as f64 * a + d as f64 * (1.0 - a)).round() as u32;
+        self.buf[i] = mix((rgb >> 16) as u8, (d >> 16) as u8) << 16
+            | mix((rgb >> 8) as u8, (d >> 8) as u8) << 8
+            | mix(rgb as u8, d as u8);
     }
-    let i = y as usize * sw + x as usize;
-    let d = buf[i];
-    let mix = |s: u8, d: u8| (s as f64 * a + d as f64 * (1.0 - a)).round() as u32;
-    buf[i] = mix((rgb >> 16) as u8, (d >> 16) as u8) << 16
-        | mix((rgb >> 8) as u8, (d >> 8) as u8) << 8
-        | mix(rgb as u8, d as u8);
 }
 
 #[inline]
@@ -187,17 +205,8 @@ fn fill_cov(sdf_l: f64, scale: f64) -> f64 {
     (0.5 - sdf_l * scale).clamp(0.0, 1.0)
 }
 
-fn paint_button(
-    buf: &mut [u32],
-    sw: usize,
-    sh: usize,
-    cx: f64,
-    cy: f64,
-    rad: f64,
-    scale: f64,
-    hovered: bool,
-    action: Action,
-) {
+fn paint_button(cv: &mut Canvas, cx: f64, cy: f64, rad: f64, hovered: bool, action: Action) {
+    let scale = cv.scale;
     // bbox covers button + soft shadow falloff
     let pad = (STROKE * scale).ceil() as i32 + (4.0 * scale).ceil() as i32 + 2;
     let r = rad.ceil() as i32 + pad;
@@ -211,17 +220,17 @@ fn paint_button(
             if sd > 0.0 {
                 let a = 0.24 * (1.0 - sd / (4.0 * scale)).clamp(0.0, 1.0);
                 if a > 0.0 {
-                    blend(buf, sw, sh, x, y, SHADOW, a);
+                    cv.blend(x, y, SHADOW, a);
                 }
             }
             // disc + hairline rim
             let d = px.hypot(py) - rad;
             let a = (0.5 - d).clamp(0.0, 1.0);
             if a > 0.0 {
-                blend(buf, sw, sh, x, y, bg, a * 0.9);
+                cv.blend(x, y, bg, a * 0.9);
                 let rim = (0.5 - d.abs()).clamp(0.0, 1.0);
                 if rim > 0.0 {
-                    blend(buf, sw, sh, x, y, FG, rim * 0.12);
+                    cv.blend(x, y, FG, rim * 0.12);
                 }
             }
             // icon — work in logical units, sdf * scale -> physical coverage
@@ -232,12 +241,12 @@ fn paint_button(
                     let d_front = rrect_sdf(lx, ly, 3.5, 3.5, 4.5, 4.5, 1.4);
                     let fill = fill_cov(d_front, scale);
                     if fill > 0.0 {
-                        blend(buf, sw, sh, x, y, bg, fill); // occlude back square
+                        cv.blend(x, y, bg, fill); // occlude back square
                     }
                     let a = stroke_cov(d_back, STROKE, scale)
                         .max(stroke_cov(d_front, STROKE, scale));
                     if a > 0.0 {
-                        blend(buf, sw, sh, x, y, FG, a);
+                        cv.blend(x, y, FG, a);
                     }
                 }
                 Action::Ocr => {
@@ -247,7 +256,7 @@ fn paint_button(
                         .min(seg_sdf(lx, ly, -5.75, 4.5, 1.5, 4.5));
                     let a = stroke_cov(d, STROKE, scale);
                     if a > 0.0 {
-                        blend(buf, sw, sh, x, y, FG, a);
+                        cv.blend(x, y, FG, a);
                     }
                 }
                 Action::Save => {
@@ -260,7 +269,7 @@ fn paint_button(
                         .min(seg_sdf(lx, ly, 3.2, -1.5, 0.0, 1.5));
                     let a = stroke_cov(d, STROKE, scale);
                     if a > 0.0 {
-                        blend(buf, sw, sh, x, y, FG, a);
+                        cv.blend(x, y, FG, a);
                     }
                 }
             }
