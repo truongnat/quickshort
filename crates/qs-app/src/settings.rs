@@ -38,6 +38,10 @@ const SWITCH_OFF: u32 = 0x39393D;
 pub enum SettingsEvent {
     /// Config changed + saved — re-register the hotkey, rebuild the menu.
     Changed,
+    /// Hotkey recording toggled on/off — host must suspend the global
+    /// grab while recording so the chord reaches this window instead of
+    /// firing the capture handler.
+    HotkeyRecord,
     /// User closed the window.
     Closed,
 }
@@ -96,6 +100,8 @@ pub struct Settings {
     switch_target: f64,
     /// recording pulse phase (seconds-ish, advanced per frame)
     pulse: f64,
+    /// a bare key was pressed while recording — hint that a modifier is required
+    want_mod: bool,
     dirty: bool,
     closed: bool,
 }
@@ -124,6 +130,7 @@ impl Settings {
             switch_t: cfg.launch_at_login as u8 as f64,
             switch_target: cfg.launch_at_login as u8 as f64,
             pulse: 0.0,
+            want_mod: false,
             dirty: true,
             closed: false,
         })
@@ -135,6 +142,12 @@ impl Settings {
 
     pub fn win(&self) -> &Window {
         &self.win
+    }
+
+    /// True while the Record button is armed — the host uses this to
+    /// suspend the global hotkey grab so the chord reaches this window.
+    pub fn is_recording(&self) -> bool {
+        self.recording
     }
 
     pub fn about_to_wait(&self) {
@@ -170,8 +183,10 @@ impl Settings {
                 ..
             } => match self.hit(self.last_pos) {
                 Some(Hit::Record) => {
-                    self.recording = true;
+                    self.recording = !self.recording;
+                    self.want_mod = false;
                     self.dirty = true;
+                    return Some(SettingsEvent::HotkeyRecord);
                 }
                 Some(Hit::Browse) => {
                     if let Some(d) = rfd::FileDialog::new()
@@ -180,6 +195,7 @@ impl Settings {
                     {
                         cfg.save_dir = Some(d);
                         self.recents = actions::recent_captures(&cfg.save_dir(), 4);
+                        self.dirty = true;
                         return Some(SettingsEvent::Changed);
                     }
                 }
@@ -189,6 +205,7 @@ impl Settings {
                         Ok(()) => {
                             cfg.launch_at_login = want;
                             self.switch_target = want as u8 as f64;
+                            self.dirty = true;
                             return Some(SettingsEvent::Changed);
                         }
                         Err(e) => eprintln!("launch-at-login: {e:#}"),
@@ -203,6 +220,7 @@ impl Settings {
                     if self.recording {
                         self.recording = false;
                         self.dirty = true;
+                        return Some(SettingsEvent::HotkeyRecord);
                     }
                 }
             },
@@ -211,9 +229,9 @@ impl Settings {
                     if self.recording {
                         self.recording = false;
                         self.dirty = true;
-                    } else {
-                        self.closed = true;
+                        return Some(SettingsEvent::HotkeyRecord);
                     }
+                    self.closed = true;
                     return None;
                 }
                 if self.recording {
@@ -225,6 +243,11 @@ impl Settings {
                         self.recording = false;
                         self.dirty = true;
                         return Some(SettingsEvent::Changed);
+                    }
+                    // a real key but no modifier — tell the user why nothing happened
+                    if key_token(&event.logical_key).is_some() {
+                        self.want_mod = true;
+                        self.dirty = true;
                     }
                 }
             }
@@ -303,8 +326,13 @@ impl Settings {
             return;
         }
         // hoist state — buffer_mut holds &mut self.surf for the rest of the fn
-        let (hover, recording, pulse, switch_t) =
-            (self.hover, self.recording, self.pulse, self.switch_t);
+        let (hover, recording, pulse, switch_t, want_mod) = (
+            self.hover,
+            self.recording,
+            self.pulse,
+            self.switch_t,
+            self.want_mod,
+        );
         let recents = self.recents.clone();
         let Ok(mut buf) = self.surf.buffer_mut() else {
             return;
@@ -350,14 +378,12 @@ impl Settings {
                 a,
                 1.0,
             );
-            p.text(
-                &mut cv,
-                COL_CTL_X - 58.0,
-                r1y + 27.0,
-                12.0,
-                "Press shortcut",
-                ACCENT,
-            );
+            let (msg, col) = if want_mod {
+                ("Needs a modifier, e.g. ⌘ ⌥ ⌃", FG_DIM)
+            } else {
+                ("Press shortcut", ACCENT)
+            };
+            p.text(&mut cv, COL_CTL_X - 58.0, r1y + 27.0, 12.0, msg, col);
         } else {
             p.keycaps(&mut cv, &cfg.hotkey, COL_CTL_X - 10.0, r1y + 7.0);
         }
@@ -565,6 +591,7 @@ pub fn standalone() -> Result<()> {
             if let Some(e) = s.window_event(&mut self.cfg, ev) {
                 match e {
                     SettingsEvent::Changed => self.cfg.save(),
+                    SettingsEvent::HotkeyRecord => {} // standalone: no grab to suspend
                     SettingsEvent::Closed => el.exit(),
                 }
             }

@@ -63,6 +63,8 @@ struct Host {
     tray: Option<tray_icon::TrayIcon>,
     hotkeys: Option<GlobalHotKeyManager>,
     hotkey: Option<HotKey>,
+    /// hotkey unregistered while the settings recorder is armed
+    hotkey_suspended: bool,
     settings: Option<Settings>,
 }
 
@@ -76,6 +78,7 @@ impl Host {
             tray: None,
             hotkeys: None,
             hotkey: None,
+            hotkey_suspended: false,
             settings: None,
         }
     }
@@ -142,6 +145,26 @@ impl Host {
                 }
             }
         }
+    }
+
+    /// While the settings recorder is armed, drop the global grab so the
+    /// chord reaches the settings window instead of triggering capture.
+    fn suspend_hotkey(&mut self, suspended: bool) {
+        if suspended == self.hotkey_suspended {
+            return;
+        }
+        if let (Some(m), Some(hk)) = (&self.hotkeys, self.hotkey) {
+            let r = if suspended {
+                m.unregister(hk)
+            } else {
+                m.register(hk)
+            };
+            if let Err(e) = r {
+                eprintln!("hotkey suspend: {e:#}");
+                return;
+            }
+        }
+        self.hotkey_suspended = suspended;
     }
 
     /// Persist config, (re)register the hotkey, refresh the tray menu —
@@ -214,15 +237,25 @@ impl ApplicationHandler<HostEvent> for Host {
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if let Some(s) = &mut self.settings {
-            if s.win_id() == id {
-                match s.window_event(&mut self.cfg, event) {
-                    Some(SettingsEvent::Changed) => self.apply_cfg(),
-                    Some(SettingsEvent::Closed) => self.settings = None,
-                    None => {}
+        let is_settings = self.settings.as_ref().is_some_and(|s| s.win_id() == id);
+        if is_settings {
+            let s = self.settings.as_mut().unwrap();
+            let ev = s.window_event(&mut self.cfg, event);
+            let recording = s.is_recording();
+            match ev {
+                // a recorded chord ends recording — resume the grab, then apply
+                Some(SettingsEvent::Changed) => {
+                    self.suspend_hotkey(false);
+                    self.apply_cfg();
                 }
-                return;
+                Some(SettingsEvent::HotkeyRecord) => self.suspend_hotkey(recording),
+                Some(SettingsEvent::Closed) => {
+                    self.suspend_hotkey(false);
+                    self.settings = None;
+                }
+                None => {}
             }
+            return;
         }
         let Some(ov) = &mut self.overlay else { return };
         let Some(out) = ov.window_event(id, event) else {
