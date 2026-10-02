@@ -60,7 +60,7 @@ fn main() -> Result<()> {
     );
 
     // 2. overlay + 3. coordinate/DPI mapping happens inside select_region
-    let Some(sel) = qs_overlay::select_region(&frames, bounds)? else {
+    let Some((sel, action)) = qs_overlay::select_region(&frames, bounds)? else {
         eprintln!("cancelled");
         return Ok(());
     };
@@ -73,21 +73,40 @@ fn main() -> Result<()> {
         anyhow::bail!("selection {sel:?} covers no monitor");
     };
 
-    let path = match args.out {
-        Some(p) => p,
-        None => std::env::current_dir()?.join(format!(
-            "quickshort-{}.png",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_secs()
-        )),
-    };
-    img.save(&path)?;
-    eprintln!("saved {}", path.display());
-
-    // Last: this blocks serving paste requests until the clipboard is
-    // replaced — Wayland clipboard dies with the owning process otherwise.
-    copy_to_clipboard(&img);
+    match action {
+        qs_overlay::Action::Save => {
+            let path = match args.out {
+                Some(p) => p,
+                // default: ~/Pictures/quickshort/quickshort-<ts>.png
+                None => {
+                    let dir = dirs::picture_dir()
+                        .or_else(dirs::home_dir)
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("quickshort");
+                    std::fs::create_dir_all(&dir)?;
+                    dir.join(format!(
+                        "quickshort-{}.png",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)?
+                            .as_secs()
+                    ))
+                }
+            };
+            img.save(&path)?;
+            eprintln!("saved {}", path.display());
+        }
+        // Last: this blocks serving paste requests until the clipboard is
+        // replaced — Wayland clipboard dies with the owning process otherwise.
+        qs_overlay::Action::Copy => copy_to_clipboard(&img),
+        qs_overlay::Action::Ocr => match qs_ocr::extract_text(&img) {
+            Ok(t) if t.is_empty() => eprintln!("ocr: no text found"),
+            Ok(t) => {
+                eprintln!("copied {} chars of text", t.chars().count());
+                copy_text_to_clipboard(&t);
+            }
+            Err(e) => eprintln!("ocr failed: {e:#}"),
+        },
+    }
     Ok(())
 }
 
@@ -108,6 +127,14 @@ fn copy_to_clipboard(img: &image::RgbaImage) {
     });
     match r {
         Ok(Ok(())) => eprintln!("copied to clipboard"),
+        Ok(Err(e)) => eprintln!("clipboard set failed: {e}"),
+        Err(e) => eprintln!("clipboard unavailable: {e}"),
+    }
+}
+
+fn copy_text_to_clipboard(text: &str) {
+    match arboard::Clipboard::new().map(|mut c| c.set_text(text)) {
+        Ok(Ok(())) => {}
         Ok(Err(e)) => eprintln!("clipboard set failed: {e}"),
         Err(e) => eprintln!("clipboard unavailable: {e}"),
     }

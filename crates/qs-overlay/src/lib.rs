@@ -21,12 +21,16 @@ use winit::window::{Window, WindowId, WindowLevel};
 
 #[cfg(target_os = "macos")]
 mod macos;
+mod toolbar;
+
+pub use toolbar::Action;
 
 const MIN_SELECT: u32 = 3;
 
 /// Show the overlay. `bounds` = virtual screen bounds. Returns the selection
-/// in virtual coords, or `None` on Esc / click-without-drag / window close.
-pub fn select_region(frames: &[CapturedFrame], bounds: Rect) -> Result<Option<Rect>> {
+/// in virtual coords plus the chosen action, or `None` on Esc /
+/// click-without-drag / window close.
+pub fn select_region(frames: &[CapturedFrame], bounds: Rect) -> Result<Option<(Rect, Action)>> {
     let (bright, dim) = composite(frames, bounds);
     let el = EventLoop::new()?;
     el.set_control_flow(ControlFlow::Wait);
@@ -83,9 +87,11 @@ struct App {
     bounds: Rect,
     bright: Vec<u32>,
     dim: Vec<u32>,
-    anchor: Option<Point>, // virtual coords
-    cursor: Point,         // virtual coords (inside the grabbing window)
-    result: Option<Rect>,
+    anchor: Option<Point>,   // drag start, virtual coords
+    cursor: Point,           // virtual coords (inside the grabbing window)
+    sel: Option<Rect>,       // confirmed selection (toolbar phase)
+    toolbar: Option<toolbar::Toolbar>,
+    result: Option<(Rect, Action)>,
     done: bool,
     dirty: bool,
     wins: Vec<WinCtx>,
@@ -99,6 +105,8 @@ impl App {
             dim: Vec::new(),
             anchor: None,
             cursor: Point::default(),
+            sel: None,
+            toolbar: None,
             result: None,
             done: false,
             dirty: false,
@@ -106,7 +114,21 @@ impl App {
         }
     }
 
-    fn finish(&mut self, el: &ActiveEventLoop, result: Option<Rect>) {
+    /// Monitor logical rect holding the selection's bottom-right corner —
+    /// where the toolbar anchors. Falls back to the first monitor.
+    fn sel_monitor(&self, sel: Rect) -> Rect {
+        let p = Point::new(sel.right() - 1, sel.bottom() - 1);
+        self.wins
+            .iter()
+            .map(|w| w.vrect)
+            .find(|r| {
+                p.x >= r.x && p.x < r.right() && p.y >= r.y && p.y < r.bottom()
+            })
+            .or_else(|| self.wins.first().map(|w| w.vrect))
+            .unwrap_or(self.bounds)
+    }
+
+    fn finish(&mut self, el: &ActiveEventLoop, result: Option<(Rect, Action)>) {
         self.result = result;
         self.done = true;
         el.exit();
@@ -180,9 +202,13 @@ impl App {
             }
             buf[y * sw..y * sw + sw].copy_from_slice(&rowbuf);
         }
-        // undim the part of the selection inside this monitor + border
-        if let Some(a) = self.anchor {
-            let sel = Rect::from_drag(a, self.cursor);
+        // undim the part of the selection inside this monitor + border;
+        // dragging preview takes priority over the confirmed selection
+        let sel = self
+            .anchor
+            .map(|a| Rect::from_drag(a, self.cursor))
+            .or(self.sel);
+        if let Some(sel) = sel {
             if let Some(local) = sel
                 .intersection(&wctx.vrect)
                 .map(|r| r.translated(-wctx.vrect.x, -wctx.vrect.y))
@@ -215,8 +241,9 @@ impl App {
                     }
                     buf[y * sw + x0..y * sw + x1].copy_from_slice(&srow);
                 }
-                // 2 logical px white border around the local rect
-                let b = (2.0 * scale).round().max(1.0) as i32;
+                // accent border around the local rect (1.5 logical px)
+                const ACCENT: u32 = 0x0A84FF;
+                let b = (1.5 * scale).round().max(1.0) as i32;
                 let (lx0, ly0) = (
                     (local.x as f64 * scale) as i32,
                     (local.y as f64 * scale) as i32,
@@ -229,19 +256,22 @@ impl App {
                     for x in lx0..lx1 {
                         for yy in [ly0 + i, ly1 - 1 - i] {
                             if x >= 0 && yy >= 0 && (x as usize) < sw && (yy as usize) < sh {
-                                buf[yy as usize * sw + x as usize] = 0xFFFFFF;
+                                buf[yy as usize * sw + x as usize] = ACCENT;
                             }
                         }
                     }
                     for y in ly0..ly1 {
                         for xx in [lx0 + i, lx1 - 1 - i] {
                             if xx >= 0 && y >= 0 && (xx as usize) < sw && (y as usize) < sh {
-                                buf[y as usize * sw + xx as usize] = 0xFFFFFF;
+                                buf[y as usize * sw + xx as usize] = ACCENT;
                             }
                         }
                     }
                 }
             }
+        }
+        if let Some(tb) = &self.toolbar {
+            tb.paint(&mut buf, sw, sh, wctx.vrect, scale);
         }
         let _ = buf.present();
     }
@@ -318,10 +348,35 @@ impl ApplicationHandler for App {
                 );
                 if self.anchor.is_some() {
                     self.dirty = true;
+                } else if let Some(tb) = &mut self.toolbar {
+                    let h = tb.hit(self.cursor);
+                    if h != tb.hover {
+                        tb.hover = h;
+                        self.dirty = true;
+                    }
+                    self.wins[i].win.set_cursor(if h.is_some() {
+                        winit::window::CursorIcon::Pointer
+                    } else {
+                        winit::window::CursorIcon::Default
+                    });
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => match state {
                 ElementState::Pressed => {
+                    if let Some(tb) = &self.toolbar {
+                        if let (Some(bi), Some(sel)) = (tb.hit(self.cursor), self.sel) {
+                            let action = tb.buttons[bi].0;
+                            self.finish(el, Some((sel, action)));
+                            return;
+                        }
+                        if tb.contains(self.cursor) {
+                            return; // padding area: swallow, don't start a drag
+                        }
+                        // clicked outside the toolbar: start a fresh selection
+                        self.toolbar = None;
+                        self.sel = None;
+                        self.dirty = true;
+                    }
                     // anchor-only change paints nothing yet; the first
                     // motion event will redraw — skip the sync fullscreen
                     // redraw here (it stalls the drag start)
@@ -330,10 +385,14 @@ impl ApplicationHandler for App {
                 ElementState::Released => {
                     let Some(a) = self.anchor.take() else { return };
                     let sel = Rect::from_drag(a, self.cursor);
-                    self.finish(
-                        el,
-                        (sel.w >= MIN_SELECT && sel.h >= MIN_SELECT).then_some(sel),
-                    );
+                    if sel.w >= MIN_SELECT && sel.h >= MIN_SELECT {
+                        let mr = self.sel_monitor(sel);
+                        self.sel = Some(sel);
+                        self.toolbar = Some(toolbar::Toolbar::new(sel, mr));
+                        self.dirty = true;
+                    } else {
+                        self.finish(el, None);
+                    }
                 }
             },
             WindowEvent::KeyboardInput { event, .. }
