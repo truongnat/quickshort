@@ -88,7 +88,12 @@ pub fn recent_captures(dir: &Path, n: usize) -> Vec<PathBuf> {
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "png"))
+                .filter(|p| {
+                    p.extension().is_some_and(|x| x == "png")
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("quickshort-"))
+                })
                 .collect()
         })
         .unwrap_or_default();

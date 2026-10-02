@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::tray;
 
 const W: f64 = 480.0;
-const H: f64 = 400.0;
+const H: f64 = 468.0;
 
 // macOS-consistent dark palette (matches the overlay toolbar)
 const BG_TOP: u32 = 0x212123; // window gradient, top — lifted like Tahoe chrome
@@ -64,26 +64,37 @@ const MARGIN: f64 = 20.0;
 const CARD_RAD: f64 = 14.0;
 const ROW_H: f64 = 44.0;
 const COL_LBL_X: f64 = MARGIN + 14.0;
-const COL_CTL_X: f64 = 220.0;
+const RECENT_ROW_H: f64 = 34.0;
+const RECENT_N: usize = 4;
+
+// vertical rhythm: header, then (section label, card) groups
+const SEC1_LBL: f64 = 92.0; // "Capture" baseline
+const CARD1_Y: f64 = SEC1_LBL + 8.0;
+const SEC2_LBL: f64 = CARD1_Y + ROW_H * 2.0 + 30.0; // "General"
+const CARD2_Y: f64 = SEC2_LBL + 8.0;
+const SEC3_LBL: f64 = CARD2_Y + ROW_H + 30.0; // "Recent captures"
+const CARD3_Y: f64 = SEC3_LBL + 8.0;
 
 fn card_capture() -> LRect {
-    (MARGIN, 96.0, W - MARGIN * 2.0, ROW_H * 2.0)
+    (MARGIN, CARD1_Y, W - MARGIN * 2.0, ROW_H * 2.0)
 }
 fn card_general() -> LRect {
-    (MARGIN, 196.0, W - MARGIN * 2.0, ROW_H)
+    (MARGIN, CARD2_Y, W - MARGIN * 2.0, ROW_H)
 }
 fn card_recents(n: usize) -> LRect {
-    let rows = n.max(1) as f64;
-    (MARGIN, 252.0, W - MARGIN * 2.0, 26.0 + rows * 30.0)
+    (MARGIN, CARD3_Y, W - MARGIN * 2.0, 12.0 + n.max(1) as f64 * RECENT_ROW_H)
+}
+fn recent_row(i: usize) -> LRect {
+    (MARGIN + 6.0, CARD3_Y + 6.0 + i as f64 * RECENT_ROW_H, W - MARGIN * 2.0 - 12.0, RECENT_ROW_H)
 }
 fn record_btn() -> LRect {
-    (W - MARGIN - 14.0 - 76.0, 103.0, 76.0, 30.0)
+    (W - MARGIN - 14.0 - 68.0, CARD1_Y + 7.0, 68.0, 30.0)
 }
 fn browse_btn() -> LRect {
-    (W - MARGIN - 14.0 - 76.0, 147.0, 76.0, 30.0)
+    (W - MARGIN - 14.0 - 68.0, CARD1_Y + ROW_H + 7.0, 68.0, 30.0)
 }
 fn switch_rect() -> LRect {
-    (W - MARGIN - 14.0 - 44.0, 203.0, 44.0, 26.0)
+    (W - MARGIN - 14.0 - 44.0, CARD2_Y + 9.0, 44.0, 26.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +163,7 @@ impl Settings {
             recording: false,
             hover: None,
             mods: ModifiersState::empty(),
-            recents: actions::recent_captures(&cfg.save_dir(), 4),
+            recents: actions::recent_captures(&cfg.save_dir(), RECENT_N),
             last_pos: (0.0, 0.0),
             switch_t: cfg.launch_at_login as u8 as f64,
             switch_target: cfg.launch_at_login as u8 as f64,
@@ -231,7 +242,7 @@ impl Settings {
                         self.dirty = true;
                         if let Some(d) = picked {
                             cfg.save_dir = Some(d);
-                            self.recents = actions::recent_captures(&cfg.save_dir(), 4);
+                            self.recents = actions::recent_captures(&cfg.save_dir(), RECENT_N);
                             return Some(SettingsEvent::Changed);
                         }
                     }
@@ -330,10 +341,8 @@ impl Settings {
         if inside((g.0, g.1, g.2, g.3)) {
             return Some(Hit::LoginToggle);
         }
-        let rc = card_recents(self.recents.len());
         for i in 0..self.recents.len() {
-            let ry = rc.1 + 26.0 + i as f64 * 30.0;
-            if inside((rc.0, ry, rc.2, 30.0)) {
+            if inside(recent_row(i)) {
                 return Some(Hit::Recent(i));
             }
         }
@@ -391,37 +400,39 @@ impl Settings {
             scale,
         };
 
-        // header: app logo + title
+        // header: app logo + name + version
         if let Some(logo) = &self.logo {
-            let (ox, oy) = ((MARGIN * scale) as i32, (20.0 * scale) as i32);
+            let (ox, oy) = ((MARGIN * scale) as i32, (22.0 * scale) as i32);
             for (px, py, c) in logo.enumerate_pixels() {
                 let a = c[3] as f64 / 255.0;
                 if a <= 0.0 {
                     continue;
                 }
-                let rgb =
-                    ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32;
+                let rgb = ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32;
                 cv.blend(ox + px as i32, oy + py as i32, rgb, a);
             }
         } else {
-            p.icon(&mut cv, MARGIN, 20.0, 36.0);
+            p.icon(&mut cv, MARGIN, 22.0, 36.0);
         }
-        p.text(&mut cv, MARGIN + 48.0, 42.0, 17.0, "Quickshort", FG);
+        p.text(&mut cv, MARGIN + 48.0, 48.0, 17.0, "Quickshort", FG);
+        let ver = concat!("v", env!("CARGO_PKG_VERSION"));
         p.text(
             &mut cv,
-            MARGIN + 48.0,
-            60.0,
+            MARGIN + 48.0 + p.text_w("Quickshort", 17.0) + 8.0,
+            48.0,
             11.5,
-            "Region screenshots, no ceremony",
+            ver,
             FG_FAINT,
         );
 
-        // ── capture card ────────────────────────────────────────────────
+        // ── capture ─────────────────────────────────────────────────────
+        p.section(&mut cv, MARGIN + 2.0, SEC1_LBL, "Capture");
         let c1 = card_capture();
         p.card(&mut cv, c1);
         let (r1y, r2y) = (c1.1, c1.1 + ROW_H);
         // row 1: hotkey
         p.text(&mut cv, COL_LBL_X, r1y + 28.0, 13.0, "Global hotkey", FG);
+        let rb = record_btn();
         if recording {
             let a = 0.55 + 0.45 * pulse.sin().abs();
             p.stroke(
@@ -437,27 +448,24 @@ impl Settings {
             } else {
                 ("Press shortcut", ACCENT)
             };
-            p.text(&mut cv, COL_CTL_X - 58.0, r1y + 27.0, 12.0, msg, col);
+            let tw = p.text_w(msg, 12.0);
+            p.text(&mut cv, rb.0 - tw - 12.0, r1y + 27.0, 12.0, msg, col);
         } else {
-            p.keycaps(&mut cv, &cfg.hotkey, COL_CTL_X - 10.0, r1y + 7.0);
+            p.keycaps(&mut cv, &cfg.hotkey, rb.0 - keycaps_w(&p, &cfg.hotkey) - 10.0, r1y + 7.0);
         }
-        p.ghost_button(&mut cv, record_btn(), "Record", hover == Some(Hit::Record));
+        p.ghost_button(&mut cv, rb, "Record", hover == Some(Hit::Record));
         // hairline
         p.line(&mut cv, COL_LBL_X, c1.1 + ROW_H, c1.0 + c1.2 - 14.0);
         // row 2: save folder
         p.text(&mut cv, COL_LBL_X, r2y + 28.0, 13.0, "Save folder", FG);
-        let dir = cfg.save_dir().display().to_string();
-        p.text(
-            &mut cv,
-            COL_CTL_X - 58.0,
-            r2y + 27.0,
-            11.5,
-            &tail(&dir, 22),
-            FG_DIM,
-        );
-        p.ghost_button(&mut cv, browse_btn(), "Browse", hover == Some(Hit::Browse));
+        let dir = short_path(&cfg.save_dir().display().to_string());
+        let bb = browse_btn();
+        let tw = p.text_w(&tail(&dir, 20), 11.5);
+        p.text(&mut cv, bb.0 - tw - 12.0, r2y + 27.0, 11.5, &tail(&dir, 20), FG_DIM);
+        p.ghost_button(&mut cv, bb, "Browse", hover == Some(Hit::Browse));
 
-        // ── general card: launch at login + switch ──────────────────────
+        // ── general ─────────────────────────────────────────────────────
+        p.section(&mut cv, MARGIN + 2.0, SEC2_LBL, "General");
         let c2 = card_general();
         if hover == Some(Hit::LoginToggle) {
             p.fill(&mut cv, c2, CARD_RAD, ROW_HOV, 1.0);
@@ -467,58 +475,34 @@ impl Settings {
         p.text(&mut cv, COL_LBL_X, c2.1 + 28.0, 13.0, "Launch at login", FG);
         p.switch(&mut cv, switch_rect(), switch_t);
 
-        // ── library card: recent captures ───────────────────────────────
+        // ── recent captures ─────────────────────────────────────────────
+        p.section(&mut cv, MARGIN + 2.0, SEC3_LBL, "Recent captures");
         let c3 = card_recents(recents.len());
         p.card(&mut cv, c3);
-        p.text(
-            &mut cv,
-            COL_LBL_X,
-            c3.1 + 19.0,
-            11.0,
-            "RECENT CAPTURES",
-            FG_FAINT,
-        );
         if recents.is_empty() {
-            p.text(
-                &mut cv,
-                COL_LBL_X,
-                c3.1 + 45.0,
-                12.0,
-                "Nothing captured yet",
-                FG_DIM,
-            );
+            p.text(&mut cv, COL_LBL_X, c3.1 + 36.0, 12.5, "No captures yet", FG_DIM);
         }
         for (i, r) in recents.iter().enumerate() {
-            let ry = c3.1 + 26.0 + i as f64 * 30.0;
+            let rr = recent_row(i);
             if hover == Some(Hit::Recent(i)) {
-                p.fill(
-                    &mut cv,
-                    (c3.0 + 4.0, ry, c3.2 - 8.0, 30.0),
-                    6.0,
-                    ROW_HOV,
-                    1.0,
-                );
+                p.fill(&mut cv, rr, 7.0, ROW_HOV, 1.0);
             }
             let name = r
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            p.text(&mut cv, COL_LBL_X, ry + 20.0, 12.5, &name, FG);
-            // ↗ affordance on hover
-            if hover == Some(Hit::Recent(i)) {
-                p.text(&mut cv, c3.0 + c3.2 - 26.0, ry + 20.0, 12.0, "↗", FG_DIM);
-            }
+            p.text(&mut cv, rr.0 + 8.0, rr.1 + 22.0, 12.5, &name, FG);
+            // right-aligned age; on hover the ↗ affordance takes its slot
+            let right = if hover == Some(Hit::Recent(i)) {
+                p.text(&mut cv, rr.0 + rr.2 - 16.0, rr.1 + 22.0, 12.0, "↗", FG_DIM);
+                28.0
+            } else {
+                8.0
+            };
+            let age = age_label(r);
+            let tw = p.text_w(&age, 10.5);
+            p.text(&mut cv, rr.0 + rr.2 - tw - right, rr.1 + 22.0, 10.5, &age, FG_FAINT);
         }
-
-        // footer
-        p.text(
-            &mut cv,
-            MARGIN,
-            H - 14.0,
-            10.5,
-            &Config::path().display().to_string(),
-            FG_FAINT,
-        );
 
         let _ = buf.present();
     }
@@ -548,6 +532,48 @@ fn tail(s: &str, n: usize) -> String {
         let keep: String = s.chars().rev().take(n).collect::<String>();
         format!("…{}", keep.chars().rev().collect::<String>())
     }
+}
+
+/// "/Users/x/…" -> "~/…" for display
+fn short_path(s: &str) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        let h = home.to_string_lossy();
+        if s.starts_with(h.as_ref()) {
+            return format!("~{}", &s[h.len()..]);
+        }
+    }
+    s.to_string()
+}
+
+/// "just now" / "5m ago" / "3h ago" / "2d ago" / "6w ago" from file mtime
+fn age_label(p: &PathBuf) -> String {
+    let Ok(m) = std::fs::metadata(p).and_then(|m| m.modified()) else {
+        return String::new();
+    };
+    let Ok(d) = m.elapsed() else {
+        return String::new();
+    };
+    let s = d.as_secs();
+    if s < 60 {
+        "just now".into()
+    } else if s < 3600 {
+        format!("{}m ago", s / 60)
+    } else if s < 86_400 {
+        format!("{}h ago", s / 3600)
+    } else if s < 7 * 86_400 {
+        format!("{}d ago", s / 86_400)
+    } else {
+        format!("{}w ago", s / (7 * 86_400))
+    }
+}
+
+/// total width of a keycap row for `hotkey` (for right-alignment)
+fn keycaps_w(p: &Painter, hotkey: &str) -> f64 {
+    hotkey_tokens(hotkey)
+        .iter()
+        .map(|t| (p.text_w(t, 11.5) + 14.0).max(24.0) + 4.0)
+        .sum::<f64>()
+        - 4.0
 }
 
 /// "CmdOrCtrl+Shift+S" -> per-keycap tokens ("⌘", "⇧", "S" on macOS).
@@ -728,6 +754,11 @@ impl Painter<'_> {
     /// Grouped inset card: glass gradient + soft shadow + lit top edge.
     fn card(&self, cv: &mut Canvas, r: LRect) {
         glass_card(cv, r, CARD_RAD, CARD_TOP, CARD_BOT);
+    }
+
+    /// Small dim section label above a card.
+    fn section(&self, cv: &mut Canvas, x: f64, y: f64, s: &str) {
+        self.text(cv, x, y, 11.0, s, FG_DIM);
     }
 
     /// Text button — hairline border, fills accent on hover.
