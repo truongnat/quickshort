@@ -15,7 +15,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::monitor::MonitorHandle;
-use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
+#[cfg(not(target_os = "macos"))]
+use winit::window::Fullscreen;
+use winit::window::{Window, WindowId, WindowLevel};
+
+#[cfg(target_os = "macos")]
+mod macos;
 
 const MIN_SELECT: u32 = 3;
 
@@ -142,22 +147,38 @@ impl App {
         }
         let Ok(mut buf) = wctx.surf.buffer_mut() else { return };
         let (sw, sh) = (sw.get() as usize, sh.get() as usize);
+        // Surface coords are *physical* px; canvas/virtual coords are *logical*
+        // px — scale_factor converts between them (2.0 on Retina).
+        let scale = wctx.win.scale_factor();
         // canvas offset of this monitor; canvas coords vs window coords
         let (ox, oy) = (wctx.vrect.x - self.bounds.x, wctx.vrect.y - self.bounds.y);
-        let (cw, ch) = (self.bounds.w as usize, self.bounds.h as usize);
+        let (cw, ch) = (self.bounds.w as i32, self.bounds.h as i32);
+        // physical (x,y) -> canvas (cx, cy); precompute per-row/col mapping
+        let colmap: Vec<i32> = (0..sw).map(|x| ox + (x as f64 / scale) as i32).collect();
+        let rowmap: Vec<i32> = (0..sh).map(|y| oy + (y as f64 / scale) as i32).collect();
+        // Expand each canvas row to physical width once, then memcpy it into
+        // every physical row that maps to it (consecutive rows share cy).
+        let mut rowbuf: Vec<u32> = Vec::new();
+        let mut rowbuf_cy = -1i32;
         for y in 0..sh {
-            let cy = oy + y as i32;
-            if cy < 0 || cy >= ch as i32 {
+            let cy = rowmap[y];
+            if !(0..ch).contains(&cy) {
                 continue;
             }
-            let cx0 = ox.max(0); // first canvas column visible in this window
-            let wx0 = (cx0 - ox) as usize; // same column in window coords
-            let n = (sw - wx0).min(cw - cx0 as usize);
-            if n == 0 {
-                continue;
+            if cy != rowbuf_cy {
+                rowbuf.clear();
+                rowbuf.reserve(sw);
+                let src = cy as usize * cw as usize;
+                for &cx in &colmap {
+                    rowbuf.push(if (0..cw).contains(&cx) {
+                        self.dim[src + cx as usize]
+                    } else {
+                        0
+                    });
+                }
+                rowbuf_cy = cy;
             }
-            buf[y * sw + wx0..y * sw + wx0 + n]
-                .copy_from_slice(&self.dim[cy as usize * cw + cx0 as usize..cy as usize * cw + cx0 as usize + n]);
+            buf[y * sw..y * sw + sw].copy_from_slice(&rowbuf);
         }
         // undim the part of the selection inside this monitor + border
         if let Some(a) = self.anchor {
@@ -166,33 +187,54 @@ impl App {
                 .intersection(&wctx.vrect)
                 .map(|r| r.translated(-wctx.vrect.x, -wctx.vrect.y))
             {
-                let (x0, y0) = (local.x.max(0) as usize, local.y.max(0) as usize);
-                let x1 = (local.right() as usize).min(sw);
-                let y1 = (local.bottom() as usize).min(sh);
+                // selection rect is logical; scale to physical px for drawing
+                let x0 = (local.x as f64 * scale).max(0.0) as usize;
+                let y0 = (local.y as f64 * scale).max(0.0) as usize;
+                let x1 = ((local.right() as f64 * scale) as usize).min(sw);
+                let y1 = ((local.bottom() as f64 * scale) as usize).min(sh);
+                // same trick: expand the canvas slice once per canvas row
+                let mut srow: Vec<u32> = Vec::new();
+                let mut srow_cy = -1i32;
                 for y in y0..y1 {
-                    let cy = oy + y as i32;
-                    if cy < 0 || cy >= ch as i32 {
+                    let cy = rowmap[y];
+                    if !(0..ch).contains(&cy) {
                         continue;
                     }
-                    let cx = ox + x0 as i32;
-                    if cx < 0 || cx >= cw as i32 {
-                        continue;
+                    if cy != srow_cy {
+                        srow.clear();
+                        srow.reserve(x1 - x0);
+                        let src = cy as usize * cw as usize;
+                        for &cx in &colmap[x0..x1] {
+                            srow.push(if (0..cw).contains(&cx) {
+                                self.bright[src + cx as usize]
+                            } else {
+                                0
+                            });
+                        }
+                        srow_cy = cy;
                     }
-                    let n = (x1 - x0).min(cw - cx as usize).min(sw - x0);
-                    let src = cy as usize * cw + cx as usize;
-                    buf[y * sw + x0..y * sw + x0 + n].copy_from_slice(&self.bright[src..src + n]);
+                    buf[y * sw + x0..y * sw + x1].copy_from_slice(&srow);
                 }
-                // 2px white border around the local rect
-                for i in 0..2i32 {
-                    for x in local.x..local.right() {
-                        for yy in [local.y + i, local.bottom() - 1 - i] {
+                // 2 logical px white border around the local rect
+                let b = (2.0 * scale).round().max(1.0) as i32;
+                let (lx0, ly0) = (
+                    (local.x as f64 * scale) as i32,
+                    (local.y as f64 * scale) as i32,
+                );
+                let (lx1, ly1) = (
+                    (local.right() as f64 * scale) as i32,
+                    (local.bottom() as f64 * scale) as i32,
+                );
+                for i in 0..b {
+                    for x in lx0..lx1 {
+                        for yy in [ly0 + i, ly1 - 1 - i] {
                             if x >= 0 && yy >= 0 && (x as usize) < sw && (yy as usize) < sh {
                                 buf[yy as usize * sw + x as usize] = 0xFFFFFF;
                             }
                         }
                     }
-                    for y in local.y..local.bottom() {
-                        for xx in [local.x + i, local.right() - 1 - i] {
+                    for y in ly0..ly1 {
+                        for xx in [lx0 + i, lx1 - 1 - i] {
                             if xx >= 0 && y >= 0 && (xx as usize) < sw && (y as usize) < sh {
                                 buf[y as usize * sw + xx as usize] = 0xFFFFFF;
                             }
@@ -213,23 +255,40 @@ impl ApplicationHandler for App {
         for m in el.available_monitors() {
             let attrs = Window::default_attributes()
                 .with_title("quickshort")
-                .with_fullscreen(Some(Fullscreen::Borderless(Some(m.clone()))))
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_active(true)
                 .with_window_level(WindowLevel::AlwaysOnTop);
-            let Ok(win) = el.create_window(attrs) else { continue };
+            // macOS: Borderless fullscreen enters a *new Space* — wrong for an
+            // overlay. Cover the monitor with a plain borderless window whose
+            // level/frame are set post-creation instead.
+            #[cfg(target_os = "macos")]
+            let attrs = attrs
+                .with_position(m.position())
+                .with_inner_size(m.size());
+            #[cfg(not(target_os = "macos"))]
+            let attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(Some(m.clone()))));
+            let win = match el.create_window(attrs) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("overlay window creation failed: {e}");
+                    continue;
+                }
+            };
             let win = Rc::new(win);
+            #[cfg(target_os = "macos")]
+            macos::prepare_overlay_window(&win, &m);
             // launched via global hotkey -> no activation token; nudge the
             // compositor so keyboard focus lands on us (Esc must reach us)
             win.request_user_attention(Some(winit::window::UserAttentionType::Critical));
             let surf = Context::new(win.clone()).and_then(|c| Surface::new(&c, win.clone()));
-            if let Ok(surf) = surf {
-                self.wins.push(WinCtx {
+            match surf {
+                Ok(surf) => self.wins.push(WinCtx {
                     win,
                     surf,
                     vrect: Self::vrect_of(&m),
-                });
+                }),
+                Err(e) => eprintln!("overlay surface creation failed: {e}"),
             }
         }
         if self.wins.is_empty() {
@@ -250,10 +309,12 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => self.finish(el, None),
             WindowEvent::RedrawRequested => self.draw(id),
             WindowEvent::CursorMoved { position, .. } => {
+                // position is physical px; virtual coords are logical
+                let s = self.wins[i].win.scale_factor();
                 let v = self.wins[i].vrect;
                 self.cursor = Point::new(
-                    v.x + position.x.round() as i32,
-                    v.y + position.y.round() as i32,
+                    v.x + (position.x / s).round() as i32,
+                    v.y + (position.y / s).round() as i32,
                 );
                 if self.anchor.is_some() {
                     self.dirty = true;

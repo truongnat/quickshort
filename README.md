@@ -21,7 +21,8 @@ Designed around a 4-layer pipeline:
 | GNOME Wayland (Ubuntu/Fedora default) | ✅ works | `org.gnome.Mutter.ScreenCast` → PipeWire shm frames |
 | X11 (Xorg, i3, XFCE…) | ✅ works | RandR layout + `GetImage` |
 | KDE Plasma / wlroots Wayland | ❌ | needs xdg-desktop-portal fallback |
-| Windows / macOS | ❌ | fail-loud stubs |
+| macOS 14+ | ✅ works | `SCScreenshotManager` per-display one-shot; needs Screen Recording permission for the terminal app |
+| Windows | ❌ | fail-loud stub |
 
 On Wayland there is no portal dialog and no subprocess: the backend talks
 to mutter's private ScreenCast API (the same one the GNOME portal uses

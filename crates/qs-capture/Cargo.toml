@@ -13,3 +13,6 @@ x11rb = { version = "0.13", features = ["randr"] }
 zbus = { version = "5", features = ["blocking"] }
 serde = "1"
 pipewire = "0.8"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "11", features = ["macos_14_0"] }

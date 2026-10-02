@@ -4,3 +4,8 @@
 # clang resource dir itself) — then this file can be deleted.
 [env]
 BINDGEN_EXTRA_CLANG_ARGS = { value = "-isystem /usr/lib/gcc/x86_64-linux-gnu/15/include", force = false }
+
+# macOS: the screencapturekit Swift bridge refs Swift runtime dylibs via
+# @rpath; /usr/lib/swift resolves them from the dyld shared cache.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
