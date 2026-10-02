@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use fontdue::{Font, FontSettings};
-use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, seg_sdf, stroke_cov, Canvas};
+use qs_overlay::sdf::{ellipse_sdf, fill_cov, glass_card, rrect_sdf, seg_sdf, stroke_cov, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -23,9 +23,11 @@ const W: f64 = 480.0;
 const H: f64 = 400.0;
 
 // macOS-consistent dark palette (matches the overlay toolbar)
-const BG: u32 = 0x1B1B1D; // window — deeper than the cards
-const CARD: u32 = 0x242426; // grouped inset card
-const ROW_HOV: u32 = 0x2E2E31;
+const BG_TOP: u32 = 0x212123; // window gradient, top — lifted like Tahoe chrome
+const BG_BOT: u32 = 0x17171A;
+const CARD_TOP: u32 = 0x303035; // glass card — light hits the top edge
+const CARD_BOT: u32 = 0x26262B;
+const ROW_HOV: u32 = 0x343438;
 const KEYCAP: u32 = 0x3A3A3D; // raised key top
 const KEYCAP_EDGE: u32 = 0x545456; // key bottom edge
 const ACCENT: u32 = 0x0A84FF;
@@ -59,7 +61,7 @@ type LRect = (f64, f64, f64, f64); // logical x, y, w, h
 // layout -------------------------------------------------------------------
 
 const MARGIN: f64 = 20.0;
-const CARD_RAD: f64 = 10.0;
+const CARD_RAD: f64 = 14.0;
 const ROW_H: f64 = 44.0;
 const COL_LBL_X: f64 = MARGIN + 14.0;
 const COL_CTL_X: f64 = 220.0;
@@ -349,7 +351,11 @@ impl Settings {
         let Ok(mut buf) = self.surf.buffer_mut() else {
             return;
         };
-        buf.fill(BG);
+        // window backdrop: faint vertical gradient, brighter at the top
+        for (row, px) in buf.iter_mut().enumerate() {
+            let t = (row / sw) as f64 / sh.max(1) as f64;
+            *px = mix(BG_TOP, BG_BOT, t);
+        }
         let scale = self.win.scale_factor();
         let mut cv = Canvas {
             buf: &mut buf,
@@ -683,10 +689,9 @@ impl Painter<'_> {
         }
     }
 
-    /// Grouped inset card: fill + hairline border.
+    /// Grouped inset card: glass gradient + soft shadow + lit top edge.
     fn card(&self, cv: &mut Canvas, r: LRect) {
-        self.fill(cv, r, CARD_RAD, CARD, 1.0);
-        self.stroke(cv, r, CARD_RAD, 0xFFFFFF, 0.07, 0.5);
+        glass_card(cv, r, CARD_RAD, CARD_TOP, CARD_BOT);
     }
 
     /// Text button — hairline border, fills accent on hover.

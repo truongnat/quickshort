@@ -41,6 +41,61 @@ pub fn fill_cov(sdf_l: f64, scale: f64) -> f64 {
     (0.5 - sdf_l * scale).clamp(0.0, 1.0)
 }
 
+/// Glass card — the Liquid Glass signature baked into pixels: soft drop
+/// shadow, a subtle top-to-bottom gradient fill, a hairline rim, and a
+/// brighter 1px edge along the top half (edge refraction).
+///
+/// `top`/`bot` are the fill colors; keep them close for a quiet surface.
+pub fn glass_card(cv: &mut Canvas, r: (f64, f64, f64, f64), rad: f64, top: u32, bot: u32) {
+    let (x, y, w, h) = r;
+    let s = cv.scale;
+    let pad = 10.0; // shadow reach, logical px
+    let (x0, y0) = (((x - pad) * s) as i32, ((y - pad) * s) as i32);
+    let (x1, y1) = (((x + w + pad) * s) as i32, ((y + h + pad) * s) as i32);
+    let cy = y + h / 2.0;
+    for py in y0.max(0)..y1.min(cv.h as i32) {
+        for px in x0.max(0)..x1.min(cv.w as i32) {
+            let lx = px as f64 / s + 0.5 / s;
+            let ly = py as f64 / s + 0.5 / s;
+            let d = rrect_sdf(lx, ly, x + w / 2.0, cy, w / 2.0, h / 2.0, rad);
+            if d > 0.0 {
+                // soft shadow: offset down 1.5px, alpha falls off with distance
+                let sd = rrect_sdf(lx, ly, x + w / 2.0, cy + 1.5, w / 2.0, h / 2.0, rad);
+                if sd > 0.0 {
+                    let a = 0.32 * (1.0 - sd / pad).clamp(0.0, 1.0);
+                    if a > 0.002 {
+                        cv.blend(px, py, 0x000000, a);
+                    }
+                }
+                continue;
+            }
+            // fill: vertical gradient
+            let t = ((ly - y) / h).clamp(0.0, 1.0);
+            let rgb = lerp_rgb(top, bot, t);
+            let cov = fill_cov(d, s);
+            cv.blend(px, py, rgb, cov);
+            // rim: hairline all around + stronger light edge on the top half
+            let rim = stroke_cov(d, 0.6, s) * 0.10;
+            if rim > 0.0 {
+                cv.blend(px, py, 0xFFFFFF, rim);
+            }
+            if ly < cy {
+                let topness = (1.0 - (ly - y) / (h / 2.0)).clamp(0.0, 1.0);
+                let glow = stroke_cov(d, 1.0, s) * 0.22 * topness;
+                if glow > 0.0 {
+                    cv.blend(px, py, 0xFFFFFF, glow);
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn lerp_rgb(a: u32, b: u32, t: f64) -> u32 {
+    let f = |sh: u32| ((a >> sh) & 0xFF) as f64 * (1.0 - t) + ((b >> sh) & 0xFF) as f64 * t;
+    (f(16) as u32) << 16 | (f(8) as u32) << 8 | f(0) as u32
+}
+
 /// Physical-px drawing target: alpha-blends packed 0xRRGGBB over opaque
 /// pixels (per-channel mix — no cross-channel carry).
 pub struct Canvas<'a> {

@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, seg_sdf, stroke_cov, Canvas};
+use qs_overlay::sdf::{ellipse_sdf, fill_cov, glass_card, seg_sdf, stroke_cov, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -19,7 +19,8 @@ const W: f64 = 232.0;
 const H: f64 = 52.0;
 const DONE_TTL: Duration = Duration::from_millis(1800);
 
-const CARD: u32 = 0x26262A;
+const CARD_TOP: u32 = 0x34343A;
+const CARD_BOT: u32 = 0x242429;
 const FG: u32 = 0xF2F2F7;
 const FG_DIM: u32 = 0x98989D;
 const ACCENT: u32 = 0x0A84FF;
@@ -153,8 +154,7 @@ impl Toast {
         };
 
         // card
-        let r = (0.0, 0.0, W, H);
-        fill_rrect(&mut cv, r, 12.0, CARD, 1.0, scale);
+        glass_card(&mut cv, (0.0, 0.0, W, H), 16.0, CARD_TOP, CARD_BOT);
 
         // indicator: pulsing accent dot while working, tick / cross when done
         let (cx, cy, rad) = (26.0, H / 2.0, 9.0);
@@ -243,27 +243,6 @@ pub fn standalone() -> Result<()> {
 }
 
 // --- tiny SDF helpers (logical coords, self-contained) ----------------------
-
-fn fill_rrect(cv: &mut Canvas, r: (f64, f64, f64, f64), rad: f64, rgb: u32, a: f64, s: f64) {
-    let (x, y, w, h) = r;
-    for py in (y * s) as i32..((y + h) * s) as i32 {
-        for px in (x * s) as i32..((x + w) * s) as i32 {
-            let d = rrect_sdf(
-                px as f64 / s + 0.5 / s,
-                py as f64 / s + 0.5 / s,
-                x + w / 2.0,
-                y + h / 2.0,
-                w / 2.0,
-                h / 2.0,
-                rad,
-            );
-            let c = fill_cov(d, s) * a;
-            if c > 0.0 {
-                cv.blend(px, py, rgb, c);
-            }
-        }
-    }
-}
 
 fn fill_circle(cv: &mut Canvas, cx: f64, cy: f64, r: f64, rgb: u32, a: f64, s: f64) {
     for py in ((cy - r) * s) as i32..((cy + r) * s) as i32 {
