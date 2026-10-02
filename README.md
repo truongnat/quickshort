@@ -22,7 +22,7 @@ Designed around a 4-layer pipeline:
 | X11 (Xorg, i3, XFCE…) | ✅ works | RandR layout + `GetImage` |
 | KDE Plasma / wlroots Wayland | ❌ | needs xdg-desktop-portal fallback |
 | macOS 14+ | ✅ works | `SCScreenshotManager` per-display one-shot; needs Screen Recording permission for the terminal app |
-| Windows | ❌ | fail-loud stub |
+| Windows | ✅ works (untested on hardware) | GDI BitBlt per monitor, PER_MONITOR_AWARE_V2 |
 
 On Wayland there is no portal dialog and no subprocess: the backend talks
 to mutter's private ScreenCast API (the same one the GNOME portal uses

@@ -17,6 +17,13 @@ pub trait ScreenCapture {
     fn capture_all(&self) -> Result<Vec<CapturedFrame>>;
 }
 
+/// Process-wide platform init — must run before both capture and the overlay
+/// (Windows DPI awareness changes the monitor geometry winit reports).
+pub fn platform_init() {
+    #[cfg(target_os = "windows")]
+    windows::enable_dpi_awareness();
+}
+
 /// Pick the right backend for the current platform/session.
 pub fn backend() -> Result<Box<dyn ScreenCapture>> {
     #[cfg(target_os = "linux")]

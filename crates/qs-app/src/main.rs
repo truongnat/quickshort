@@ -37,6 +37,7 @@ fn parse_args() -> Result<Args> {
 }
 
 fn main() -> Result<()> {
+    qs_capture::platform_init();
     let args = parse_args()?;
 
     // 1. background capture into RAM
