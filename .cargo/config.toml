@@ -1,0 +1,6 @@
+# bindgen (libspa-sys/pipewire-sys) needs freestanding headers (stdbool.h).
+# No clang is installed, so point bindgen at GCC's internal include dir.
+# Cleaner fix when available: `sudo apt install clang` (provides the
+# clang resource dir itself) — then this file can be deleted.
+[env]
+BINDGEN_EXTRA_CLANG_ARGS = { value = "-isystem /usr/lib/gcc/x86_64-linux-gnu/15/include", force = false }

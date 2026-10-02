@@ -1,0 +1,15 @@
+[package]
+name = "qs-capture"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+qs-core.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["randr"] }
+zbus = { version = "5", features = ["blocking"] }
+serde = "1"
+pipewire = "0.8"

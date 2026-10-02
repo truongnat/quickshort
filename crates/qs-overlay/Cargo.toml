@@ -1,0 +1,11 @@
+[package]
+name = "qs-overlay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+qs-core.workspace = true
+winit = "0.30"
+softbuffer = "0.4"

@@ -1,0 +1,16 @@
+[package]
+name = "qs-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "quickshort"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+qs-core.workspace = true
+qs-capture.workspace = true
+qs-overlay.workspace = true
+arboard = "3"
