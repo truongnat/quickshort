@@ -12,9 +12,10 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
-use crate::actions::{self, SaveTarget};
+use crate::actions::{self, Outcome, SaveTarget};
 use crate::config::Config;
 use crate::settings::{Settings, SettingsEvent};
+use crate::toast::Toast;
 use crate::tray;
 
 /// Everything that wakes the loop besides window events.
@@ -22,8 +23,8 @@ enum HostEvent {
     /// Tray "Capture Region" or the global hotkey.
     Trigger,
     Menu(MenuId),
-    /// A save worker finished — refresh the recents submenu.
-    Saved(PathBuf),
+    /// Action worker finished — refresh the menu, update the toast.
+    Done(Result<Outcome, String>),
 }
 
 /// Run the resident tray app. Blocks until Quit.
@@ -66,6 +67,7 @@ struct Host {
     /// hotkey unregistered while the settings recorder is armed
     hotkey_suspended: bool,
     settings: Option<Settings>,
+    toast: Option<Toast>,
 }
 
 impl Host {
@@ -80,6 +82,7 @@ impl Host {
             hotkey: None,
             hotkey_suspended: false,
             settings: None,
+            toast: None,
         }
     }
 
@@ -184,6 +187,21 @@ impl Host {
         }
         self.rebuild_menu();
     }
+
+    /// Mirror a finished action into the toast (opened for OCR; lazily
+    /// created for failures so errors are visible even for fast actions).
+    fn toast_done(&mut self, el: &ActiveEventLoop, msg: String, ok: bool) {
+        match &mut self.toast {
+            Some(t) => t.done(msg, ok),
+            None => match Toast::open(el, &msg) {
+                Ok(mut t) => {
+                    t.done(msg, ok);
+                    self.toast = Some(t);
+                }
+                Err(e) => eprintln!("toast: {e:#}"),
+            },
+        }
+    }
 }
 
 impl ApplicationHandler<HostEvent> for Host {
@@ -232,11 +250,34 @@ impl ApplicationHandler<HostEvent> for Host {
         match ev {
             HostEvent::Trigger => self.trigger(el),
             HostEvent::Menu(id) => self.on_menu(el, id),
-            HostEvent::Saved(_p) => self.rebuild_menu(),
+            HostEvent::Done(res) => match res {
+                Ok(Outcome::Saved(p)) => {
+                    self.rebuild_menu();
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.toast_done(el, format!("Saved {name}"), true);
+                }
+                Ok(Outcome::Copied) => self.toast_done(el, "Copied to clipboard".to_string(), true),
+                Ok(Outcome::TextCopied(n)) => {
+                    self.toast_done(el, format!("Copied {n} chars"), true)
+                }
+                Ok(Outcome::NoText) => self.toast_done(el, "No text found".to_string(), false),
+                Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
+            },
         }
     }
 
-    fn window_event(&mut self, _el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(t) = &mut self.toast {
+            if t.win_id() == id {
+                if t.window_event(event) {
+                    self.toast = None;
+                }
+                return;
+            }
+        }
         let is_settings = self.settings.as_ref().is_some_and(|s| s.win_id() == id);
         if is_settings {
             let s = self.settings.as_mut().unwrap();
@@ -266,24 +307,39 @@ impl ApplicationHandler<HostEvent> for Host {
             return;
         };
         if let OverlayEvent::Done(sel, action, annots) = out {
-            // stitch + encode off the UI thread; Saved updates the menu later
+            // OCR can take a beat — show a live toast before dispatching
+            if action == qs_overlay::Action::Ocr && self.toast.is_none() {
+                match Toast::open(el, "Extracting text…") {
+                    Ok(t) => self.toast = Some(t),
+                    Err(e) => eprintln!("toast: {e:#}"),
+                }
+            }
+            // stitch + encode off the UI thread; Done updates menu/toast later
             let px = self.proxy.clone();
             let target = SaveTarget::Dir(self.cfg.save_dir());
             std::thread::spawn(move || {
-                if let Ok(Some(p)) = actions::dispatch(frames, sel, action, &annots, &target, false)
-                {
-                    let _ = px.send_event(HostEvent::Saved(p));
-                }
+                let res = actions::dispatch(frames, sel, action, &annots, &target, false)
+                    .map_err(|e| e.to_string());
+                let _ = px.send_event(HostEvent::Done(res));
             });
         }
     }
 
-    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if let Some(ov) = &mut self.overlay {
             ov.about_to_wait();
         }
         if let Some(s) = &self.settings {
             s.about_to_wait();
+        }
+        if let Some(t) = &mut self.toast {
+            match t.pump() {
+                Some(wake) => el.set_control_flow(ControlFlow::WaitUntil(wake)),
+                None => {
+                    self.toast = None;
+                    el.set_control_flow(ControlFlow::Wait);
+                }
+            }
         }
     }
 }

@@ -13,10 +13,19 @@ pub enum SaveTarget {
     Dir(PathBuf),
 }
 
+/// What an action produced — the resident app mirrors this into its toast.
+pub enum Outcome {
+    Saved(PathBuf),
+    Copied,
+    /// chars of extracted text put on the clipboard
+    TextCopied(usize),
+    /// OCR ran but found no text
+    NoText,
+}
+
 /// Stitch the selection, bake annotations, run the action. `wait_clipboard`:
 /// on Linux/Wayland the clipboard dies with its owner — the one-shot binary
 /// must block (`true`); the resident app stays alive so it passes `false`.
-/// Returns the saved path when `action` was `Save`.
 pub fn dispatch(
     frames: Vec<qs_core::CapturedFrame>,
     sel: qs_core::Rect,
@@ -24,7 +33,7 @@ pub fn dispatch(
     annots: &[Annotation],
     target: &SaveTarget,
     wait_clipboard: bool,
-) -> Result<Option<PathBuf>> {
+) -> Result<Outcome> {
     let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
         .join()
         .expect("stitch worker panicked");
@@ -34,22 +43,20 @@ pub fn dispatch(
     qs_overlay::annotate_image(&mut img, sel, annots);
 
     match action {
-        Action::Save => save(&img, target).map(Some),
+        Action::Save => save(&img, target).map(Outcome::Saved),
         Action::Copy => {
             copy_image_to_clipboard(&img, wait_clipboard);
-            Ok(None)
+            Ok(Outcome::Copied)
         }
         Action::Ocr => {
-            match qs_ocr::extract_text(&img) {
-                Ok(t) if t.is_empty() => eprintln!("ocr: no text found"),
-                Ok(t) => {
-                    let n = t.chars().count();
-                    copy_text_to_clipboard(&t, wait_clipboard);
-                    eprintln!("copied {n} chars of text to clipboard");
-                }
-                Err(e) => eprintln!("ocr failed: {e:#}"),
+            let t = qs_ocr::extract_text(&img)?;
+            if t.is_empty() {
+                return Ok(Outcome::NoText);
             }
-            Ok(None)
+            let n = t.chars().count();
+            copy_text_to_clipboard(&t, wait_clipboard);
+            eprintln!("copied {n} chars of text to clipboard");
+            Ok(Outcome::TextCopied(n))
         }
     }
 }

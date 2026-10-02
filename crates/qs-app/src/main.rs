@@ -7,6 +7,7 @@ mod actions;
 mod config;
 mod host;
 mod settings;
+mod toast;
 mod tray;
 
 use actions::SaveTarget;
@@ -16,6 +17,7 @@ use anyhow::{Context, Result};
 struct Args {
     capture_now: bool,
     settings_only: bool,
+    toast_demo: bool,
     delay_secs: f64,
     out: Option<std::path::PathBuf>,
 }
@@ -24,6 +26,7 @@ fn parse_args() -> Result<Args> {
     let mut args = Args {
         capture_now: false,
         settings_only: false,
+        toast_demo: false,
         delay_secs: 0.0,
         out: None,
     };
@@ -32,6 +35,7 @@ fn parse_args() -> Result<Args> {
         match a.as_str() {
             "--capture" => args.capture_now = true,
             "--settings" => args.settings_only = true,
+            "--toast" => args.toast_demo = true,
             "--delay" => {
                 let v = it.next().context("--delay needs SECS")?;
                 args.delay_secs = v.parse().context("--delay: not a number")?;
@@ -59,6 +63,9 @@ fn main() -> Result<()> {
     let args = parse_args()?;
     if args.settings_only {
         return settings::standalone();
+    }
+    if args.toast_demo {
+        return toast::standalone();
     }
     if !args.capture_now {
         return host::run(config::Config::load());

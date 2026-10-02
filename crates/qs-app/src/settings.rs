@@ -567,8 +567,8 @@ fn key_token(key: &Key) -> Option<String> {
     }
 }
 
-/// First usable system font (fontdue reads TTF/OTF).
-fn system_font() -> Result<Font> {
+/// First usable system font (fontdue reads TTF/OTF) — shared with the toast.
+pub(crate) fn system_font() -> Result<Font> {
     const CANDIDATES: &[&str] = &[
         #[cfg(target_os = "macos")]
         "/System/Library/Fonts/SFNS.ttf",
