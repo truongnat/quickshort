@@ -1,22 +1,33 @@
-//! Pipeline: capture all monitors to RAM -> overlay selection -> worker-thread
-//! stitch -> clipboard + PNG file.
+//! quickshort — region screenshot tool.
+//!
+//! `quickshort`            resident tray app (menu + global hotkey)
+//! `quickshort --capture`  one-shot: capture -> overlay -> action -> exit
 
+mod actions;
+mod config;
+mod host;
+mod tray;
+
+use actions::SaveTarget;
 use anyhow::{Context, Result};
 
-/// quickshort [--delay SECS] [--out FILE.png]
+/// quickshort [--capture] [--delay SECS] [--out FILE.png]
 struct Args {
+    capture_now: bool,
     delay_secs: f64,
     out: Option<std::path::PathBuf>,
 }
 
 fn parse_args() -> Result<Args> {
     let mut args = Args {
+        capture_now: false,
         delay_secs: 0.0,
         out: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--capture" => args.capture_now = true,
             "--delay" => {
                 let v = it.next().context("--delay needs SECS")?;
                 args.delay_secs = v.parse().context("--delay: not a number")?;
@@ -27,7 +38,10 @@ fn parse_args() -> Result<Args> {
                 ));
             }
             "-h" | "--help" => {
-                eprintln!("usage: quickshort [--delay SECS] [--out FILE.png]");
+                eprintln!(
+                    "usage: quickshort [--capture [--delay SECS] [--out FILE.png]]\n\
+                     no args: resident tray app (menu + global hotkey)"
+                );
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown arg {other:?} (see --help)"),
@@ -39,8 +53,15 @@ fn parse_args() -> Result<Args> {
 fn main() -> Result<()> {
     qs_capture::platform_init();
     let args = parse_args()?;
+    if !args.capture_now {
+        return host::run(config::Config::load());
+    }
+    run_one_shot(args)
+}
 
-    // 1. background capture into RAM
+/// One-shot pipeline: capture all monitors to RAM -> overlay selection ->
+/// worker-thread stitch -> action.
+fn run_one_shot(args: Args) -> Result<()> {
     if args.delay_secs > 0.0 {
         std::thread::sleep(std::time::Duration::from_secs_f64(args.delay_secs));
     }
@@ -59,93 +80,15 @@ fn main() -> Result<()> {
         bounds.y
     );
 
-    // 2. overlay + 3. coordinate/DPI mapping happens inside select_region
-    let Some((sel, action)) = qs_overlay::select_region(&frames, bounds)? else {
+    let Some((sel, action, annots)) = qs_overlay::select_region(&frames, bounds)? else {
         eprintln!("cancelled");
         return Ok(());
     };
 
-    // 4. overlay is gone; crop/stitch on a worker thread
-    let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
-        .join()
-        .expect("stitch worker panicked");
-    let Some(img) = img else {
-        anyhow::bail!("selection {sel:?} covers no monitor");
+    let target = match args.out {
+        Some(p) => SaveTarget::File(p),
+        None => SaveTarget::Dir(config::Config::load().save_dir()),
     };
-
-    match action {
-        qs_overlay::Action::Save => {
-            let path = match args.out {
-                Some(p) => p,
-                // default: ~/Pictures/quickshort/quickshort-<ts>.png
-                None => {
-                    let dir = dirs::picture_dir()
-                        .or_else(dirs::home_dir)
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join("quickshort");
-                    std::fs::create_dir_all(&dir)?;
-                    dir.join(format!(
-                        "quickshort-{}.png",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)?
-                            .as_secs()
-                    ))
-                }
-            };
-            img.save(&path)?;
-            eprintln!("saved {}", path.display());
-        }
-        qs_overlay::Action::Copy => copy_image_to_clipboard(&img),
-        qs_overlay::Action::Ocr => match qs_ocr::extract_text(&img) {
-            Ok(t) if t.is_empty() => eprintln!("ocr: no text found"),
-            Ok(t) => {
-                let n = t.chars().count();
-                copy_text_to_clipboard(&t);
-                eprintln!("copied {n} chars of text to clipboard");
-            }
-            Err(e) => eprintln!("ocr failed: {e:#}"),
-        },
-    }
+    actions::dispatch(frames, sel, action, &annots, &target, true)?;
     Ok(())
-}
-
-/// On Wayland the clipboard dies with the owning process — `set().wait()`
-/// keeps us alive serving paste requests until another app takes over.
-fn copy_image_to_clipboard(img: &image::RgbaImage) {
-    let data = arboard::ImageData {
-        width: img.width() as usize,
-        height: img.height() as usize,
-        bytes: img.as_raw().into(),
-    };
-    let r = arboard::Clipboard::new().map(|mut c| {
-        let set = c.set();
-        #[cfg(target_os = "linux")]
-        let set = {
-            use arboard::SetExtLinux;
-            set.wait()
-        };
-        set.image(data)
-    });
-    report_clipboard(r);
-}
-
-fn copy_text_to_clipboard(text: &str) {
-    let r = arboard::Clipboard::new().map(|mut c| {
-        let set = c.set();
-        #[cfg(target_os = "linux")]
-        let set = {
-            use arboard::SetExtLinux;
-            set.wait()
-        };
-        set.text(text.to_string())
-    });
-    report_clipboard(r);
-}
-
-fn report_clipboard(r: Result<Result<(), arboard::Error>, arboard::Error>) {
-    match r {
-        Ok(Ok(())) => eprintln!("copied to clipboard"),
-        Ok(Err(e)) => eprintln!("clipboard set failed: {e}"),
-        Err(e) => eprintln!("clipboard unavailable: {e}"),
-    }
 }

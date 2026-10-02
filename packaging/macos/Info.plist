@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>quickshort</string>
+	<key>CFBundleDisplayName</key>
+	<string>quickshort</string>
+	<key>CFBundleIdentifier</key>
+	<string>ai.quickshort</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleExecutable</key>
+	<string>quickshort</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- tray-only app: no Dock icon -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>quickshort captures the screen region you select.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>

@@ -1,0 +1,182 @@
+//! Tray icon + menu plumbing: generated RGBA icon, menu construction,
+//! launch-at-login toggling per OS.
+
+use anyhow::{Context, Result};
+use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use std::path::PathBuf;
+use tray_icon::Icon;
+
+use crate::config::Config;
+
+pub const ID_CAPTURE: &str = "capture";
+pub const ID_OPEN_DIR: &str = "open_dir";
+pub const ID_LOGIN: &str = "launch_at_login";
+pub const ID_QUIT: &str = "quit";
+/// Recent-capture items carry `recent:<abs path>` as their id.
+pub const ID_RECENT_PREFIX: &str = "recent:";
+pub const RECENT_MAX: usize = 8;
+
+/// Rebuild the tray menu. `recents` = newest-first saved PNGs.
+pub fn build_menu(cfg: &Config, recents: &[PathBuf]) -> Menu {
+    let menu = Menu::new();
+    let capture = MenuItem::with_id(
+        ID_CAPTURE,
+        format!("Capture Region    {}", cfg.hotkey),
+        true,
+        None,
+    );
+    let recent = Submenu::new("Recent Captures", !recents.is_empty());
+    for p in recents {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string());
+        let item = MenuItem::with_id(
+            format!("{ID_RECENT_PREFIX}{}", p.display()),
+            name,
+            true,
+            None,
+        );
+        let _ = recent.append(&item);
+    }
+    let open = MenuItem::with_id(ID_OPEN_DIR, "Open Screenshots Folder", true, None);
+    let login =
+        CheckMenuItem::with_id(ID_LOGIN, "Launch at Login", true, cfg.launch_at_login, None);
+    let quit = MenuItem::with_id(ID_QUIT, "Quit quickshort", true, None);
+    let _ = menu.append_items(&[
+        &capture,
+        &recent,
+        &PredefinedMenuItem::separator(),
+        &open,
+        &login,
+        &PredefinedMenuItem::separator(),
+        &quit,
+    ]);
+    menu
+}
+
+/// Crop-corners tray glyph, drawn directly into RGBA — same SDF coverage math
+/// as the overlay icons, no asset files. `size` in px (44 = 22pt @2x).
+pub fn tray_icon(size: u32) -> Icon {
+    let s = size as f64;
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    let put = |rgba: &mut Vec<u8>, x: i32, y: i32, a: f64| {
+        if x < 0 || y < 0 || x >= size as i32 || y >= size as i32 {
+            return;
+        }
+        let i = ((y * size as i32 + x) * 4) as usize;
+        rgba[i] = (255.0 * a) as u8;
+        rgba[i + 1] = rgba[i];
+        rgba[i + 2] = rgba[i];
+        rgba[i + 3] = rgba[i];
+    };
+    // corner brackets ⌜ ⌝ ⌞ ⌟ — keep them short; adjacent ends must leave a
+    // visible gap or the glyph reads as a plain square at menu-bar size
+    let st = s * 0.115;
+    let ins = s * 0.20;
+    let len = s * 0.15;
+    let (x0, y0, x1, y1) = (ins, ins, s - ins, s - ins);
+    let segs = [
+        (x0, y0 + len, x0, y0),
+        (x0, y0, x0 + len, y0), // top-left
+        (x1 - len, y0, x1, y0),
+        (x1, y0, x1, y0 + len), // top-right
+        (x0, y1 - len, x0, y1),
+        (x0, y1, x0 + len, y1), // bottom-left
+        (x1 - len, y1, x1, y1),
+        (x1, y1 - len, x1, y1), // bottom-right
+    ];
+    for y in 0..size as i32 {
+        for x in 0..size as i32 {
+            let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+            let mut d = f64::INFINITY;
+            for &(ax, ay, bx, by) in &segs {
+                // point-segment distance
+                let (vx, vy) = (bx - ax, by - ay);
+                let t = (((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
+                let (dx, dy) = (px - (ax + t * vx), py - (ay + t * vy));
+                d = d.min((dx * dx + dy * dy).sqrt());
+            }
+            let a = (st / 2.0 + 0.75 - d).clamp(0.0, 1.0);
+            if a > 0.0 {
+                put(&mut rgba, x, y, a);
+            }
+        }
+    }
+    Icon::from_rgba(rgba, size, size).expect("tray icon rgba")
+}
+
+/// Toggle "launch at login" for the current executable.
+pub fn set_launch_at_login(enable: bool) -> Result<()> {
+    let exe = std::env::current_exe().context("current_exe")?;
+    #[cfg(target_os = "macos")]
+    {
+        // LaunchAgent — works for an unbundled binary; a future .app can
+        // switch to SMAppService without touching callers.
+        let dir = dirs::home_dir()
+            .context("no home dir")?
+            .join("Library/LaunchAgents");
+        let plist = dir.join("ai.quickshort.plist");
+        if enable {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(
+                &plist,
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                     <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"\
+                     \x20\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                     <plist version=\"1.0\"><dict>\n\
+                     <key>Label</key><string>ai.quickshort</string>\n\
+                     <key>ProgramArguments</key><array><string>{}</string></array>\n\
+                     <key>RunAtLoad</key><true/>\n\
+                     </dict></plist>\n",
+                    exe.display()
+                ),
+            )?;
+        } else {
+            let _ = std::fs::remove_file(&plist);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+        let run = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                winreg::enums::KEY_SET_VALUE,
+            )
+            .context("open Run key")?;
+        if enable {
+            run.set_value("quickshort", &exe.display().to_string())?;
+        } else {
+            let _ = run.delete_value("quickshort");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir = dirs::config_dir()
+            .context("no config dir")?
+            .join("autostart");
+        let desk = dir.join("quickshort.desktop");
+        if enable {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(
+                &desk,
+                format!(
+                    "[Desktop Entry]\nType=Application\nName=quickshort\n\
+                     Exec={}\nX-GNOME-Autostart-enabled=true\n",
+                    exe.display()
+                ),
+            )?;
+        } else {
+            let _ = std::fs::remove_file(&desk);
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (enable, exe);
+        anyhow::bail!("launch at login unsupported on this platform");
+    }
+    Ok(())
+}

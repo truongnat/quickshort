@@ -57,19 +57,38 @@ desktops it installs the binary only — bind it yourself.
 ## Usage
 
 ```bash
-quickshort                      # select region -> toolbar: Save / Copy / OCR-text
-quickshort --delay 2            # wait before capture (menus, tooltips)
-quickshort --out ~/shots/a.png  # explicit output path
+quickshort                      # resident tray app (menu + global hotkey)
+quickshort --capture            # one-shot: select region -> action -> exit
+quickshort --capture --delay 2  # wait before capture (menus, tooltips)
+quickshort --capture --out ~/shots/a.png  # explicit output path
 ```
 
-Drag to select, then click a toolbar button: **Save** writes
+**Tray app** (default mode): icon sits in the menu bar / system tray. Click
+it or press the global hotkey (default `CmdOrCtrl+Shift+S`) to start a
+selection. The menu offers Capture Region, Recent Captures (opens saved
+files), Open Screenshots Folder, Launch at Login and Quit. Settings live in
+`~/.config/quickshort/config.toml`:
+
+```toml
+hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax
+# save_dir = "~/Pictures/quickshort"
+launch_at_login = false
+```
+
+macOS app bundle: `packaging/macos/bundle.sh` produces `quickshort.app`
+(LSUIElement tray-only, ad-hoc signed). Linux one-shot hotkey binding is
+still handled by `install.sh`.
+
+**Selection toolbar**: drag to select, then pick a drawing tool (pen,
+arrow, rect, ellipse, marker, pixelate) — a second row offers 3 stroke
+sizes and a color palette — or an action: **Save** writes
 `~/Pictures/quickshort/quickshort-<ts>.png`, **Copy** puts the image on
 the clipboard, **OCR** puts the recognized text on the clipboard. The
 toolbar docks to whichever side of the selection has room. Clicking away
-starts a new selection; Esc or a click without dragging cancels. After
-capture the process stays alive serving the clipboard until you copy
-something else (Wayland clipboard is peer-to-peer; run via hotkey or
-`quickshort &`).
+starts a new selection; Esc or a click without dragging cancels. Undo/Redo
+buttons track strokes and pixelate ops. In `--capture` mode on Wayland the
+process stays alive serving the clipboard until you copy something else
+(clipboard is peer-to-peer there).
 
 ## Development
 
@@ -81,8 +100,10 @@ cargo run -p qs-app
 
 Layout: `qs-core` (geometry + stitch, pure), `qs-capture` (per-OS
 backends behind `ScreenCapture`), `qs-overlay` (winit + softbuffer,
-SDF-drawn toolbar), `qs-ocr` (native text extraction),
-`qs-app` (orchestration).
+SDF-drawn toolbar — exposes a reusable `Overlay` session for embedding
+in a host event loop), `qs-ocr` (native text extraction),
+`qs-app` (one-shot CLI + resident tray app via `tray-icon`/`muda`/
+`global-hotkey`).
 
 ## Known limits
 
