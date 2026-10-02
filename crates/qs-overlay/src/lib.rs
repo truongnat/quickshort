@@ -193,6 +193,7 @@ struct Session {
     /// current stroke size level / palette index
     size: u8,
     color: usize,
+    mods: winit::keyboard::ModifiersState,
     result: Option<(Rect, Action, Vec<Annotation>)>,
     done: bool,
     dirty: bool,
@@ -217,6 +218,7 @@ impl Session {
             redo: Vec::new(),
             size: 1,
             color: 0,
+            mods: winit::keyboard::ModifiersState::empty(),
             result: None,
             done: false,
             dirty: false,
@@ -815,11 +817,27 @@ impl Session {
                     }
                 }
             },
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && matches!(event.logical_key, Key::Named(NamedKey::Escape)) =>
-            {
-                self.finish(None);
+            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                    self.finish(None);
+                    return;
+                }
+                // ⌘/Ctrl shortcuts in the toolbar phase — same actions as
+                // the buttons; T = extract text (OCR) straight to clipboard
+                if self.sel.is_some() && (self.mods.super_key() || self.mods.control_key()) {
+                    if let Key::Character(c) = &event.logical_key {
+                        let act = match c.as_str() {
+                            "s" | "S" => Some(Action::Save),
+                            "c" | "C" => Some(Action::Copy),
+                            "t" | "T" => Some(Action::Ocr),
+                            _ => None,
+                        };
+                        if let Some(a) = act {
+                            self.finish(Some(a));
+                        }
+                    }
+                }
             }
             _ => {}
         }
