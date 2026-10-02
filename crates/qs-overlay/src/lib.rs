@@ -22,7 +22,7 @@ use winit::window::{Window, WindowId, WindowLevel};
 mod annotate;
 #[cfg(target_os = "macos")]
 mod macos;
-mod sdf;
+pub mod sdf;
 mod toolbar;
 
 pub use annotate::{annotate_image, Annotation};

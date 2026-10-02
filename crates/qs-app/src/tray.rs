@@ -10,6 +10,7 @@ use crate::config::Config;
 
 pub const ID_CAPTURE: &str = "capture";
 pub const ID_OPEN_DIR: &str = "open_dir";
+pub const ID_SETTINGS: &str = "settings";
 pub const ID_LOGIN: &str = "launch_at_login";
 pub const ID_QUIT: &str = "quit";
 /// Recent-capture items carry `recent:<abs path>` as their id.
@@ -42,12 +43,14 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf]) -> Menu {
     let open = MenuItem::with_id(ID_OPEN_DIR, "Open Screenshots Folder", true, None);
     let login =
         CheckMenuItem::with_id(ID_LOGIN, "Launch at Login", true, cfg.launch_at_login, None);
+    let settings = MenuItem::with_id(ID_SETTINGS, "Settings…", true, None);
     let quit = MenuItem::with_id(ID_QUIT, "Quit quickshort", true, None);
     let _ = menu.append_items(&[
         &capture,
         &recent,
         &PredefinedMenuItem::separator(),
         &open,
+        &settings,
         &login,
         &PredefinedMenuItem::separator(),
         &quit,

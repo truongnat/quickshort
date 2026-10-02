@@ -6,14 +6,16 @@
 mod actions;
 mod config;
 mod host;
+mod settings;
 mod tray;
 
 use actions::SaveTarget;
 use anyhow::{Context, Result};
 
-/// quickshort [--capture] [--delay SECS] [--out FILE.png]
+/// quickshort [--capture] [--delay SECS] [--out FILE.png] [--settings]
 struct Args {
     capture_now: bool,
+    settings_only: bool,
     delay_secs: f64,
     out: Option<std::path::PathBuf>,
 }
@@ -21,6 +23,7 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut args = Args {
         capture_now: false,
+        settings_only: false,
         delay_secs: 0.0,
         out: None,
     };
@@ -28,6 +31,7 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--capture" => args.capture_now = true,
+            "--settings" => args.settings_only = true,
             "--delay" => {
                 let v = it.next().context("--delay needs SECS")?;
                 args.delay_secs = v.parse().context("--delay: not a number")?;
@@ -53,6 +57,9 @@ fn parse_args() -> Result<Args> {
 fn main() -> Result<()> {
     qs_capture::platform_init();
     let args = parse_args()?;
+    if args.settings_only {
+        return settings::standalone();
+    }
     if !args.capture_now {
         return host::run(config::Config::load());
     }

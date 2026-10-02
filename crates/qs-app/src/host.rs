@@ -14,6 +14,7 @@ use winit::window::WindowId;
 
 use crate::actions::{self, SaveTarget};
 use crate::config::Config;
+use crate::settings::{Settings, SettingsEvent};
 use crate::tray;
 
 /// Everything that wakes the loop besides window events.
@@ -60,7 +61,9 @@ struct Host {
     /// Frames captured for the active overlay session — kept for stitching.
     frames: Option<Vec<qs_core::CapturedFrame>>,
     tray: Option<tray_icon::TrayIcon>,
-    _hotkeys: Option<GlobalHotKeyManager>,
+    hotkeys: Option<GlobalHotKeyManager>,
+    hotkey: Option<HotKey>,
+    settings: Option<Settings>,
 }
 
 impl Host {
@@ -71,7 +74,9 @@ impl Host {
             overlay: None,
             frames: None,
             tray: None,
-            _hotkeys: None,
+            hotkeys: None,
+            hotkey: None,
+            settings: None,
         }
     }
 
@@ -108,6 +113,20 @@ impl Host {
             tray::ID_CAPTURE => self.trigger(el),
             tray::ID_OPEN_DIR => actions::open_path(&self.cfg.save_dir()),
             tray::ID_QUIT => el.exit(),
+            tray::ID_SETTINGS => {
+                if self.settings.is_none() {
+                    match Settings::open(el, &self.cfg) {
+                        Ok(s) => self.settings = Some(s),
+                        Err(e) => eprintln!("settings: {e:#}"),
+                    }
+                } else {
+                    // focus the existing window
+                    if let Some(s) = &self.settings {
+                        s.win().request_user_attention(None);
+                        s.win().focus_window();
+                    }
+                }
+            }
             tray::ID_LOGIN => {
                 self.cfg.launch_at_login = !self.cfg.launch_at_login;
                 if let Err(e) = tray::set_launch_at_login(self.cfg.launch_at_login) {
@@ -123,6 +142,24 @@ impl Host {
                 }
             }
         }
+    }
+
+    /// Persist config, (re)register the hotkey, refresh the tray menu —
+    /// called after the settings window mutates `cfg`.
+    fn apply_cfg(&mut self) {
+        self.cfg.save();
+        if let (Some(m), Ok(hk)) = (&self.hotkeys, self.cfg.hotkey.parse::<HotKey>()) {
+            if Some(hk) != self.hotkey {
+                if let Some(old) = self.hotkey {
+                    let _ = m.unregister(old);
+                }
+                match m.register(hk) {
+                    Ok(()) => self.hotkey = Some(hk),
+                    Err(e) => eprintln!("hotkey register failed: {e:#}"),
+                }
+            }
+        }
+        self.rebuild_menu();
     }
 }
 
@@ -158,7 +195,10 @@ impl ApplicationHandler<HostEvent> for Host {
                 m.register(hk)?;
                 Ok(m)
             }) {
-                Ok(m) => self._hotkeys = Some(m),
+                Ok(m) => {
+                    self.hotkey = Some(hk);
+                    self.hotkeys = Some(m);
+                }
                 Err(e) => eprintln!("hotkey register failed: {e:#}"),
             },
             Err(e) => eprintln!("bad hotkey {:?}: {e}", self.cfg.hotkey),
@@ -174,6 +214,16 @@ impl ApplicationHandler<HostEvent> for Host {
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(s) = &mut self.settings {
+            if s.win_id() == id {
+                match s.window_event(&mut self.cfg, event) {
+                    Some(SettingsEvent::Changed) => self.apply_cfg(),
+                    Some(SettingsEvent::Closed) => self.settings = None,
+                    None => {}
+                }
+                return;
+            }
+        }
         let Some(ov) = &mut self.overlay else { return };
         let Some(out) = ov.window_event(id, event) else {
             return;
@@ -198,6 +248,9 @@ impl ApplicationHandler<HostEvent> for Host {
     fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
         if let Some(ov) = &mut self.overlay {
             ov.about_to_wait();
+        }
+        if let Some(s) = &self.settings {
+            s.about_to_wait();
         }
     }
 }
