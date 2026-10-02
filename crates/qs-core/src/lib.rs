@@ -124,7 +124,12 @@ pub fn virtual_bounds(frames: &[CapturedFrame]) -> Rect {
         } else {
             let x = b.x.min(r.x);
             let y = b.y.min(r.y);
-            Rect::new(x, y, (b.right().max(r.right()) - x) as u32, (b.bottom().max(r.bottom()) - y) as u32)
+            Rect::new(
+                x,
+                y,
+                (b.right().max(r.right()) - x) as u32,
+                (b.bottom().max(r.bottom()) - y) as u32,
+            )
         };
     }
     b
@@ -174,7 +179,8 @@ pub fn stitch(frames: &[CapturedFrame], selection: Rect) -> Option<RgbaImage> {
         if (s - 1.0).abs() < f64::EPSILON && pw == inter.w && ph == inter.h {
             imageops::overlay(&mut out, &crop, dx, dy);
         } else {
-            let normalized = imageops::resize(&crop, inter.w, inter.h, imageops::FilterType::Triangle);
+            let normalized =
+                imageops::resize(&crop, inter.w, inter.h, imageops::FilterType::Triangle);
             imageops::overlay(&mut out, &normalized, dx, dy);
         }
     }
@@ -220,7 +226,10 @@ mod tests {
     #[test]
     fn stitch_across_two_monitors_side_by_side() {
         // mon A: [0,0 100x100] RED | mon B: [100,0 100x100] GREEN
-        let frames = vec![frame(0, 0, 100, 100, 1.0, RED), frame(100, 0, 100, 100, 1.0, GREEN)];
+        let frames = vec![
+            frame(0, 0, 100, 100, 1.0, RED),
+            frame(100, 0, 100, 100, 1.0, GREEN),
+        ];
         // selection crosses the boundary: x in [50,150)
         let out = stitch(&frames, Rect::new(50, 20, 100, 50)).unwrap();
         assert_eq!((out.width(), out.height()), (100, 50));
@@ -233,7 +242,10 @@ mod tests {
     #[test]
     fn stitch_monitor_with_negative_origin() {
         // mon B sits *left* of primary: origin (-100, 0)
-        let frames = vec![frame(0, 0, 100, 100, 1.0, RED), frame(-100, 0, 100, 100, 1.0, GREEN)];
+        let frames = vec![
+            frame(0, 0, 100, 100, 1.0, RED),
+            frame(-100, 0, 100, 100, 1.0, GREEN),
+        ];
         let out = stitch(&frames, Rect::new(-50, 0, 100, 100)).unwrap();
         assert_eq!(out.get_pixel(0, 0).0, GREEN); // x∈[-50,0) from B
         assert_eq!(out.get_pixel(50, 0).0, RED); // x∈[0,50) from A
@@ -242,7 +254,10 @@ mod tests {
     #[test]
     fn stitch_normalizes_high_dpi() {
         // mon A scale 1 (RED) | mon B scale 2: logical 100x100 -> 200x200 phys (BLUE)
-        let frames = vec![frame(0, 0, 100, 100, 1.0, RED), frame(100, 0, 100, 100, 2.0, BLUE)];
+        let frames = vec![
+            frame(0, 0, 100, 100, 1.0, RED),
+            frame(100, 0, 100, 100, 2.0, BLUE),
+        ];
         let out = stitch(&frames, Rect::new(50, 0, 100, 100)).unwrap();
         assert_eq!((out.width(), out.height()), (100, 100));
         assert_eq!(out.get_pixel(25, 50).0, RED);
@@ -252,7 +267,10 @@ mod tests {
     #[test]
     fn stitch_stacked_vertical() {
         // A on top, B below
-        let frames = vec![frame(0, 0, 100, 100, 1.0, RED), frame(0, 100, 100, 100, 1.0, GREEN)];
+        let frames = vec![
+            frame(0, 0, 100, 100, 1.0, RED),
+            frame(0, 100, 100, 100, 1.0, GREEN),
+        ];
         let out = stitch(&frames, Rect::new(0, 50, 100, 100)).unwrap();
         assert_eq!(out.get_pixel(50, 10).0, RED);
         assert_eq!(out.get_pixel(50, 60).0, GREEN);
@@ -268,7 +286,10 @@ mod tests {
     #[test]
     fn stitch_gap_between_monitors_is_black() {
         // gap x∈[100,110) has no monitor
-        let frames = vec![frame(0, 0, 100, 100, 1.0, RED), frame(110, 0, 100, 100, 1.0, BLUE)];
+        let frames = vec![
+            frame(0, 0, 100, 100, 1.0, RED),
+            frame(110, 0, 100, 100, 1.0, BLUE),
+        ];
         let out = stitch(&frames, Rect::new(90, 0, 40, 10)).unwrap();
         assert_eq!(out.get_pixel(5, 5).0, RED); // x=95 <100
         assert_eq!(out.get_pixel(15, 5).0, [0, 0, 0, 0]); // x=105 in the gap
@@ -283,7 +304,10 @@ mod tests {
 
     #[test]
     fn virtual_bounds_spans_all_monitors() {
-        let frames = vec![frame(-100, 0, 100, 100, 1.0, GREEN), frame(0, 0, 200, 150, 1.0, RED)];
+        let frames = vec![
+            frame(-100, 0, 100, 100, 1.0, GREEN),
+            frame(0, 0, 200, 150, 1.0, RED),
+        ];
         assert_eq!(virtual_bounds(&frames), Rect::new(-100, 0, 300, 150));
     }
 }

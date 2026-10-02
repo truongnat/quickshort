@@ -42,9 +42,10 @@ pub fn prepare_overlay_window(win: &Window, m: &MonitorHandle) {
     for screen in NSScreen::screens(mtm).iter() {
         let desc = screen.deviceDescription();
         let key = NSString::from_str("NSScreenNumber");
-        let id = desc
-            .objectForKey(&key)
-            .and_then(|o| o.downcast_ref::<objc2_foundation::NSNumber>().map(|n| n.as_u32()));
+        let id = desc.objectForKey(&key).and_then(|o| {
+            o.downcast_ref::<objc2_foundation::NSNumber>()
+                .map(|n| n.as_u32())
+        });
         if id == Some(m.native_id()) {
             ns_win.setFrame_display(screen.frame(), true);
             break;

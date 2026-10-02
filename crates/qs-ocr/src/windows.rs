@@ -21,8 +21,8 @@ pub fn extract(img: &RgbaImage) -> Result<String> {
     let bitmap = SoftwareBitmap::Create(BitmapPixelFormat::Bgra8, w, h)?;
     bitmap.CopyToBuffer(&buf)?;
 
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-        .context("no OCR language pack installed")?;
+    let engine =
+        OcrEngine::TryCreateFromUserProfileLanguages().context("no OCR language pack installed")?;
     let res = engine.RecognizeAsync(&bitmap)?.join()?;
     Ok(res.Text()?.to_string_lossy())
 }

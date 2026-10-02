@@ -37,13 +37,18 @@ impl ScreenCapture for MutterCapture {
         }
 
         let sc = Proxy::new(&conn, BUS, ROOT, BUS)?;
-        let session: OwnedObjectPath = sc
-            .call("CreateSession", &(empty_opts(),))
-            .context("CreateSession failed (screen locked? mutter inhibits screencast while locked)")?;
+        let session: OwnedObjectPath = sc.call("CreateSession", &(empty_opts(),)).context(
+            "CreateSession failed (screen locked? mutter inhibits screencast while locked)",
+        )?;
 
         let r = run_session(&conn, &session, &mons);
-        let _ = Proxy::new(&conn, BUS, session.as_str(), "org.gnome.Mutter.ScreenCast.Session")
-            .and_then(|p| p.call::<_, _, ()>("Stop", &()));
+        let _ = Proxy::new(
+            &conn,
+            BUS,
+            session.as_str(),
+            "org.gnome.Mutter.ScreenCast.Session",
+        )
+        .and_then(|p| p.call::<_, _, ()>("Stop", &()));
         r
     }
 }
@@ -57,7 +62,12 @@ fn run_session(
     session: &OwnedObjectPath,
     mons: &[Mon],
 ) -> Result<Vec<CapturedFrame>> {
-    let sess = Proxy::new(conn, BUS, session.as_str(), "org.gnome.Mutter.ScreenCast.Session")?;
+    let sess = Proxy::new(
+        conn,
+        BUS,
+        session.as_str(),
+        "org.gnome.Mutter.ScreenCast.Session",
+    )?;
 
     // RecordMonitor per connector; each stream object then exposes its
     // PipeWire node id as a property.
@@ -100,7 +110,10 @@ fn run_session(
 
     // Grab all monitor frames on ONE PipeWire connection + mainloop —
     // streams multiplex naturally, frames arrive concurrently.
-    let imgs = grab_frames(&nodes, &streams.iter().map(|(m, _)| m.phys).collect::<Vec<_>>())?;
+    let imgs = grab_frames(
+        &nodes,
+        &streams.iter().map(|(m, _)| m.phys).collect::<Vec<_>>(),
+    )?;
 
     let mut frames = Vec::with_capacity(streams.len());
     for ((m, _), img) in streams.iter().zip(imgs) {
@@ -147,7 +160,9 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
     use spa::param::{format_utils, ParamType};
     use spa::pod::serialize::PodSerializer;
     use spa::pod::{ChoiceValue, Object, Property, Value};
-    use spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Id, Rectangle, SpaTypes};
+    use spa::utils::{
+        Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Id, Rectangle, SpaTypes,
+    };
     use std::cell::Cell;
     use std::io::Cursor;
     use std::time::Duration;
@@ -249,8 +264,7 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                             if si + w * 4 > s.len() {
                                 break;
                             }
-                            out[y * w * 4..(y + 1) * w * 4]
-                                .copy_from_slice(&s[si..si + w * 4]);
+                            out[y * w * 4..(y + 1) * w * 4].copy_from_slice(&s[si..si + w * 4]);
                         }
                         st.borrow_mut().frame = Some(out);
                         got = true;
@@ -300,10 +314,7 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                         ChoiceFlags::empty(),
                         ChoiceEnum::Enum {
                             default: Id(formats[0].as_raw()),
-                            alternatives: formats[1..]
-                                .iter()
-                                .map(|f| Id(f.as_raw()))
-                                .collect(),
+                            alternatives: formats[1..].iter().map(|f| Id(f.as_raw())).collect(),
                         },
                     ))),
                 ),
@@ -437,8 +448,12 @@ fn display_config(conn: &Connection) -> Result<Vec<Mon>> {
 
     let mut out = Vec::new();
     for (x, y, scale, transform, _, specs, _) in &logical {
-        let Some((connector, ..)) = specs.first() else { continue };
-        let Some(&(pw, ph)) = mode_of.get(connector) else { continue };
+        let Some((connector, ..)) = specs.first() else {
+            continue;
+        };
+        let Some(&(pw, ph)) = mode_of.get(connector) else {
+            continue;
+        };
         let (pw, ph) = if matches!(transform, 1 | 3 | 5 | 7) {
             (ph, pw)
         } else {

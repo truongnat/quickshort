@@ -13,13 +13,13 @@ use qs_core::{CapturedFrame, MonitorGeometry, Point, Size};
 use windows::core::BOOL;
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, EnumDisplayMonitors,
-    GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, DIB_RGB_COLORS, HDC, HGDIOBJ, HMONITOR, MONITORINFOEXW, SRCCOPY,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    EnumDisplayMonitors, GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, HGDIOBJ, HMONITOR, MONITORINFOEXW, SRCCOPY,
 };
 use windows::Win32::UI::HiDpi::{
-    GetDpiForMonitor, SetProcessDpiAwarenessContext,
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, MDT_EFFECTIVE_DPI,
+    GetDpiForMonitor, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    MDT_EFFECTIVE_DPI,
 };
 
 use crate::ScreenCapture;
@@ -151,10 +151,7 @@ fn capture_monitors(screen: HDC, monitors: &[Monitor]) -> Result<Vec<CapturedFra
                         (m.rect.left as f64 / s).round() as i32,
                         (m.rect.top as f64 / s).round() as i32,
                     ),
-                    size: Size::new(
-                        (w as f64 / s).round() as u32,
-                        (h as f64 / s).round() as u32,
-                    ),
+                    size: Size::new((w as f64 / s).round() as u32, (h as f64 / s).round() as u32),
                     scale: s,
                 },
                 pixels: RgbaImage::from_raw(w, h, data).context("capture size mismatch")?,

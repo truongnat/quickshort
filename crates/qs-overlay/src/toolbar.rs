@@ -3,14 +3,68 @@
 //! selection's bottom-right corner. Rendered straight into the softbuffer
 //! surface via SDF primitives at physical resolution (crisp on HiDPI).
 
+use crate::annotate::PALETTE;
+use crate::sdf::{ellipse_sdf, fill_cov, rrect_sdf, seg_sdf, stroke_cov, Canvas};
 use qs_core::{Point, Rect};
 
+/// Terminal actions — leave the overlay with a result.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     Save,
     Copy,
     Ocr,
 }
+
+/// Drawing tools — stay in the overlay and annotate the canvas.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tool {
+    Pen,
+    Arrow,
+    Rect,
+    Ellipse,
+    Marker,
+    Pixelate,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Item {
+    Tool(Tool),
+    Act(Action),
+    Undo,
+    Redo,
+    /// Stroke size level 0..=2 — options row, shown while a tool is armed
+    Size(u8),
+    /// Palette index — options row
+    Color(usize),
+}
+
+const MAIN: &[Item] = &[
+    Item::Tool(Tool::Pen),
+    Item::Tool(Tool::Arrow),
+    Item::Tool(Tool::Rect),
+    Item::Tool(Tool::Ellipse),
+    Item::Tool(Tool::Marker),
+    Item::Tool(Tool::Pixelate),
+    Item::Undo,
+    Item::Redo,
+    Item::Act(Action::Save),
+    Item::Act(Action::Copy),
+    Item::Act(Action::Ocr),
+];
+
+const OPTS: &[Item] = &[
+    Item::Size(0),
+    Item::Size(1),
+    Item::Size(2),
+    Item::Color(0),
+    Item::Color(1),
+    Item::Color(2),
+    Item::Color(3),
+    Item::Color(4),
+    Item::Color(5),
+    Item::Color(6),
+    Item::Color(7),
+];
 
 const R: f64 = 14.0; // button radius, logical px
 const GAP: f64 = 8.0; // between buttons
@@ -20,30 +74,61 @@ const STROKE: f64 = 1.8; // icon stroke width, logical px
 
 const BG: u32 = 0x2C2C2E;
 const BG_HOVER: u32 = 0x48484D;
+const BG_ACTIVE: u32 = 0x0A84FF;
 const FG: u32 = 0xFFFFFF;
 const SHADOW: u32 = 0x000000;
 
 pub struct Toolbar {
     /// bounding box in virtual logical coords
     pub rect: Rect,
-    /// button hit rects in logical coords
-    pub buttons: [(Action, Rect); 3],
+    /// button hit rects in logical coords — main row then options row
+    pub buttons: Vec<(Item, Rect)>,
     pub hover: Option<usize>,
+    /// currently armed drawing tool (highlighted + shows the options row)
+    pub tool: Option<Tool>,
+    /// selected size level / palette index for the next stroke
+    pub size: u8,
+    pub color: usize,
+    /// whether Undo/Redo have something to pop (dims the buttons otherwise)
+    pub has_annots: bool,
+    pub has_redo: bool,
 }
 
 impl Toolbar {
     /// `mr` = logical rect of the monitor holding the selection.
-    pub fn new(sel: Rect, mr: Rect) -> Self {
+    /// `opts` shows the second row (size + color) when a tool is armed.
+    pub fn new(sel: Rect, mr: Rect, opts: bool) -> Self {
+        let mut tb = Self {
+            rect: Rect::default(),
+            buttons: Vec::new(),
+            hover: None,
+            tool: None,
+            size: 1,
+            color: 0,
+            has_annots: false,
+            has_redo: false,
+        };
+        tb.layout(sel, mr, opts);
+        tb
+    }
+
+    /// Recompute rect + button slots — call when the options row toggles.
+    pub fn layout(&mut self, sel: Rect, mr: Rect, opts: bool) {
         let d = R * 2.0;
-        let n = 3.0;
-        let (hw, hh) = (PAD * 2.0 + n * d + (n - 1.0) * GAP, PAD * 2.0 + d); // horizontal
-        let (vw, vh) = (PAD * 2.0 + d, PAD * 2.0 + n * d + (n - 1.0) * GAP); // vertical
+        let n = MAIN.len() as f64;
+        let on = OPTS.len() as f64;
+        let rows = if opts { 2.0 } else { 1.0 };
+        // second row aligns under the main row, slightly narrower
+        let (hw, hh) = (
+            PAD * 2.0 + n.max(on) * d + (n.max(on) - 1.0) * GAP,
+            PAD * 2.0 + rows * d + (rows - 1.0) * GAP * 0.5,
+        );
+        let (vw, vh) = (hh, hw);
         let (sx0, sy0) = (sel.x as f64, sel.y as f64);
         let (sx1, sy1) = (sel.right() as f64, sel.bottom() as f64);
         let (mx0, my0) = (mr.x as f64, mr.y as f64);
         let (mx1, my1) = (mr.right() as f64, mr.bottom() as f64);
-        let clamp =
-            |v: f64, lo: f64, hi: f64| if lo <= hi { v.clamp(lo, hi) } else { hi };
+        let clamp = |v: f64, lo: f64, hi: f64| if lo <= hi { v.clamp(lo, hi) } else { hi };
 
         // (x, y, vertical, fits?)
         let candidates = [
@@ -80,52 +165,48 @@ impl Toolbar {
             ),
         ];
 
-        let (x, y, vertical, _) = candidates
-            .iter()
-            .find(|c| c.3)
-            .copied()
-            .unwrap();
-        let rect = Rect::new(
+        let (x, y, vertical, _) = candidates.iter().find(|c| c.3).copied().unwrap();
+        self.rect = Rect::new(
             x.round() as i32,
             y.round() as i32,
             (if vertical { vw } else { hw }).round() as u32,
             (if vertical { vh } else { hh }).round() as u32,
         );
-        let mut buttons = [
-            (Action::Save, Rect::default()),
-            (Action::Copy, Rect::default()),
-            (Action::Ocr, Rect::default()),
-        ];
-        for (i, b) in buttons.iter_mut().enumerate() {
-            let off = PAD + i as f64 * (d + GAP);
-            b.1 = if vertical {
-                Rect::new(
-                    rect.x + PAD as i32,
-                    rect.y + off.round() as i32,
-                    d as u32,
-                    d as u32,
-                )
-            } else {
-                Rect::new(
-                    rect.x + off.round() as i32,
-                    rect.y + PAD as i32,
-                    d as u32,
-                    d as u32,
-                )
-            };
-        }
-        Self {
-            rect,
-            buttons,
-            hover: None,
+        let row_step = d + GAP * 0.5;
+        let place = |items: &[Item], second: bool, buttons: &mut Vec<(Item, Rect)>| {
+            for (i, it) in items.iter().enumerate() {
+                let off = PAD + i as f64 * (d + GAP);
+                let off2 = PAD + if second { row_step } else { 0.0 };
+                let r = if vertical {
+                    Rect::new(
+                        self.rect.x + off2.round() as i32,
+                        self.rect.y + off.round() as i32,
+                        d as u32,
+                        d as u32,
+                    )
+                } else {
+                    Rect::new(
+                        self.rect.x + off.round() as i32,
+                        self.rect.y + off2.round() as i32,
+                        d as u32,
+                        d as u32,
+                    )
+                };
+                buttons.push((*it, r));
+            }
+        };
+        self.buttons.clear();
+        place(MAIN, false, &mut self.buttons);
+        if opts {
+            place(OPTS, true, &mut self.buttons);
         }
     }
 
     /// Index of the button under `p`, or `None`.
     pub fn hit(&self, p: Point) -> Option<usize> {
-        self.buttons.iter().position(|(_, r)| {
-            p.x >= r.x && p.x < r.right() && p.y >= r.y && p.y < r.bottom()
-        })
+        self.buttons
+            .iter()
+            .position(|(_, r)| p.x >= r.x && p.x < r.right() && p.y >= r.y && p.y < r.bottom())
     }
 
     /// `p` inside the toolbar box (incl. padding) — clicks there should not
@@ -144,73 +225,54 @@ impl Toolbar {
             h: sh,
             scale,
         };
-        for (i, (action, r)) in self.buttons.iter().enumerate() {
+        for (i, (item, r)) in self.buttons.iter().enumerate() {
             let cx = (r.x as f64 + r.w as f64 / 2.0 - vrect.x as f64) * scale;
             let cy = (r.y as f64 + r.h as f64 / 2.0 - vrect.y as f64) * scale;
-            paint_button(&mut cv, cx, cy, R * scale, self.hover == Some(i), *action);
+            let active = matches!(item, Item::Tool(t) if self.tool == Some(*t))
+                || matches!(item, Item::Size(s) if self.size == *s)
+                || matches!(item, Item::Color(c) if self.color == *c);
+            let enabled = match item {
+                Item::Undo => self.has_annots,
+                Item::Redo => self.has_redo,
+                _ => true,
+            };
+            paint_button(
+                &mut cv,
+                cx,
+                cy,
+                R * scale,
+                self.hover == Some(i),
+                active,
+                enabled,
+                *item,
+            );
         }
     }
 }
 
-/// Physical-px drawing target shared by the icon primitives below.
-struct Canvas<'a> {
-    buf: &'a mut [u32],
-    w: usize,
-    h: usize,
-    scale: f64,
-}
-
-impl Canvas<'_> {
-    /// Alpha-blend packed 0xRRGGBB into one physical pixel (per-channel mix —
-    /// no cross-channel carry).
-    #[inline]
-    fn blend(&mut self, x: i32, y: i32, rgb: u32, a: f64) {
-        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 || a <= 0.0 {
-            return;
-        }
-        let i = y as usize * self.w + x as usize;
-        let d = self.buf[i];
-        let mix = |s: u8, d: u8| (s as f64 * a + d as f64 * (1.0 - a)).round() as u32;
-        self.buf[i] = mix((rgb >> 16) as u8, (d >> 16) as u8) << 16
-            | mix((rgb >> 8) as u8, (d >> 8) as u8) << 8
-            | mix(rgb as u8, d as u8);
-    }
-}
-
-#[inline]
-fn seg_sdf(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
-    let (dx, dy) = (bx - ax, by - ay);
-    let t = (((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-    ((px - ax - dx * t).powi(2) + (py - ay - dy * t).powi(2)).sqrt()
-}
-
-/// Signed distance to a rounded-rect boundary (negative inside).
-#[inline]
-fn rrect_sdf(px: f64, py: f64, cx: f64, cy: f64, hw: f64, hh: f64, r: f64) -> f64 {
-    let qx = (px - cx).abs() - (hw - r);
-    let qy = (py - cy).abs() - (hh - r);
-    let (ox, oy) = (qx.max(0.0), qy.max(0.0));
-    (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - r
-}
-
-/// Coverage of a stroke of logical width `w` centered on `sdf` (logical dist).
-#[inline]
-fn stroke_cov(sdf_l: f64, w: f64, scale: f64) -> f64 {
-    (w / 2.0 + 0.5 - sdf_l.abs() * scale).clamp(0.0, 1.0)
-}
-
-/// Coverage of a fill of the region with `sdf <= 0` (logical dist).
-#[inline]
-fn fill_cov(sdf_l: f64, scale: f64) -> f64 {
-    (0.5 - sdf_l * scale).clamp(0.0, 1.0)
-}
-
-fn paint_button(cv: &mut Canvas, cx: f64, cy: f64, rad: f64, hovered: bool, action: Action) {
+#[allow(clippy::too_many_arguments)]
+fn paint_button(
+    cv: &mut Canvas,
+    cx: f64,
+    cy: f64,
+    rad: f64,
+    hovered: bool,
+    active: bool,
+    enabled: bool,
+    item: Item,
+) {
     let scale = cv.scale;
     // bbox covers button + soft shadow falloff
     let pad = (STROKE * scale).ceil() as i32 + (4.0 * scale).ceil() as i32 + 2;
     let r = rad.ceil() as i32 + pad;
-    let bg = if hovered { BG_HOVER } else { BG };
+    let bg = if active {
+        BG_ACTIVE
+    } else if hovered {
+        BG_HOVER
+    } else {
+        BG
+    };
+    let fg_a = if enabled { 1.0 } else { 0.35 };
     for y in (cy as i32 - r)..=(cy as i32 + r) {
         for x in (cx as i32 - r)..=(cx as i32 + r) {
             let px = x as f64 + 0.5 - cx;
@@ -235,43 +297,155 @@ fn paint_button(cv: &mut Canvas, cx: f64, cy: f64, rad: f64, hovered: bool, acti
             }
             // icon — work in logical units, sdf * scale -> physical coverage
             let (lx, ly) = (px / scale, py / scale);
-            match action {
-                Action::Copy => {
-                    let d_back = rrect_sdf(lx, ly, -3.5, -3.5, 4.5, 4.5, 1.4);
-                    let d_front = rrect_sdf(lx, ly, 3.5, 3.5, 4.5, 4.5, 1.4);
-                    let fill = fill_cov(d_front, scale);
-                    if fill > 0.0 {
-                        cv.blend(x, y, bg, fill); // occlude back square
-                    }
-                    let a = stroke_cov(d_back, STROKE, scale)
-                        .max(stroke_cov(d_front, STROKE, scale));
-                    if a > 0.0 {
-                        cv.blend(x, y, FG, a);
-                    }
-                }
-                Action::Ocr => {
-                    // paragraph: left-aligned lines, last one shorter
-                    let d = seg_sdf(lx, ly, -5.75, -4.5, 4.5, -4.5)
-                        .min(seg_sdf(lx, ly, -5.75, 0.0, 5.75, 0.0))
-                        .min(seg_sdf(lx, ly, -5.75, 4.5, 1.5, 4.5));
-                    let a = stroke_cov(d, STROKE, scale);
-                    if a > 0.0 {
-                        cv.blend(x, y, FG, a);
-                    }
-                }
-                Action::Save => {
-                    // tray: U shape open at top; arrow dips into it
-                    let d = seg_sdf(lx, ly, -5.75, -0.5, -5.75, 5.5)
-                        .min(seg_sdf(lx, ly, -5.75, 5.5, 5.75, 5.5))
-                        .min(seg_sdf(lx, ly, 5.75, 5.5, 5.75, -0.5))
-                        .min(seg_sdf(lx, ly, 0.0, -6.5, 0.0, 1.5))
-                        .min(seg_sdf(lx, ly, -3.2, -1.5, 0.0, 1.5))
-                        .min(seg_sdf(lx, ly, 3.2, -1.5, 0.0, 1.5));
-                    let a = stroke_cov(d, STROKE, scale);
-                    if a > 0.0 {
-                        cv.blend(x, y, FG, a);
-                    }
-                }
+            draw_icon(cv, x, y, lx, ly, scale, bg, fg_a, item);
+        }
+    }
+}
+
+/// Icon stroke/fill for one toolbar item at logical point (lx, ly).
+#[allow(clippy::too_many_arguments)]
+fn draw_icon(
+    cv: &mut Canvas,
+    x: i32,
+    y: i32,
+    lx: f64,
+    ly: f64,
+    scale: f64,
+    bg: u32,
+    fg_a: f64,
+    item: Item,
+) {
+    let stroke = |d: f64, w: f64| stroke_cov(d, w, scale);
+    match item {
+        Item::Tool(Tool::Pen) => {
+            // pencil: body + pointed nib
+            let d =
+                seg_sdf(lx, ly, -4.6, 4.6, 1.4, -1.4).min(seg_sdf(lx, ly, 1.4, -1.4, 4.6, -4.4));
+            let a = stroke(d, 2.4) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Tool(Tool::Arrow) => {
+            // ↗ shaft + two wings
+            let d = seg_sdf(lx, ly, -5.2, 5.2, 3.6, -3.6)
+                .min(seg_sdf(lx, ly, 3.6, -3.6, -0.6, -3.6))
+                .min(seg_sdf(lx, ly, 3.6, -3.6, 3.6, 0.6));
+            let a = stroke(d, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Tool(Tool::Rect) => {
+            let a = stroke(rrect_sdf(lx, ly, 0.0, 0.0, 4.8, 3.8, 0.9), STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Tool(Tool::Ellipse) => {
+            let a = stroke(ellipse_sdf(lx, ly, 0.0, 0.0, 5.0, 3.8), STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Tool(Tool::Marker) => {
+            // highlighter: wide body + thin nib
+            let d = seg_sdf(lx, ly, -4.8, 4.4, 1.6, -2.0);
+            let a = stroke(d, 3.4) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+            let d2 = seg_sdf(lx, ly, 1.6, -2.0, 4.8, -5.2);
+            let a = stroke(d2, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Tool(Tool::Pixelate) => {
+            // 2x2 checkerboard of filled squares
+            let d = rrect_sdf(lx, ly, -2.9, -2.9, 1.7, 1.7, 0.4)
+                .min(rrect_sdf(lx, ly, 2.9, -2.9, 1.7, 1.7, 0.4))
+                .min(rrect_sdf(lx, ly, -2.9, 2.9, 1.7, 1.7, 0.4))
+                .min(rrect_sdf(lx, ly, 2.9, 2.9, 1.7, 1.7, 0.4));
+            let a = fill_cov(d, scale) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Undo | Item::Redo => {
+            // ↩/↪ arc swept through the top + arrowhead; mirrored for redo
+            let m = if item == Item::Undo { 1.0 } else { -1.0 };
+            let (ccx, ccy, rr) = (-0.6 * m, 0.9, 4.1);
+            let mut d = f64::INFINITY;
+            let mut prev = (
+                ccx + m * rr * 185f64.to_radians().cos(),
+                ccy + rr * 185f64.to_radians().sin(),
+            );
+            for i in 1..=9 {
+                let t = (185.0 + 170.0 * i as f64 / 9.0).to_radians();
+                let p = (ccx + m * rr * t.cos(), ccy + rr * t.sin());
+                d = d.min(seg_sdf(lx, ly, prev.0, prev.1, p.0, p.1));
+                prev = p;
+            }
+            let tip = (-4.4 * m, -0.1);
+            d = d
+                .min(seg_sdf(lx, ly, tip.0, tip.1, tip.0 + 3.1 * m, tip.1 - 1.0))
+                .min(seg_sdf(lx, ly, tip.0, tip.1, tip.0 + 2.5 * m, tip.1 + 2.5));
+            let a = stroke(d, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Size(s) => {
+            // filled disc, radius grows with the level
+            let r = [1.8, 3.0, 4.6][s as usize];
+            let d = lx.hypot(ly) - r;
+            let a = fill_cov(d, scale) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Color(c) => {
+            // filled swatch disc in the palette color
+            let d = lx.hypot(ly) - 6.0;
+            let a = fill_cov(d, scale) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, PALETTE[c], a);
+            }
+        }
+        Item::Act(Action::Copy) => {
+            let d_back = rrect_sdf(lx, ly, -3.5, -3.5, 4.5, 4.5, 1.4);
+            let d_front = rrect_sdf(lx, ly, 3.5, 3.5, 4.5, 4.5, 1.4);
+            let fill = fill_cov(d_front, scale);
+            if fill > 0.0 {
+                cv.blend(x, y, bg, fill); // occlude back square
+            }
+            let a = stroke(d_back, STROKE).max(stroke(d_front, STROKE)) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Act(Action::Ocr) => {
+            // paragraph: left-aligned lines, last one shorter
+            let d = seg_sdf(lx, ly, -5.75, -4.5, 4.5, -4.5)
+                .min(seg_sdf(lx, ly, -5.75, 0.0, 5.75, 0.0))
+                .min(seg_sdf(lx, ly, -5.75, 4.5, 1.5, 4.5));
+            let a = stroke(d, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Act(Action::Save) => {
+            // tray: U shape open at top; arrow dips into it
+            let d = seg_sdf(lx, ly, -5.75, -0.5, -5.75, 5.5)
+                .min(seg_sdf(lx, ly, -5.75, 5.5, 5.75, 5.5))
+                .min(seg_sdf(lx, ly, 5.75, 5.5, 5.75, -0.5))
+                .min(seg_sdf(lx, ly, 0.0, -6.5, 0.0, 1.5))
+                .min(seg_sdf(lx, ly, -3.2, -1.5, 0.0, 1.5))
+                .min(seg_sdf(lx, ly, 3.2, -1.5, 0.0, 1.5));
+            let a = stroke(d, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
             }
         }
     }

@@ -19,20 +19,15 @@ pub fn extract(img: &RgbaImage) -> Result<String> {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
     let data = NSData::from_vec(png);
     let opts = NSDictionary::<VNImageOption, objc2::runtime::AnyObject>::new();
-    let handler = VNImageRequestHandler::initWithData_options(
-        VNImageRequestHandler::alloc(),
-        &data,
-        &opts,
-    );
+    let handler =
+        VNImageRequestHandler::initWithData_options(VNImageRequestHandler::alloc(), &data, &opts);
 
     let req = VNRecognizeTextRequest::new();
     req.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
     req.setUsesLanguageCorrection(true);
     req.setAutomaticallyDetectsLanguage(true);
-    let langs = NSArray::from_retained_slice(&[
-        NSString::from_str("vi-VN"),
-        NSString::from_str("en-US"),
-    ]);
+    let langs =
+        NSArray::from_retained_slice(&[NSString::from_str("vi-VN"), NSString::from_str("en-US")]);
     req.setRecognitionLanguages(&langs);
 
     let req_vn: Retained<VNRequest> = unsafe { Retained::cast_unchecked(req.clone()) };

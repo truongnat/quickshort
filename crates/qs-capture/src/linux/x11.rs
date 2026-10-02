@@ -62,8 +62,10 @@ impl ScreenCapture for X11Capture {
                 Err(e) => {
                     // e.g. XWayland: RandR geometry != capturable area.
                     // Better one whole-root frame than a hard failure.
-                    eprintln!("monitor {}x{} at ({},{}) failed: {e}; capturing whole root instead",
-                              m.w, m.h, m.x, m.y);
+                    eprintln!(
+                        "monitor {}x{} at ({},{}) failed: {e}; capturing whole root instead",
+                        m.w, m.h, m.x, m.y
+                    );
                     return Ok(vec![grab(&conn, root, &root_rect, depth)
                         .context("whole-root capture failed")?]);
                 }
@@ -101,7 +103,12 @@ impl Mon {
         let y = self.y.max(o.y);
         let r = (self.x + self.w as i32).min(o.x + o.w as i32);
         let b = (self.y + self.h as i32).min(o.y + o.h as i32);
-        (r > x && b > y).then(|| Mon { x, y, w: (r - x) as u32, h: (b - y) as u32 })
+        (r > x && b > y).then(|| Mon {
+            x,
+            y,
+            w: (r - x) as u32,
+            h: (b - y) as u32,
+        })
     }
 }
 
