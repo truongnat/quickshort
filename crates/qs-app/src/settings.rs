@@ -102,6 +102,9 @@ pub struct Settings {
     pulse: f64,
     /// a bare key was pressed while recording — hint that a modifier is required
     want_mod: bool,
+    /// folder picker is open — guard against re-entry (a queued second
+    /// click would stack another modal on top)
+    dialog_open: bool,
     dirty: bool,
     closed: bool,
 }
@@ -131,6 +134,7 @@ impl Settings {
             switch_target: cfg.launch_at_login as u8 as f64,
             pulse: 0.0,
             want_mod: false,
+            dialog_open: false,
             dirty: true,
             closed: false,
         })
@@ -189,14 +193,22 @@ impl Settings {
                     return Some(SettingsEvent::HotkeyRecord);
                 }
                 Some(Hit::Browse) => {
-                    if let Some(d) = rfd::FileDialog::new()
-                        .set_directory(cfg.save_dir())
-                        .pick_folder()
-                    {
-                        cfg.save_dir = Some(d);
-                        self.recents = actions::recent_captures(&cfg.save_dir(), 4);
+                    if !self.dialog_open {
+                        self.dialog_open = true;
+                        let picked = rfd::FileDialog::new()
+                            .set_directory(cfg.save_dir())
+                            .set_parent(&*self.win)
+                            .pick_folder();
+                        self.dialog_open = false;
+                        // an app-modal panel deactivates the accessory app —
+                        // pull focus back or the window looks dead
+                        refocus(&self.win);
                         self.dirty = true;
-                        return Some(SettingsEvent::Changed);
+                        if let Some(d) = picked {
+                            cfg.save_dir = Some(d);
+                            self.recents = actions::recent_captures(&cfg.save_dir(), 4);
+                            return Some(SettingsEvent::Changed);
+                        }
                     }
                 }
                 Some(Hit::LoginToggle) => {
@@ -468,6 +480,22 @@ impl Settings {
 
         let _ = buf.present();
     }
+}
+
+/// Restore app activation + window focus after a modal panel closes —
+/// without this an accessory app stays deactivated and the settings
+/// window stops receiving keyboard input.
+fn refocus(win: &Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+        if let Some(mtm) = MainThreadMarker::new() {
+            NSApplication::sharedApplication(mtm).activate();
+        }
+    }
+    win.focus_window();
+    win.request_redraw();
 }
 
 /// right-trimmed path tail for display
