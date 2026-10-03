@@ -81,33 +81,33 @@
     <article class="fcard fcard-tall reveal" data-tilt>
       <div class="fcard-media"><img src="assets/screenshot.png" alt="Annotation toolbar over a dimmed desktop" loading="lazy"></div>
       <h3>Annotate in place</h3>
-      <p>Pen, arrow, rect, ellipse, marker, pixelate. Undo and redo on a physical-resolution layer.</p>
+      <p>Draw directly on the dimmed overlay: pen, arrow, rectangle, ellipse, highlighter, pixelate. Strokes live on a physical-resolution layer, so they stay as sharp as the capture itself. Undo and redo are one click.</p>
     </article>
     <article class="fcard reveal" data-tilt>
       <div class="fcard-glyph" aria-hidden="true">⌘⇧S</div>
       <h3>Global hotkey, resident tray</h3>
-      <p>Lives in the menu bar. One chord drops a dimmed overlay over every monitor at once.</p>
+      <p>Quickshort sits in the menu bar. Press ⌘⇧S from anywhere and a dimmed overlay covers every monitor at once. Esc cancels, and the shortcut is re-recordable in Settings.</p>
     </article>
     <article class="fcard reveal" data-tilt>
       <div class="fcard-glyph" aria-hidden="true">2×</div>
       <h3>Physical pixels, always</h3>
-      <p>Captures at framebuffer resolution. Retina stays Retina; mixed-DPI monitors map correctly.</p>
+      <p>Captures request framebuffer resolution, not logical points. On a Retina display the PNG is 2880px wide and text stays crisp at 100% zoom. Mixed-DPI setups map each monitor through its own scale.</p>
     </article>
     <article class="fcard reveal" data-tilt>
       <div class="fcard-glyph" aria-hidden="true">¶</div>
       <h3>OCR with OS engines</h3>
-      <p>Vision on macOS, Windows.Media.Ocr on Windows. Text lands on the clipboard. No bundled models.</p>
+      <p>⌘T runs the selection through macOS Vision (Windows.Media.Ocr on Windows) and puts the text on your clipboard with a toast confirmation. Native engines, no bundled models, no cloud calls.</p>
     </article>
     <article class="fcard reveal" data-tilt>
       <div class="fcard-glyph" aria-hidden="true">⇄</div>
       <h3>Cross-monitor selection</h3>
-      <p>Drag straight across display boundaries. Crops stitch through one virtual coordinate space.</p>
+      <p>Start a drag on one display and finish it on another. Each monitor's crop is mapped through its own origin and DPI, then stitched into a single image.</p>
     </article>
     <article class="fcard fcard-wide reveal" data-tilt>
       <div class="fcard-glyph" aria-hidden="true">↻</div>
       <div>
         <h3>Self-updating</h3>
-        <p>Checks GitHub Releases daily, swaps the app bundle in place, relaunches. Signed with a stable identity so Screen Recording and Accessibility grants survive every update.</p>
+        <p>The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact across updates.</p>
       </div>
     </article>
   </div>
