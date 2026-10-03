@@ -781,9 +781,6 @@ mod tests {
         assert!(!Annotation::Pixelate(Rect::new(0, 0, 10, 10)).movable());
     }
 
-    /// Eyeball check — `cargo test -p qs-overlay -- --ignored` then open
-    /// /tmp/qs-text-test.png
-    #[test]
     /// Click-to-caret: byte indexes snap to glyph gaps, left/right edges
     /// land on the string ends.
     #[test]
@@ -802,6 +799,9 @@ mod tests {
         assert!("abcd".is_char_boundary(i));
     }
 
+    /// Eyeball check — `cargo test -p qs-overlay -- --ignored` then open
+    /// /tmp/qs-text-test.png
+    #[test]
     #[ignore]
     fn text_visual() {
         let mut img = RgbaImage::from_pixel(400, 200, image::Rgba([40, 44, 52, 255]));

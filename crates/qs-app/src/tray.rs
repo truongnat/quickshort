@@ -16,7 +16,6 @@ pub const ID_QUIT: &str = "quit";
 /// Recent-capture items carry `recent:<abs path>` as their id.
 pub const ID_RECENT_PREFIX: &str = "recent:";
 pub const ID_UPDATE: &str = "update";
-pub const RECENT_MAX: usize = 8;
 
 /// Rebuild the tray menu. `recents` = newest-first saved PNGs;
 /// `pending_update` = version waiting to be installed (changes the

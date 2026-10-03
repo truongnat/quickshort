@@ -78,6 +78,8 @@ struct Host {
     toast: Option<Toast>,
     /// Newer release found, waiting for the user to click Update.
     pending_update: Option<Release>,
+    /// Lazy — the listener + ssh tunnel only spawn on the first Share.
+    share: Option<std::sync::Arc<crate::share::ShareManager>>,
 }
 
 impl Host {
@@ -94,12 +96,14 @@ impl Host {
             settings: None,
             toast: None,
             pending_update: None,
+            share: None,
         }
     }
 
     fn rebuild_menu(&self) {
         if let Some(t) = &self.tray {
-            let recents = actions::recent_captures(&self.cfg.save_dir(), tray::RECENT_MAX);
+            let recents =
+                actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
             t.set_menu(Some(Box::new(tray::build_menu(
                 &self.cfg,
                 &recents,
@@ -146,7 +150,8 @@ impl Host {
         });
     }
 
-    /// Capture every monitor and spawn the overlay session.
+    /// Capture every monitor and spawn the overlay session — or, in
+    /// fullscreen mode, save the whole virtual screen with no overlay.
     fn trigger(&mut self, el: &ActiveEventLoop) {
         if self.overlay.is_some() {
             return; // a selection is already in progress
@@ -157,7 +162,28 @@ impl Host {
             Err(e) => return eprintln!("capture failed: {e:#}"),
         };
         let bounds = qs_core::virtual_bounds(&frames);
-        match Overlay::spawn(el, &frames, bounds) {
+        if self.cfg.capture_fullscreen() {
+            let px = self.proxy.clone();
+            let target = SaveTarget::Dir(self.cfg.save_dir());
+            let copy = self.cfg.copy_after_save;
+            std::thread::spawn(move || {
+                let res = actions::dispatch(
+                    frames,
+                    bounds,
+                    qs_overlay::Action::Save,
+                    &[],
+                    &target,
+                    false,
+                    None,
+                    copy,
+                )
+                .map_err(|e| e.to_string());
+                let _ = px.send_event(HostEvent::Done(res));
+            });
+            return;
+        }
+        let prefs = self.cfg.overlay_prefs();
+        match Overlay::spawn(el, &frames, bounds, &prefs) {
             Ok(ov) => {
                 self.frames = Some(frames);
                 self.overlay = Some(ov);
@@ -182,7 +208,10 @@ impl Host {
             tray::ID_SETTINGS => {
                 if self.settings.is_none() {
                     match Settings::open(el, &self.cfg) {
-                        Ok(s) => self.settings = Some(s),
+                        Ok(mut s) => {
+                            s.set_update(self.pending_update.as_ref().map(|r| r.version.clone()));
+                            self.settings = Some(s);
+                        }
                         Err(e) => eprintln!("settings: {e:#}"),
                     }
                 } else {
@@ -295,7 +324,7 @@ impl ApplicationHandler<HostEvent> for Host {
             }
         }
 
-        let recents = actions::recent_captures(&self.cfg.save_dir(), tray::RECENT_MAX);
+        let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
         let builder = tray_icon::TrayIcon::builder()
             .with_tooltip("Quickshort — region screenshot")
             .with_menu(Box::new(tray::build_menu(&self.cfg, &recents, None)));
@@ -323,12 +352,16 @@ impl ApplicationHandler<HostEvent> for Host {
             Err(e) => eprintln!("bad hotkey {:?}: {e}", self.cfg.hotkey),
         }
 
-        // background update check, at most once a day
+        // honor the retention policy, then the once-a-day update check
+        let gone = actions::cleanup_captures(&self.cfg.save_dir(), self.cfg.keep_days);
+        if gone > 0 {
+            eprintln!("retention sweep removed {gone} old captures");
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        if now.saturating_sub(self.cfg.last_update_check) > 24 * 3600 {
+        if self.cfg.auto_update && now.saturating_sub(self.cfg.last_update_check) > 24 * 3600 {
             self.check_updates(_el, false);
         }
     }
@@ -341,10 +374,16 @@ impl ApplicationHandler<HostEvent> for Host {
                 Ok(Some(rel)) => {
                     let v = rel.version.clone();
                     self.pending_update = Some(rel);
+                    if let Some(s) = &mut self.settings {
+                        s.set_update(Some(v.clone()));
+                    }
                     self.rebuild_menu();
                     self.toast_done(el, format!("v{v} available — Update from the menu"), true);
                 }
                 Ok(None) => {
+                    if let Some(s) = &mut self.settings {
+                        s.set_update(None);
+                    }
                     if manual {
                         self.toast_done(el, "You're up to date".to_string(), true);
                     }
@@ -374,6 +413,9 @@ impl ApplicationHandler<HostEvent> for Host {
                     self.toast_done(el, format!("Saved {name}"), true);
                 }
                 Ok(Outcome::Copied) => self.toast_done(el, "Copied to clipboard".to_string(), true),
+                Ok(Outcome::Shared(url)) => {
+                    self.toast_done(el, format!("Link copied — {url}"), true)
+                }
                 Ok(Outcome::TextCopied(n)) => {
                     self.toast_done(el, format!("Copied {n} chars"), true)
                 }
@@ -406,6 +448,12 @@ impl ApplicationHandler<HostEvent> for Host {
                     self.apply_cfg(el);
                 }
                 Some(SettingsEvent::HotkeyRecord) => self.suspend_hotkey(recording),
+                Some(SettingsEvent::CheckUpdates) => self.check_updates(el, true),
+                Some(SettingsEvent::InstallUpdate) => {
+                    if let Some(rel) = self.pending_update.take() {
+                        self.install_update(el, rel);
+                    }
+                }
                 Some(SettingsEvent::Closed) => {
                     self.suspend_hotkey(false);
                     self.settings = None;
@@ -423,19 +471,33 @@ impl ApplicationHandler<HostEvent> for Host {
             return;
         };
         if let OverlayEvent::Done(sel, action, annots) = out {
-            // OCR can take a beat — show a live toast before dispatching
-            if action == qs_overlay::Action::Ocr && self.toast.is_none() {
-                match Toast::open(el, "Extracting text…") {
-                    Ok(t) => self.toast = Some(t),
-                    Err(e) => eprintln!("toast: {e:#}"),
+            // slow actions get a live toast while the worker runs
+            if self.toast.is_none() {
+                let wait_msg = match action {
+                    qs_overlay::Action::Ocr => Some("Extracting text…"),
+                    qs_overlay::Action::Share => Some("Publishing link…"),
+                    _ => None,
+                };
+                if let Some(m) = wait_msg {
+                    match Toast::open(el, m) {
+                        Ok(t) => self.toast = Some(t),
+                        Err(e) => eprintln!("toast: {e:#}"),
+                    }
                 }
             }
             // stitch + encode off the UI thread; Done updates menu/toast later
             let px = self.proxy.clone();
             let target = SaveTarget::Dir(self.cfg.save_dir());
+            let share = (action == qs_overlay::Action::Share).then(|| {
+                self.share
+                    .get_or_insert_with(crate::share::ShareManager::new)
+                    .clone()
+            });
+            let copy = self.cfg.copy_after_save;
             std::thread::spawn(move || {
-                let res = actions::dispatch(frames, sel, action, &annots, &target, false)
-                    .map_err(|e| e.to_string());
+                let res =
+                    actions::dispatch(frames, sel, action, &annots, &target, false, share, copy)
+                        .map_err(|e| e.to_string());
                 let _ = px.send_event(HostEvent::Done(res));
             });
         }

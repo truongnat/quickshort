@@ -13,6 +13,8 @@ pub enum Action {
     Save,
     Copy,
     Ocr,
+    /// Publish the capture through an SSH tunnel and copy its link
+    Share,
 }
 
 /// Drawing tools — stay in the overlay and annotate the canvas.
@@ -59,6 +61,7 @@ const MAIN: &[Item] = &[
     Item::Act(Action::Save),
     Item::Act(Action::Copy),
     Item::Act(Action::Ocr),
+    Item::Act(Action::Share),
 ];
 
 const OPTS: &[Item] = &[
@@ -499,6 +502,19 @@ fn draw_icon(
             let d = seg_sdf(lx, ly, -5.75, -4.5, 4.5, -4.5)
                 .min(seg_sdf(lx, ly, -5.75, 0.0, 5.75, 0.0))
                 .min(seg_sdf(lx, ly, -5.75, 4.5, 1.5, 4.5));
+            let a = stroke(d, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Act(Action::Share) => {
+            // share: open-top box + arrow rising out of it
+            let d = seg_sdf(lx, ly, -5.0, -1.0, -5.0, 5.5)
+                .min(seg_sdf(lx, ly, -5.0, 5.5, 5.0, 5.5))
+                .min(seg_sdf(lx, ly, 5.0, 5.5, 5.0, -1.0))
+                .min(seg_sdf(lx, ly, 0.0, -6.5, 0.0, 0.5))
+                .min(seg_sdf(lx, ly, 0.0, -6.5, -3.0, -3.5))
+                .min(seg_sdf(lx, ly, 0.0, -6.5, 3.0, -3.5));
             let a = stroke(d, STROKE) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);

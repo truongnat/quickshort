@@ -7,6 +7,7 @@ mod actions;
 mod config;
 mod host;
 mod settings;
+mod share;
 mod toast;
 mod tray;
 mod update;
@@ -95,15 +96,27 @@ fn run_one_shot(args: Args) -> Result<()> {
         bounds.y
     );
 
-    let Some((sel, action, annots)) = qs_overlay::select_region(&frames, bounds)? else {
+    let cfg = config::Config::load();
+    let Some((sel, action, annots)) =
+        qs_overlay::select_region(&frames, bounds, &cfg.overlay_prefs())?
+    else {
         eprintln!("cancelled");
         return Ok(());
     };
 
     let target = match args.out {
         Some(p) => SaveTarget::File(p),
-        None => SaveTarget::Dir(config::Config::load().save_dir()),
+        None => SaveTarget::Dir(cfg.save_dir()),
     };
-    actions::dispatch(frames, sel, action, &annots, &target, true)?;
+    actions::dispatch(
+        frames,
+        sel,
+        action,
+        &annots,
+        &target,
+        true,
+        None,
+        cfg.copy_after_save,
+    )?;
     Ok(())
 }

@@ -10,9 +10,29 @@ use std::path::PathBuf;
 pub struct Config {
     /// Global hotkey in `global-hotkey` syntax, e.g. "CmdOrCtrl+Shift+S".
     pub hotkey: String,
+    /// "region" = overlay selection; "fullscreen" = grab every monitor and
+    /// save straight away with no overlay.
+    pub capture_mode: String,
     /// Screenshot folder override; `None` = `~/Pictures/quickshort`.
     pub save_dir: Option<PathBuf>,
     pub launch_at_login: bool,
+    /// Once-a-day release check from GitHub.
+    pub auto_update: bool,
+    /// How many recent captures the tray menu lists.
+    pub recent_max: u8,
+    /// Selection/highlight accent preset name (see `accent_rgb`).
+    pub accent: String,
+    /// Also put the PNG on the clipboard after a Save.
+    pub copy_after_save: bool,
+    /// Auto-delete captures older than this many days; 0 = keep forever.
+    pub keep_days: u32,
+    /// Overlay ⌘+key triggers — single chars (see `overlay_prefs`).
+    pub key_save: String,
+    pub key_copy: String,
+    pub key_ocr: String,
+    pub key_share: String,
+    /// ⌘+key = undo, ⌘⇧+key = redo — one field drives both.
+    pub key_undo: String,
     /// Unix ts of the last update check (auto-checks once a day).
     #[serde(default)]
     pub last_update_check: u64,
@@ -22,8 +42,19 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hotkey: "CmdOrCtrl+Shift+S".into(),
+            capture_mode: "region".into(),
             save_dir: None,
             launch_at_login: false,
+            auto_update: true,
+            recent_max: 8,
+            accent: "blue".into(),
+            copy_after_save: false,
+            keep_days: 0,
+            key_save: "s".into(),
+            key_copy: "c".into(),
+            key_ocr: "t".into(),
+            key_share: "l".into(),
+            key_undo: "z".into(),
             last_update_check: 0,
         }
     }
@@ -72,4 +103,46 @@ impl Config {
                 .join("quickshort")
         })
     }
+
+    pub fn capture_fullscreen(&self) -> bool {
+        self.capture_mode == "fullscreen"
+    }
+
+    /// Accent preset name -> 0xRRGGBB. Unknown names fall back to blue.
+    pub fn accent_rgb(&self) -> u32 {
+        accent_rgb(&self.accent)
+    }
+
+    /// Overlay prefs mapped from config (accent + ⌘+key triggers).
+    pub fn overlay_prefs(&self) -> qs_overlay::Prefs {
+        let key = |s: &str, d: char| s.chars().next().unwrap_or(d).to_ascii_lowercase();
+        qs_overlay::Prefs {
+            accent: self.accent_rgb(),
+            keys: qs_overlay::Keys {
+                save: key(&self.key_save, 's'),
+                copy: key(&self.key_copy, 'c'),
+                ocr: key(&self.key_ocr, 't'),
+                share: key(&self.key_share, 'l'),
+                undo: key(&self.key_undo, 'z'),
+            },
+        }
+    }
+}
+
+/// Accent presets offered by the Appearance page — (name, rgb).
+pub const ACCENTS: &[(&str, u32)] = &[
+    ("blue", 0x0A84FF),
+    ("purple", 0xBF5AF2),
+    ("pink", 0xFF375F),
+    ("orange", 0xFF9F0A),
+    ("green", 0x30D158),
+    ("gray", 0x98989D),
+];
+
+pub fn accent_rgb(name: &str) -> u32 {
+    ACCENTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, rgb)| *rgb)
+        .unwrap_or(ACCENTS[0].1)
 }

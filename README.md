@@ -30,10 +30,19 @@ downloads.
   toggle, a proper editing box (arrows, selection, ⌘A) and Vietnamese IME
   input. Shapes and text stay editable blocks: the Select tool picks, drags
   and deletes them
+- **Self-hosted link sharing** — one click saves the PNG on your own
+  machine and publishes it through `ssh -R` to
+  [tunnl.gg](https://tunnl.gg), no backend storage, no account. The URL is
+  stable per app (tied to an app-owned SSH key) and stays live while the
+  app runs
 - **Native OCR** — Vision `VNRecognizeTextRequest` on macOS,
   `Windows.Media.Ocr` on Windows; nothing ships in the binary
 - **Resident tray app** — menu-bar icon, global hotkey, launch at login,
-  recent captures, settings window, auto-update
+  recent captures, auto-update
+- **Settings window** — paged preferences (Capture, General, Shortcuts,
+  Appearance, Storage, About): fullscreen or region capture mode,
+  rebindable ⌘-action keys, accent color, retention policy for old
+  captures, one-click update install
 - **One-shot CLI** — `quickshort --capture` fits into scripts and window
   manager keybinds
 
@@ -94,8 +103,8 @@ quickshort --capture --out ~/shots/a.png
 | Context | Shortcut | Action |
 |---|---|---|
 | Anywhere | `⌘⇧S` (configurable) | Start a selection |
-| Selection made | `⌘S` / `⌘C` / `⌘T` | Save PNG / copy image / OCR → clipboard |
-| Selection made | `⌘Z` / `⌘⇧Z` | Undo / redo an edit |
+| Selection made | `⌘S` / `⌘C` / `⌘T` / `⌘L` (rebindable) | Save / copy / OCR / share link → clipboard |
+| Selection made | `⌘Z` / `⌘⇧Z` (rebindable key) | Undo / redo an edit |
 | Block selected | `Delete` / `⌫` / `Esc` | Remove block / deselect |
 | Text draft | `Enter` / `Esc` | Commit / discard |
 | Text draft | `⌘A`, `⇧`+arrows, `←→`, `⌫`/`⌦` | Select, move caret, delete |
@@ -103,13 +112,23 @@ quickshort --capture --out ~/shots/a.png
 
 The tray menu offers Capture Region, Recent Captures, Open Screenshots
 Folder, Check for Updates, Launch at Login, Settings and Quit. Settings
-(hotkey, save folder, launch at login) live in
-`~/.config/quickshort/config.toml`:
+also live in `~/.config/quickshort/config.toml`:
 
 ```toml
 hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax
+capture_mode = "region"        # or "fullscreen" — skip the overlay
 # save_dir = "~/Pictures/quickshort"
 launch_at_login = false
+auto_update = true
+recent_max = 8                 # entries in the tray menu
+accent = "blue"                # blue/purple/pink/orange/green/gray
+copy_after_save = false        # also put the PNG on the clipboard
+keep_days = 0                  # auto-delete captures older than N days
+key_save = "s"                 # overlay ⌘+key actions
+key_copy = "c"
+key_ocr = "t"
+key_share = "l"
+key_undo = "z"                 # ⌘z undo, ⌘⇧z redo
 ```
 
 The selection toolbar docks to whichever edge of the region has room.

@@ -17,6 +17,8 @@ pub enum SaveTarget {
 pub enum Outcome {
     Saved(PathBuf),
     Copied,
+    /// public URL of the shared file, already on the clipboard
+    Shared(String),
     /// chars of extracted text put on the clipboard
     TextCopied(usize),
     /// OCR ran but found no text
@@ -33,6 +35,8 @@ pub fn dispatch(
     annots: &[Annotation],
     target: &SaveTarget,
     wait_clipboard: bool,
+    share: Option<std::sync::Arc<crate::share::ShareManager>>,
+    copy_after_save: bool,
 ) -> Result<Outcome> {
     let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
         .join()
@@ -43,7 +47,27 @@ pub fn dispatch(
     qs_overlay::annotate_image(&mut img, sel, annots, scale);
 
     match action {
-        Action::Save => save(&img, target).map(Outcome::Saved),
+        Action::Save => {
+            let p = save(&img, target)?;
+            if copy_after_save {
+                copy_image_to_clipboard(&img, wait_clipboard);
+            }
+            Ok(Outcome::Saved(p))
+        }
+        Action::Share => {
+            let sm = share.context("link sharing needs the resident app")?;
+            // shared files live in their own subdir so they don't spam
+            // Recent Captures; the URL's token path is what keeps them
+            // private
+            let base = match target {
+                SaveTarget::Dir(d) => d.clone(),
+                SaveTarget::File(p) => p.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
+            };
+            let p = save(&img, &SaveTarget::Dir(base.join("shared")))?;
+            let url = sm.share(&p)?;
+            copy_text_to_clipboard(&url, wait_clipboard);
+            Ok(Outcome::Shared(url))
+        }
         Action::Copy => {
             copy_image_to_clipboard(&img, wait_clipboard);
             Ok(Outcome::Copied)
@@ -100,6 +124,60 @@ pub fn recent_captures(dir: &Path, n: usize) -> Vec<PathBuf> {
     v.sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).and_then(|m| m.modified()).ok()));
     v.truncate(n);
     v
+}
+
+/// (count, total bytes) of the top-level `quickshort-*.png` captures in
+/// `dir` — the Storage page reads this; `shared/` is a subdir so it's
+/// naturally excluded.
+pub fn storage_stats(dir: &Path) -> (usize, u64) {
+    let mut n = 0usize;
+    let mut bytes = 0u64;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "png")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("quickshort-"))
+            {
+                n += 1;
+                bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+    (n, bytes)
+}
+
+/// Delete captures older than `keep_days`; 0 disables the sweep. Returns
+/// how many files were removed. Runs on startup and when the retention
+/// setting changes.
+pub fn cleanup_captures(dir: &Path, keep_days: u32) -> usize {
+    if keep_days == 0 {
+        return 0;
+    }
+    let cutoff = std::time::Duration::from_secs(keep_days as u64 * 86_400);
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !(p.extension().is_some_and(|x| x == "png")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("quickshort-")))
+            {
+                continue;
+            }
+            let too_old = std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > cutoff);
+            if too_old && std::fs::remove_file(&p).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 /// Reveal `p` in the OS file manager / image viewer.

@@ -30,7 +30,43 @@ pub use annotate::{annotate_image, Annotation};
 pub use toolbar::{Action, Item, Tool};
 
 const MIN_SELECT: u32 = 3;
+/// Fallback accent — `Prefs::default` and the pixelate preview outline.
 const ACCENT: u32 = 0x0A84FF;
+
+/// User-tunable overlay behaviour — the host maps its config into this at
+/// `spawn` so a session never reads files itself.
+#[derive(Clone)]
+pub struct Prefs {
+    /// Selection frame, caret and highlight colour (0xRRGGBB).
+    pub accent: u32,
+    pub keys: Keys,
+}
+
+/// ⌘+key triggers for the toolbar-phase actions. Case is ignored; the undo
+/// key doubles as redo with ⇧ (⌘key / ⌘⇧key).
+#[derive(Clone)]
+pub struct Keys {
+    pub save: char,
+    pub copy: char,
+    pub ocr: char,
+    pub share: char,
+    pub undo: char,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            accent: ACCENT,
+            keys: Keys {
+                save: 's',
+                copy: 'c',
+                ocr: 't',
+                share: 'l',
+                undo: 'z',
+            },
+        }
+    }
+}
 
 /// Largest char boundary ≤ `i` — guards stale byte indexes after edits.
 fn floor_boundary(text: &str, i: usize) -> usize {
@@ -109,13 +145,19 @@ pub struct Overlay {
 impl Overlay {
     /// Composite `frames` and spawn one overlay window per monitor.
     /// `bounds` = virtual screen bounds (see `qs_core::virtual_bounds`).
-    pub fn spawn(el: &ActiveEventLoop, frames: &[CapturedFrame], bounds: Rect) -> Result<Self> {
+    pub fn spawn(
+        el: &ActiveEventLoop,
+        frames: &[CapturedFrame],
+        bounds: Rect,
+        prefs: &Prefs,
+    ) -> Result<Self> {
         let (bright, dim, cscale) = composite(frames, bounds);
         let mut s = Session {
             bounds,
             cscale,
             bright,
             dim,
+            prefs: prefs.clone(),
             ..Session::default_state()
         };
         s.spawn_windows(el)?;
@@ -143,16 +185,18 @@ impl Overlay {
 pub fn select_region(
     frames: &[CapturedFrame],
     bounds: Rect,
+    prefs: &Prefs,
 ) -> Result<Option<(Rect, Action, Vec<Annotation>)>> {
     struct CliRunner<'a> {
         frames: &'a [CapturedFrame],
         bounds: Rect,
+        prefs: &'a Prefs,
         ov: Option<Overlay>,
         out: Option<Option<(Rect, Action, Vec<Annotation>)>>,
     }
     impl ApplicationHandler for CliRunner<'_> {
         fn resumed(&mut self, el: &ActiveEventLoop) {
-            match Overlay::spawn(el, self.frames, self.bounds) {
+            match Overlay::spawn(el, self.frames, self.bounds, self.prefs) {
                 Ok(ov) => self.ov = Some(ov),
                 Err(e) => {
                     eprintln!("overlay failed: {e:#}");
@@ -183,6 +227,7 @@ pub fn select_region(
     let mut runner = CliRunner {
         frames,
         bounds,
+        prefs,
         ov: None,
         out: None,
     };
@@ -333,6 +378,8 @@ struct Session {
     /// index into annotate::TEXT_SIZES for the text tool
     font_size: usize,
     mods: winit::keyboard::ModifiersState,
+    /// accent + action keys from app config
+    prefs: Prefs,
     result: Option<(Rect, Action, Vec<Annotation>)>,
     done: bool,
     dirty: bool,
@@ -368,6 +415,7 @@ impl Session {
             bold: false,
             font_size: annotate::TEXT_SIZE_DEFAULT,
             mods: winit::keyboard::ModifiersState::empty(),
+            prefs: Prefs::default(),
             result: None,
             done: false,
             dirty: false,
@@ -897,7 +945,7 @@ impl Session {
                     (local.right() as f64 * scale) as i32,
                     (local.bottom() as f64 * scale) as i32,
                 );
-                frame_rect(&mut buf, sw, sh, lx0, ly0, lx1, ly1, b, ACCENT);
+                frame_rect(&mut buf, sw, sh, lx0, ly0, lx1, ly1, b, self.prefs.accent);
             }
         }
         // committed annotation layer (physical-res ARGB, 1:1 with buf) —
@@ -1005,9 +1053,10 @@ impl Session {
                             let mix = |s: u32, d: u32| {
                                 (s as f64 * f + d as f64 * (1.0 - f)).round() as u32
                             };
-                            buf[i] = mix((ACCENT >> 16) & 0xFF, (d >> 16) & 0xFF) << 16
-                                | mix((ACCENT >> 8) & 0xFF, (d >> 8) & 0xFF) << 8
-                                | mix(ACCENT & 0xFF, d & 0xFF);
+                            let acc = self.prefs.accent;
+                            buf[i] = mix((acc >> 16) & 0xFF, (d >> 16) & 0xFF) << 16
+                                | mix((acc >> 8) & 0xFF, (d >> 8) & 0xFF) << 8
+                                | mix(acc & 0xFF, d & 0xFF);
                         }
                     }
                 }
@@ -1064,7 +1113,7 @@ impl Session {
                     (l.right() as f64 * scale) as i32,
                     (l.bottom() as f64 * scale) as i32,
                 );
-                frame_rect(&mut buf, sw, sh, x0, y0, x1, y1, b, ACCENT);
+                frame_rect(&mut buf, sw, sh, x0, y0, x1, y1, b, self.prefs.accent);
             }
         }
         if let Some(tb) = &self.toolbar {
@@ -1506,25 +1555,31 @@ impl Session {
                     return;
                 }
                 // ⌘/Ctrl shortcuts in the toolbar phase — same actions as
-                // the buttons; T = extract text (OCR) straight to clipboard
+                // the buttons. Keys come from prefs; undo's ⇧-variant = redo.
                 if self.sel.is_some() && (self.mods.super_key() || self.mods.control_key()) {
                     if let Key::Character(c) = &event.logical_key {
-                        match c.as_str() {
-                            "z" => {
-                                self.undo();
-                                return;
-                            }
-                            "Z" => {
+                        let Some(ch) = c.chars().next().map(|c| c.to_ascii_lowercase()) else {
+                            return;
+                        };
+                        if ch == self.prefs.keys.undo {
+                            if self.mods.shift_key() {
                                 self.redo();
-                                return;
+                            } else {
+                                self.undo();
                             }
-                            _ => {}
+                            return;
                         }
-                        let act = match c.as_str() {
-                            "s" | "S" => Some(Action::Save),
-                            "c" | "C" => Some(Action::Copy),
-                            "t" | "T" => Some(Action::Ocr),
-                            _ => None,
+                        let k = &self.prefs.keys;
+                        let act = if ch == k.save {
+                            Some(Action::Save)
+                        } else if ch == k.copy {
+                            Some(Action::Copy)
+                        } else if ch == k.ocr {
+                            Some(Action::Ocr)
+                        } else if ch == k.share {
+                            Some(Action::Share)
+                        } else {
+                            None
                         };
                         if let Some(a) = act {
                             self.finish(Some(a));

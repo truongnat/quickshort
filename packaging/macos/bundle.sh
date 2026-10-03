@@ -15,7 +15,16 @@ VER="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/crates/qs-app/Cargo.toml" | he
 sed "s/__VERSION__/$VER/g" "$ROOT/packaging/macos/Info.plist" > "$APP/Contents/Info.plist"
 cp "$ROOT/packaging/macos/Quickshort.icns" "$APP/Contents/Resources/Quickshort.icns"
 # stable self-signed identity if present (TCC grants survive rebuilds),
-# ad-hoc fallback
-codesign --force --sign "${SIGNING_IDENTITY:--}" "$APP" 2>/dev/null \
+# ad-hoc fallback — auto-detect the `quickshort` cert when the env var
+# isn't set so a bare `./bundle.sh` still gets the stable identity
+IDENT="${SIGNING_IDENTITY:-}"
+if [ -z "$IDENT" ] && security find-identity -v -p codesigning | grep -q '"quickshort"'; then
+    IDENT=quickshort
+fi
+codesign --force --sign "${IDENT:--}" "$APP" 2>/dev/null \
   || codesign --force --sign - "$APP" 2>/dev/null || true
+# the LaunchAgent runs the raw release binary — same cert AND identifier
+# as the .app or the TCC designated requirement splits into two grants
+codesign --force --sign "${IDENT:--}" --identifier ai.quickshort \
+  "$TARGET/quickshort" 2>/dev/null || true
 echo "built $APP"
