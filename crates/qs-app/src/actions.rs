@@ -37,10 +37,10 @@ pub fn dispatch(
     let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
         .join()
         .expect("stitch worker panicked");
-    let Some(mut img) = img else {
+    let Some((mut img, scale)) = img else {
         anyhow::bail!("selection {sel:?} covers no monitor");
     };
-    qs_overlay::annotate_image(&mut img, sel, annots);
+    qs_overlay::annotate_image(&mut img, sel, annots, scale);
 
     match action {
         Action::Save => save(&img, target).map(Outcome::Saved),

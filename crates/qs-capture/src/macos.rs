@@ -19,6 +19,12 @@ pub struct ScreenCaptureKit;
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+    /// The display's current mode carries the real framebuffer size
+    /// (`CGDisplayPixelsWide` reports scaled-down values on Retina).
+    fn CGDisplayCopyDisplayMode(display: u32) -> *mut std::ffi::c_void;
+    fn CGDisplayModeGetPixelWidth(mode: *mut std::ffi::c_void) -> usize;
+    fn CGDisplayModeGetPixelHeight(mode: *mut std::ffi::c_void) -> usize;
+    fn CFRelease(cf: *mut std::ffi::c_void);
 }
 
 impl ScreenCapture for ScreenCaptureKit {
@@ -34,9 +40,29 @@ impl ScreenCapture for ScreenCaptureKit {
                 .with_excluding_windows(&[])
                 .build()
                 .context("content filter")?;
+            // `display.width()` is points — asking SCK for that size gives a
+            // logical-res image (blurry on Retina). Request framebuffer pixels.
+            let (pw, ph) = unsafe {
+                let mode = CGDisplayCopyDisplayMode(display.display_id());
+                let d = if mode.is_null() {
+                    (0, 0)
+                } else {
+                    let d = (
+                        CGDisplayModeGetPixelWidth(mode),
+                        CGDisplayModeGetPixelHeight(mode),
+                    );
+                    CFRelease(mode.cast());
+                    d
+                };
+                if d.0 > 0 && d.1 > 0 {
+                    (d.0 as u32, d.1 as u32)
+                } else {
+                    (display.width(), display.height())
+                }
+            };
             let config = SCStreamConfiguration::new()
-                .with_width(display.width())
-                .with_height(display.height())
+                .with_width(pw)
+                .with_height(ph)
                 .with_shows_cursor(false)
                 .with_pixel_format(PixelFormat::BGRA);
             let image = SCScreenshotManager::capture_image(&filter, &config)

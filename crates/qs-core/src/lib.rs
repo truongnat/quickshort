@@ -136,18 +136,26 @@ pub fn virtual_bounds(frames: &[CapturedFrame]) -> Rect {
 }
 
 /// Crop `selection` (virtual logical coords) out of `frames` and stitch into one
-/// image.
+/// image at **physical** resolution.
 ///
-/// Output canvas size = selection size in **logical** pixels, i.e. everything is
-/// normalized to scale 1.0. Hi-DPI regions are downsampled — predictable output
-/// size was preferred over keeping per-monitor native resolution.
+/// Returns `(image, out_scale)` where `out_scale` is the densest covered
+/// monitor's scale factor: `image = selection * out_scale`. Lower-density
+/// regions are upscaled only when a selection spans mixed-DPI monitors — a
+/// single-monitor selection always comes out at that monitor's native res.
 ///
 /// Returns `None` when the selection covers no monitor area.
-pub fn stitch(frames: &[CapturedFrame], selection: Rect) -> Option<RgbaImage> {
+pub fn stitch(frames: &[CapturedFrame], selection: Rect) -> Option<(RgbaImage, f64)> {
     if selection.is_empty() {
         return None;
     }
-    let mut out = RgbaImage::new(selection.w, selection.h);
+    let out_scale = frames
+        .iter()
+        .filter(|f| selection.intersection(&f.geometry.logical_rect()).is_some())
+        .map(|f| f.geometry.scale)
+        .fold(1.0_f64, f64::max);
+    let ow = (selection.w as f64 * out_scale).round().max(1.0) as u32;
+    let oh = (selection.h as f64 * out_scale).round().max(1.0) as u32;
+    let mut out = RgbaImage::new(ow, oh);
     let mut covered = false;
 
     for frame in frames {
@@ -174,18 +182,19 @@ pub fn stitch(frames: &[CapturedFrame], selection: Rect) -> Option<RgbaImage> {
         }
 
         let crop = imageops::crop_imm(&frame.pixels, px, py, pw, ph).to_image();
-        let dx = (inter.x - selection.x) as i64;
-        let dy = (inter.y - selection.y) as i64;
-        if (s - 1.0).abs() < f64::EPSILON && pw == inter.w && ph == inter.h {
+        let dw = (inter.w as f64 * out_scale).round() as u32;
+        let dh = (inter.h as f64 * out_scale).round() as u32;
+        let dx = ((inter.x - selection.x) as f64 * out_scale).round() as i64;
+        let dy = ((inter.y - selection.y) as f64 * out_scale).round() as i64;
+        if pw == dw && ph == dh {
             imageops::overlay(&mut out, &crop, dx, dy);
         } else {
-            let normalized =
-                imageops::resize(&crop, inter.w, inter.h, imageops::FilterType::Triangle);
-            imageops::overlay(&mut out, &normalized, dx, dy);
+            let resized = imageops::resize(&crop, dw, dh, imageops::FilterType::Triangle);
+            imageops::overlay(&mut out, &resized, dx, dy);
         }
     }
 
-    covered.then_some(out)
+    covered.then_some((out, out_scale))
 }
 
 #[cfg(test)]
@@ -217,7 +226,7 @@ mod tests {
     #[test]
     fn stitch_single_monitor() {
         let frames = vec![frame(0, 0, 100, 100, 1.0, RED)];
-        let out = stitch(&frames, Rect::new(10, 10, 40, 30)).unwrap();
+        let (out, _) = stitch(&frames, Rect::new(10, 10, 40, 30)).unwrap();
         assert_eq!((out.width(), out.height()), (40, 30));
         assert_eq!(out.get_pixel(0, 0).0, RED);
         assert_eq!(out.get_pixel(39, 29).0, RED);
@@ -231,7 +240,7 @@ mod tests {
             frame(100, 0, 100, 100, 1.0, GREEN),
         ];
         // selection crosses the boundary: x in [50,150)
-        let out = stitch(&frames, Rect::new(50, 20, 100, 50)).unwrap();
+        let (out, _) = stitch(&frames, Rect::new(50, 20, 100, 50)).unwrap();
         assert_eq!((out.width(), out.height()), (100, 50));
         assert_eq!(out.get_pixel(0, 0).0, RED); // left half from A
         assert_eq!(out.get_pixel(49, 25).0, RED);
@@ -246,22 +255,23 @@ mod tests {
             frame(0, 0, 100, 100, 1.0, RED),
             frame(-100, 0, 100, 100, 1.0, GREEN),
         ];
-        let out = stitch(&frames, Rect::new(-50, 0, 100, 100)).unwrap();
+        let (out, _) = stitch(&frames, Rect::new(-50, 0, 100, 100)).unwrap();
         assert_eq!(out.get_pixel(0, 0).0, GREEN); // x∈[-50,0) from B
         assert_eq!(out.get_pixel(50, 0).0, RED); // x∈[0,50) from A
     }
 
     #[test]
-    fn stitch_normalizes_high_dpi() {
-        // mon A scale 1 (RED) | mon B scale 2: logical 100x100 -> 200x200 phys (BLUE)
+    fn stitch_keeps_high_dpi_res() {
+        // mon A scale 1 (RED) | mon B scale 2: output is at the denser scale
         let frames = vec![
             frame(0, 0, 100, 100, 1.0, RED),
             frame(100, 0, 100, 100, 2.0, BLUE),
         ];
-        let out = stitch(&frames, Rect::new(50, 0, 100, 100)).unwrap();
-        assert_eq!((out.width(), out.height()), (100, 100));
-        assert_eq!(out.get_pixel(25, 50).0, RED);
-        assert_eq!(out.get_pixel(75, 50).0, BLUE); // downscaled but correct half
+        let (out, s) = stitch(&frames, Rect::new(50, 0, 100, 100)).unwrap();
+        assert_eq!(s, 2.0);
+        assert_eq!((out.width(), out.height()), (200, 200));
+        assert_eq!(out.get_pixel(50, 100).0, RED); // upscaled half from A
+        assert_eq!(out.get_pixel(150, 100).0, BLUE); // native-res half from B
     }
 
     #[test]
@@ -271,7 +281,7 @@ mod tests {
             frame(0, 0, 100, 100, 1.0, RED),
             frame(0, 100, 100, 100, 1.0, GREEN),
         ];
-        let out = stitch(&frames, Rect::new(0, 50, 100, 100)).unwrap();
+        let (out, _) = stitch(&frames, Rect::new(0, 50, 100, 100)).unwrap();
         assert_eq!(out.get_pixel(50, 10).0, RED);
         assert_eq!(out.get_pixel(50, 60).0, GREEN);
     }
@@ -290,7 +300,7 @@ mod tests {
             frame(0, 0, 100, 100, 1.0, RED),
             frame(110, 0, 100, 100, 1.0, BLUE),
         ];
-        let out = stitch(&frames, Rect::new(90, 0, 40, 10)).unwrap();
+        let (out, _) = stitch(&frames, Rect::new(90, 0, 40, 10)).unwrap();
         assert_eq!(out.get_pixel(5, 5).0, RED); // x=95 <100
         assert_eq!(out.get_pixel(15, 5).0, [0, 0, 0, 0]); // x=105 in the gap
         assert_eq!(out.get_pixel(25, 5).0, BLUE); // x=115 >=110

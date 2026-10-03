@@ -50,9 +50,10 @@ impl Overlay {
     /// Composite `frames` and spawn one overlay window per monitor.
     /// `bounds` = virtual screen bounds (see `qs_core::virtual_bounds`).
     pub fn spawn(el: &ActiveEventLoop, frames: &[CapturedFrame], bounds: Rect) -> Result<Self> {
-        let (bright, dim) = composite(frames, bounds);
+        let (bright, dim, cscale) = composite(frames, bounds);
         let mut s = Session {
             bounds,
+            cscale,
             bright,
             dim,
             ..Session::default_state()
@@ -129,26 +130,46 @@ pub fn select_region(
     Ok(runner.out.flatten())
 }
 
-/// Blit all frames into one virtual-space canvas (0xRRGGBB), downscaling
-/// hi-DPI frames to logical size for display.
-fn composite(frames: &[CapturedFrame], bounds: Rect) -> (Vec<u32>, Vec<u32>) {
-    let (w, h) = (bounds.w as usize, bounds.h as usize);
+/// Blit all frames into one virtual-space canvas (0xRRGGBB) at the densest
+/// monitor's pixel scale — `canvas = logical * cscale`, so a Retina backdrop
+/// stays sharp on the physical-res surface instead of upscaling a logical
+/// buffer. Returns (bright, dimmed, cscale).
+fn composite(frames: &[CapturedFrame], bounds: Rect) -> (Vec<u32>, Vec<u32>, f64) {
+    let cscale = frames
+        .iter()
+        .map(|f| f.geometry.scale)
+        .fold(1.0_f64, f64::max);
+    let (w, h) = (
+        (bounds.w as f64 * cscale).round() as usize,
+        (bounds.h as f64 * cscale).round() as usize,
+    );
     let mut canvas = vec![0u32; w * h];
     for f in frames {
         let mon = f.geometry.logical_rect();
-        let img = if (f.geometry.scale - 1.0).abs() > f64::EPSILON {
-            imageops::resize(&f.pixels, mon.w, mon.h, imageops::FilterType::Triangle)
+        // this frame's region in canvas px
+        let (dx0, dy0) = (
+            ((mon.x - bounds.x) as f64 * cscale).round() as i64,
+            ((mon.y - bounds.y) as f64 * cscale).round() as i64,
+        );
+        let (dw, dh) = (
+            (mon.w as f64 * cscale).round() as u32,
+            (mon.h as f64 * cscale).round() as u32,
+        );
+        let resized;
+        let img = if f.pixels.width() == dw && f.pixels.height() == dh {
+            &f.pixels
         } else {
-            f.pixels.clone()
+            resized = imageops::resize(&f.pixels, dw, dh, imageops::FilterType::Triangle);
+            &resized
         };
         for row in 0..img.height() {
-            let dy = mon.y - bounds.y + row as i32;
-            if dy < 0 || dy >= bounds.h as i32 {
+            let dy = dy0 + row as i64;
+            if dy < 0 || dy >= h as i64 {
                 continue;
             }
             for col in 0..img.width() {
-                let dx = mon.x - bounds.x + col as i32;
-                if dx < 0 || dx >= bounds.w as i32 {
+                let dx = dx0 + col as i64;
+                if dx < 0 || dx >= w as i64 {
                     continue;
                 }
                 let p = img.get_pixel(col, row);
@@ -158,7 +179,7 @@ fn composite(frames: &[CapturedFrame], bounds: Rect) -> (Vec<u32>, Vec<u32>) {
         }
     }
     let dim = canvas.iter().map(|&p| (p & 0xFEFEFE) >> 1).collect();
-    (canvas, dim)
+    (canvas, dim, cscale)
 }
 
 struct WinCtx {
@@ -176,6 +197,8 @@ type PixBackup = (Rect, Vec<u32>);
 
 struct Session {
     bounds: Rect,
+    /// canvas px per logical px (= densest monitor's scale)
+    cscale: f64,
     bright: Vec<u32>,
     dim: Vec<u32>,
     anchor: Option<Point>, // drag start, virtual coords
@@ -204,6 +227,7 @@ impl Session {
     fn default_state() -> Self {
         Self {
             bounds: Rect::default(),
+            cscale: 1.0,
             bright: Vec::new(),
             dim: Vec::new(),
             anchor: None,
@@ -224,6 +248,16 @@ impl Session {
             dirty: false,
             wins: Vec::new(),
         }
+    }
+
+    /// Logical virtual rect -> canvas px rect (canvas = logical * cscale).
+    fn canvas_rect(&self, r: Rect) -> Rect {
+        Rect::new(
+            ((r.x - self.bounds.x) as f64 * self.cscale).round() as i32,
+            ((r.y - self.bounds.y) as f64 * self.cscale).round() as i32,
+            (r.w as f64 * self.cscale).round().max(1.0) as u32,
+            (r.h as f64 * self.cscale).round().max(1.0) as u32,
+        )
     }
 
     /// Monitor logical rect holding the selection's bottom-right corner —
@@ -301,12 +335,13 @@ impl Session {
             return;
         }
         if let Annotation::Pixelate(r) = an {
-            let rc = r.translated(-self.bounds.x, -self.bounds.y);
+            let rc = self.canvas_rect(r);
             let backup = annotate::pixelate_canvas(
                 &mut self.bright,
-                self.bounds.w as usize,
-                self.bounds.h as usize,
+                (self.bounds.w as f64 * self.cscale).round() as usize,
+                (self.bounds.h as f64 * self.cscale).round() as usize,
                 rc,
+                (annotate::PIX_BLOCK as f64 * self.cscale).round().max(2.0) as i32,
             );
             self.backups.push((rc, backup));
         } else {
@@ -370,8 +405,8 @@ impl Session {
             self.backups.pop().inspect(|(rc, back)| {
                 annotate::restore_canvas(
                     &mut self.bright,
-                    self.bounds.w as usize,
-                    self.bounds.h as usize,
+                    (self.bounds.w as f64 * self.cscale).round() as usize,
+                    (self.bounds.h as f64 * self.cscale).round() as usize,
                     *rc,
                     back,
                 );
@@ -395,9 +430,10 @@ impl Session {
             if let Some((rc, _)) = backup {
                 let nb = annotate::pixelate_canvas(
                     &mut self.bright,
-                    self.bounds.w as usize,
-                    self.bounds.h as usize,
+                    (self.bounds.w as f64 * self.cscale).round() as usize,
+                    (self.bounds.h as f64 * self.cscale).round() as usize,
                     rc,
+                    (annotate::PIX_BLOCK as f64 * self.cscale).round().max(2.0) as i32,
                 );
                 self.backups.push((rc, nb));
             }
@@ -421,8 +457,8 @@ impl Session {
         for (rc, back) in self.backups.drain(..) {
             annotate::restore_canvas(
                 &mut self.bright,
-                self.bounds.w as usize,
-                self.bounds.h as usize,
+                (self.bounds.w as f64 * self.cscale).round() as usize,
+                (self.bounds.h as f64 * self.cscale).round() as usize,
                 rc,
                 &back,
             );
@@ -466,15 +502,23 @@ impl Session {
             return;
         };
         let (sw, sh) = (sw.get() as usize, sh.get() as usize);
-        // Surface coords are *physical* px; canvas/virtual coords are *logical*
-        // px — scale_factor converts between them (2.0 on Retina).
+        // Surface coords and canvas coords are both *physical* px — the
+        // canvas is `logical * cscale`; the window surface is `logical *
+        // scale_factor` (2.0 on Retina). `k` converts between them.
         let scale = wctx.win.scale_factor();
-        // canvas offset of this monitor; canvas coords vs window coords
-        let (ox, oy) = (wctx.vrect.x - self.bounds.x, wctx.vrect.y - self.bounds.y);
-        let (cw, ch) = (self.bounds.w as i32, self.bounds.h as i32);
-        // physical (x,y) -> canvas (cx, cy); precompute per-row/col mapping
-        let colmap: Vec<i32> = (0..sw).map(|x| ox + (x as f64 / scale) as i32).collect();
-        let rowmap: Vec<i32> = (0..sh).map(|y| oy + (y as f64 / scale) as i32).collect();
+        let k = self.cscale / scale;
+        // canvas offset of this monitor (canvas px)
+        let (oxc, oyc) = (
+            (wctx.vrect.x - self.bounds.x) as f64 * self.cscale,
+            (wctx.vrect.y - self.bounds.y) as f64 * self.cscale,
+        );
+        let (cw, ch) = (
+            (self.bounds.w as f64 * self.cscale).round() as i32,
+            (self.bounds.h as f64 * self.cscale).round() as i32,
+        );
+        // surface (x,y) -> canvas (cx, cy); precompute per-row/col mapping
+        let colmap: Vec<i32> = (0..sw).map(|x| (oxc + x as f64 * k) as i32).collect();
+        let rowmap: Vec<i32> = (0..sh).map(|y| (oyc + y as f64 * k) as i32).collect();
         // Expand each canvas row to physical width once, then memcpy it into
         // every physical row that maps to it (consecutive rows share cy).
         let mut rowbuf: Vec<u32> = Vec::new();

@@ -23,7 +23,7 @@ pub const PALETTE: [u32; 8] = [
 pub const SIZES: [f64; 3] = [2.0, 3.6, 6.0];
 pub const MARKER_SIZES: [f64; 3] = [6.0, 9.5, 14.0];
 const MARKER_A: f64 = 0.42;
-const PIX_BLOCK: i32 = 8; // pixelate block, logical px
+pub const PIX_BLOCK: i32 = 8; // pixelate block, logical px
 const ACCENT: u32 = 0x0A84FF; // pixelate drag-preview outline
 
 #[derive(Clone)]
@@ -294,14 +294,14 @@ pub fn annots_bbox(annots: &[Annotation]) -> Option<Rect> {
 
 /// Box-average pixelate `r` (canvas coords) of a 0xRRGGBB canvas; returns the
 /// overwritten pixels so the op can be undone.
-pub fn pixelate_canvas(canvas: &mut [u32], cw: usize, ch: usize, r: Rect) -> Vec<u32> {
+pub fn pixelate_canvas(canvas: &mut [u32], cw: usize, ch: usize, r: Rect, block: i32) -> Vec<u32> {
     let (x0, y0) = (r.x.max(0) as usize, r.y.max(0) as usize);
     let (x1, y1) = ((r.right() as usize).min(cw), (r.bottom() as usize).min(ch));
     let mut backup = Vec::with_capacity((x1 - x0) * (y1 - y0));
     for y in y0..y1 {
         backup.extend_from_slice(&canvas[y * cw + x0..y * cw + x1]);
     }
-    let b = PIX_BLOCK as usize;
+    let b = block as usize;
     for by in (y0..y1).step_by(b) {
         for bx in (x0..x1).step_by(b) {
             let (bw, bh) = (b.min(x1 - bx), b.min(y1 - by));
@@ -338,7 +338,7 @@ pub fn restore_canvas(canvas: &mut [u32], cw: usize, ch: usize, r: Rect, backup:
 }
 
 /// Pixelate a rect (image coords) of the RGBA output image.
-fn pixelate_rgba(img: &mut RgbaImage, r: Rect) {
+fn pixelate_rgba(img: &mut RgbaImage, r: Rect, block: i32) {
     let (w, h) = (img.width() as i32, img.height() as i32);
     let (x0, y0) = (r.x.max(0), r.y.max(0));
     let (x1, y1) = (r.right().min(w), r.bottom().min(h));
@@ -347,9 +347,9 @@ fn pixelate_rgba(img: &mut RgbaImage, r: Rect) {
     }
     let stride = img.width() as usize * 4;
     let raw = img.as_mut();
-    for by in (y0..y1).step_by(PIX_BLOCK as usize) {
-        for bx in (x0..x1).step_by(PIX_BLOCK as usize) {
-            let (bw, bh) = (PIX_BLOCK.min(x1 - bx), PIX_BLOCK.min(y1 - by));
+    for by in (y0..y1).step_by(block as usize) {
+        for bx in (x0..x1).step_by(block as usize) {
+            let (bw, bh) = (block.min(x1 - bx), block.min(y1 - by));
             let (mut s, mut n) = ([0u64; 4], 0u64);
             for y in by..by + bh {
                 for x in bx..bx + bw {
@@ -376,9 +376,10 @@ fn pixelate_rgba(img: &mut RgbaImage, r: Rect) {
 }
 
 /// Bake annotations into the stitched image. `annots` are in virtual logical
-/// coords; the image covers `sel` at logical res, so the offset is `sel`'s
-/// origin. Pixel edits apply in list order, vector strokes composite on top.
-pub fn annotate_image(img: &mut RgbaImage, sel: Rect, annots: &[Annotation]) {
+/// coords; the image covers `sel` at `sel * scale` physical res, so strokes
+/// rasterize through `render_phys` at native density (no upsample blur).
+/// Pixel edits apply in list order, vector strokes composite on top.
+pub fn annotate_image(img: &mut RgbaImage, sel: Rect, annots: &[Annotation], scale: f64) {
     if annots.is_empty() {
         return;
     }
@@ -404,15 +405,26 @@ pub fn annotate_image(img: &mut RgbaImage, sel: Rect, annots: &[Annotation]) {
             Annotation::Pixelate(r) => {
                 flush(&layer, img);
                 layer.fill(0);
-                pixelate_rgba(img, r.translated(-sel.x, -sel.y));
+                let img_rect = Rect::new(
+                    ((r.x - sel.x) as f64 * scale).round() as i32,
+                    ((r.y - sel.y) as f64 * scale).round() as i32,
+                    (r.w as f64 * scale).round().max(1.0) as u32,
+                    (r.h as f64 * scale).round().max(1.0) as u32,
+                );
+                pixelate_rgba(
+                    img,
+                    img_rect,
+                    (PIX_BLOCK as f64 * scale).round().max(2.0) as i32,
+                );
             }
-            v => v.render_into(
+            v => v.render_phys(
                 &mut ArgbLayer {
                     buf: &mut layer,
                     w,
                     h,
                 },
-                Point::new(sel.x, sel.y),
+                sel,
+                scale,
             ),
         }
     }
