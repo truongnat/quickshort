@@ -11,144 +11,139 @@
 <link rel="icon" type="image/png" href="assets/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<canvas id="stars" aria-hidden="true"></canvas>
-<div class="bg-grid" aria-hidden="true"></div>
-
-<div class="nebula" aria-hidden="true">
-  <div class="neb n1"></div>
-  <div class="neb n2"></div>
-  <div class="neb n3"></div>
-</div>
-
 <nav class="nav">
-  <a class="nav-brand" href="#top">
-    <img src="assets/icon.png" alt="Quickshort logo" width="26" height="26">
-    <span>Quickshort</span>
-  </a>
-  <div class="nav-links">
-    <a href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">GitHub</a>
-    <a class="btn btn-small" href="#download">Download</a>
+  <div class="nav-inner">
+    <a class="nav-brand" href="#top">
+      <img src="assets/icon.png" alt="Quickshort logo" width="24" height="24">
+      <span>Quickshort</span>
+    </a>
+    <div class="nav-links">
+      <a href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-nav" href="#download">Download</a>
+    </div>
   </div>
 </nav>
 
 <header class="hero" id="top">
-  <div class="hero-copy">
-    <p class="eyebrow"><span class="eyebrow-dot"></span>NATIVE SCREENSHOT TOOL</p>
-    <h1 class="headline" aria-label="Select. Snip. Ship.">
-      <span class="line"><span>Select.</span> <span>Snip.</span> <span class="accent">Ship.</span></span>
+  <div class="hero-inner">
+    <p class="chip"><span class="chip-dot"></span>NATIVE SCREENSHOT TOOL</p>
+    <h1 class="headline">
+      <span class="line"><span>Select.</span> <span>Snip.</span> <span>Ship.</span></span>
     </h1>
     <p class="sub">Pixel-perfect region captures across every monitor, with annotations and native OCR. Pure Rust, no Electron.</p>
     <div class="cta-row">
-      <a class="btn btn-primary magnetic" id="heroCta" href="#download">Download</a>
-      <a class="btn btn-ghost magnetic" href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">View on GitHub</a>
+      <a class="btn btn-primary" id="heroCta" href="#download">Download</a>
+      <a class="btn btn-ghost" href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">View on GitHub</a>
     </div>
   </div>
 
-  <div class="grid-floor" aria-hidden="true"></div>
-  <div class="hero-stage" id="stage">
-    <div class="hero-glow" aria-hidden="true"></div>
-    <div class="float-wrap" id="floatWrap">
-    <div class="shot-card" id="shotCard">
-      <img src="assets/screenshot.png" alt="Quickshort overlay mid-selection with annotation toolbar" width="880">
-      <div class="crop-corner tl"></div>
-      <div class="crop-corner tr"></div>
-      <div class="crop-corner bl"></div>
-      <div class="crop-corner br"></div>
-      <div class="scanline"></div>
-      <div class="drag-sel" id="dragSel"></div>
-    </div>
-    </div>
+  <div class="hero-frame">
+    <span class="cross tl">+</span><span class="cross tr">+</span>
+    <span class="cross bl">+</span><span class="cross br">+</span>
+    <img src="assets/screenshot.png" alt="Quickshort overlay mid-selection with annotation toolbar" width="960">
   </div>
 </header>
 
-<div class="marquee" aria-hidden="true">
-  <div class="marquee-track">
-    <span>RETINA-NATIVE&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;MULTI-MONITOR&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;ANNOTATIONS&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;NATIVE OCR&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;ZERO ELECTRON&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;PURE RUST&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;</span>
-    <span>RETINA-NATIVE&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;MULTI-MONITOR&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;ANNOTATIONS&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;NATIVE OCR&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;ZERO ELECTRON&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;PURE RUST&nbsp;&nbsp;<i class="spark">✦</i>&nbsp;&nbsp;</span>
+<div class="strip" aria-hidden="true">
+  <div class="strip-inner">
+    <span>RETINA-NATIVE</span>
+    <span>MULTI-MONITOR</span>
+    <span>ANNOTATIONS</span>
+    <span>NATIVE OCR</span>
+    <span>ZERO ELECTRON</span>
+    <span>PURE RUST</span>
   </div>
 </div>
 
-<section class="section features" id="features">
-  <h2 class="reveal">Everything a snip should do.<br>Nothing it should not.</h2>
-  <div class="feature-grid">
-    <article class="fcard fcard-tall reveal" data-tilt>
-      <div class="fcard-media"><img src="assets/feat-annotate.png" alt="Saved capture with pixelate, rectangle and highlight annotations" loading="lazy"></div>
+<section class="section" id="features">
+  <div class="sec-head">
+    <h2 class="reveal">Everything a snip should do.<br>Nothing it should not.</h2>
+  </div>
+  <div class="grid-cells">
+    <span class="cross tl">+</span><span class="cross tr">+</span>
+    <article class="cell cell-media reveal">
+      <div class="cell-media-inner"><img src="assets/feat-annotate.png" alt="Saved capture with pixelate, rectangle and highlight annotations" loading="lazy"></div>
       <h3>Annotate in place</h3>
       <p>Draw directly on the dimmed overlay: pen, arrow, rectangle, ellipse, highlighter, pixelate. Strokes live on a physical-resolution layer, so they stay as sharp as the capture itself. Undo and redo are one click.</p>
     </article>
-    <article class="fcard reveal" data-tilt>
-      <div class="fcard-media"><img src="assets/feat-tray.png" alt="Quickshort tray menu with Capture Region, recents, settings and update check" loading="lazy"></div>
+    <article class="cell cell-media reveal">
+      <div class="cell-media-inner"><img src="assets/feat-tray.png" alt="Quickshort tray menu with Capture Region, recents, settings and update check" loading="lazy"></div>
       <h3>Global hotkey, resident tray</h3>
       <p>Quickshort sits in the menu bar. Press ⌘⇧S from anywhere and a dimmed overlay covers every monitor at once. Esc cancels, and the shortcut is re-recordable in Settings.</p>
     </article>
-    <article class="fcard reveal" data-tilt>
-      <div class="fcard-glyph" aria-hidden="true">2×</div>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">2×</div>
       <h3>Physical pixels, always</h3>
       <p>Captures request framebuffer resolution, not logical points. On a Retina display the PNG is 2880px wide and text stays crisp at 100% zoom. Mixed-DPI setups map each monitor through its own scale.</p>
     </article>
-    <article class="fcard reveal" data-tilt>
-      <div class="fcard-glyph" aria-hidden="true">¶</div>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">¶</div>
       <h3>OCR with OS engines</h3>
       <p>⌘T runs the selection through macOS Vision (Windows.Media.Ocr on Windows) and puts the text on your clipboard with a toast confirmation. Native engines, no bundled models, no cloud calls.</p>
     </article>
-    <article class="fcard reveal" data-tilt>
-      <div class="fcard-glyph" aria-hidden="true">⇄</div>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">⇄</div>
       <h3>Cross-monitor selection</h3>
       <p>Start a drag on one display and finish it on another. Each monitor's crop is mapped through its own origin and DPI, then stitched into a single image.</p>
     </article>
-    <article class="fcard fcard-wide reveal" data-tilt>
-      <div class="fcard-glyph" aria-hidden="true">↻</div>
-      <div>
-        <h3>Self-updating</h3>
-        <p>The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact across updates.</p>
-      </div>
-      <div class="fcard-media fcard-media-side"><img src="assets/feat-settings.png" alt="Quickshort Settings window: hotkey recorder, save folder, launch at login, recent captures" loading="lazy"></div>
+    <article class="cell cell-media reveal">
+      <div class="cell-media-inner"><img src="assets/feat-settings.png" alt="Quickshort Settings window: hotkey recorder, save folder, launch at login, recent captures" loading="lazy"></div>
+      <h3>Self-updating</h3>
+      <p>The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact.</p>
     </article>
+    <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
 </section>
 
-<section class="section pipeline" id="pipeline">
-  <p class="eyebrow"><span class="eyebrow-dot"></span>THE PIPELINE</p>
-  <h2 class="reveal">Four layers. Zero browsers.</h2>
-  <ol class="pipe">
-    <li class="pipe-step reveal">
+<section class="section" id="pipeline">
+  <div class="sec-head">
+    <p class="eyebrow">THE PIPELINE</p>
+    <h2 class="reveal">Four layers. Zero browsers.</h2>
+  </div>
+  <div class="grid-cells pipe-cells">
+    <span class="cross tl">+</span><span class="cross tr">+</span>
+    <div class="cell pipe-step reveal">
       <span class="pipe-num">1</span>
       <h3>Capture</h3>
       <p>Every monitor lands in RAM in one shot. ScreenCaptureKit, GDI BitBlt, or PipeWire shm.</p>
-    </li>
-    <li class="pipe-step reveal">
+    </div>
+    <div class="cell pipe-step reveal">
       <span class="pipe-num">2</span>
       <h3>Overlay</h3>
       <p>Borderless window per monitor dims the frames and tracks the drag in virtual coordinates.</p>
-    </li>
-    <li class="pipe-step reveal">
+    </div>
+    <div class="cell pipe-step reveal">
       <span class="pipe-num">3</span>
       <h3>Map</h3>
       <p>Selection coordinates resolve through each monitor's origin and DPI scale factor.</p>
-    </li>
-    <li class="pipe-step reveal">
+    </div>
+    <div class="cell pipe-step reveal">
       <span class="pipe-num">4</span>
       <h3>Stitch</h3>
       <p>Per-monitor crops merge on a worker thread while the event loop stays free.</p>
-    </li>
-  </ol>
+    </div>
+    <span class="cross bl">+</span><span class="cross br">+</span>
+  </div>
 </section>
 
-<section class="section download" id="download">
-  <h2 class="reveal">Grab it.</h2>
-  <p class="dl-note reveal" id="osNote">Detected: macOS</p>
-  <div class="dl-grid" id="dlMac">
-    <div class="dl-card reveal" data-tilt>
+<section class="section" id="download">
+  <div class="sec-head">
+    <h2 class="reveal">Grab it.</h2>
+    <p class="dl-note reveal" id="osNote">Detected: macOS</p>
+  </div>
+  <div class="grid-cells dl-cells" id="dlMac">
+    <span class="cross tl">+</span><span class="cross tr">+</span>
+    <div class="cell reveal">
       <h3>DMG</h3>
       <p class="dl-desc">Download, open, drag to Applications. Unsigned build: right-click, Open, once.</p>
-      <a class="btn btn-primary magnetic" href="https://github.com/truongnat/quickshort/releases/latest" target="_blank" rel="noopener">Latest release</a>
+      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest" target="_blank" rel="noopener">Latest release</a>
     </div>
-    <div class="dl-card reveal" data-tilt>
+    <div class="cell reveal">
       <h3>Homebrew</h3>
       <p class="dl-desc">Custom tap, quarantine stripped for you.</p>
       <div class="code-block">
@@ -157,33 +152,34 @@ brew install --cask quickshort</code>
         <button class="copy-btn" data-copy="brew tap truongnat/tap && brew install --cask quickshort" aria-label="Copy install command">Copy</button>
       </div>
     </div>
+    <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
-  <div class="dl-grid dl-other" id="dlOther" hidden>
-    <div class="dl-card fcard-wide reveal" data-tilt>
-      <div>
-        <h3 id="otherTitle">Build from source</h3>
-        <p class="dl-desc" id="otherDesc">Native binary for your platform is not published yet. Build takes a minute.</p>
-        <div class="code-block">
-          <code id="srccmd">git clone https://github.com/truongnat/quickshort
+  <div class="grid-cells dl-cells" id="dlOther" hidden>
+    <span class="cross tl">+</span><span class="cross tr">+</span>
+    <div class="cell reveal">
+      <h3 id="otherTitle">Build from source</h3>
+      <p class="dl-desc" id="otherDesc">Native binary for your platform is not published yet. Build takes a minute.</p>
+      <div class="code-block">
+        <code id="srccmd">git clone https://github.com/truongnat/quickshort
 cd quickshort && cargo build --release</code>
-          <button class="copy-btn" data-copy="git clone https://github.com/truongnat/quickshort && cd quickshort && cargo build --release" aria-label="Copy build command">Copy</button>
-        </div>
+        <button class="copy-btn" data-copy="git clone https://github.com/truongnat/quickshort && cd quickshort && cargo build --release" aria-label="Copy build command">Copy</button>
       </div>
     </div>
+    <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
   <p class="dl-note reveal" id="permNote">macOS 14+ needs Screen Recording and Accessibility permissions. Linux builds from source, Windows is compile-checked.</p>
 </section>
 
 <footer class="footer">
   <div class="footer-inner">
-    <img src="assets/icon.png" alt="" width="22" height="22">
-    <span>Quickshort</span>
+    <div class="footer-brand">
+      <img src="assets/icon.png" alt="" width="20" height="20">
+      <span>Quickshort</span>
+    </div>
     <a href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">github.com/truongnat/quickshort</a>
   </div>
 </footer>
 
-<script src="vendor/gsap.min.js"></script>
-<script src="vendor/ScrollTrigger.min.js"></script>
 <script src="main.js"></script>
 </body>
 </html>
