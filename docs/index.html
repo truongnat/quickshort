@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quickshort - Region screenshots at native speed</title>
+<meta name="description" content="Multi-monitor region screenshots with annotations and native OCR. Pure Rust, no Electron.">
+<meta property="og:title" content="Quickshort">
+<meta property="og:description" content="Region screenshots with annotations and OCR. Pure Rust, native all the way down.">
+<meta property="og:image" content="assets/screenshot.png">
+<link rel="icon" type="image/png" href="assets/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<canvas id="particles" aria-hidden="true"></canvas>
+<div class="noise" aria-hidden="true"></div>
+
+<nav class="nav">
+  <a class="nav-brand" href="#top">
+    <img src="assets/icon.png" alt="Quickshort logo" width="28" height="28">
+    <span>Quickshort</span>
+  </a>
+  <div class="nav-links">
+    <a href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">GitHub</a>
+    <a class="btn btn-small" href="#download">Download</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="hero-copy">
+    <p class="eyebrow">NATIVE SCREENSHOT TOOL</p>
+    <h1 class="headline" aria-label="Select. Snip. Ship.">
+      <span class="line"><span>Select.</span></span>
+      <span class="line"><span>Snip.</span></span>
+      <span class="line accent"><span>Ship.</span></span>
+    </h1>
+    <p class="sub">Pixel-perfect region captures across every monitor, with annotations and native OCR. Pure Rust, no Electron.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary magnetic" href="#download">Download for macOS</a>
+      <a class="btn btn-ghost magnetic" href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">View on GitHub</a>
+    </div>
+  </div>
+
+  <div class="hero-stage" id="stage">
+    <div class="shot-card" id="shotCard">
+      <img src="assets/screenshot.png" alt="Quickshort overlay mid-selection with annotation toolbar" width="850">
+      <div class="crop-corner tl"></div>
+      <div class="crop-corner tr"></div>
+      <div class="crop-corner bl"></div>
+      <div class="crop-corner br"></div>
+      <div class="scanline"></div>
+      <div class="drag-sel" id="dragSel"></div>
+    </div>
+    <div class="stage-shadow"></div>
+  </div>
+</header>
+
+<div class="marquee" aria-hidden="true">
+  <div class="marquee-track">
+    <span>RETINA-NATIVE&nbsp;&nbsp;✦&nbsp;&nbsp;MULTI-MONITOR&nbsp;&nbsp;✦&nbsp;&nbsp;ANNOTATIONS&nbsp;&nbsp;✦&nbsp;&nbsp;NATIVE OCR&nbsp;&nbsp;✦&nbsp;&nbsp;ZERO ELECTRON&nbsp;&nbsp;✦&nbsp;&nbsp;PURE RUST&nbsp;&nbsp;✦&nbsp;&nbsp;</span>
+    <span>RETINA-NATIVE&nbsp;&nbsp;✦&nbsp;&nbsp;MULTI-MONITOR&nbsp;&nbsp;✦&nbsp;&nbsp;ANNOTATIONS&nbsp;&nbsp;✦&nbsp;&nbsp;NATIVE OCR&nbsp;&nbsp;✦&nbsp;&nbsp;ZERO ELECTRON&nbsp;&nbsp;✦&nbsp;&nbsp;PURE RUST&nbsp;&nbsp;✦&nbsp;&nbsp;</span>
+  </div>
+</div>
+
+<section class="section features" id="features">
+  <h2 class="reveal">Everything a snip should do.<br>Nothing it should not.</h2>
+  <div class="feature-grid">
+    <article class="fcard fcard-tall reveal" data-tilt>
+      <div class="fcard-media"><img src="assets/screenshot.png" alt="Annotation toolbar over a dimmed desktop" loading="lazy"></div>
+      <h3>Annotate in place</h3>
+      <p>Pen, arrow, rect, ellipse, marker, pixelate. Undo and redo on a physical-resolution layer.</p>
+    </article>
+    <article class="fcard reveal" data-tilt>
+      <div class="fcard-glyph" aria-hidden="true">⌘⇧S</div>
+      <h3>Global hotkey, resident tray</h3>
+      <p>Lives in the menu bar. One chord drops a dimmed overlay over every monitor at once.</p>
+    </article>
+    <article class="fcard reveal" data-tilt>
+      <div class="fcard-glyph" aria-hidden="true">2×</div>
+      <h3>Physical pixels, always</h3>
+      <p>Captures at framebuffer resolution. Retina stays Retina; mixed-DPI monitors map correctly.</p>
+    </article>
+    <article class="fcard reveal" data-tilt>
+      <div class="fcard-glyph" aria-hidden="true">¶</div>
+      <h3>OCR with OS engines</h3>
+      <p>Vision on macOS, Windows.Media.Ocr on Windows. Text lands on the clipboard. No bundled models.</p>
+    </article>
+    <article class="fcard reveal" data-tilt>
+      <div class="fcard-glyph" aria-hidden="true">⇄</div>
+      <h3>Cross-monitor selection</h3>
+      <p>Drag straight across display boundaries. Crops stitch through one virtual coordinate space.</p>
+    </article>
+    <article class="fcard fcard-wide reveal" data-tilt>
+      <div class="fcard-glyph" aria-hidden="true">↻</div>
+      <div>
+        <h3>Self-updating</h3>
+        <p>Checks GitHub Releases daily, swaps the app bundle in place, relaunches. Signed with a stable identity so Screen Recording and Accessibility grants survive every update.</p>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="section pipeline" id="pipeline">
+  <p class="eyebrow">THE PIPELINE</p>
+  <h2 class="reveal">Four layers. Zero browsers.</h2>
+  <ol class="pipe">
+    <li class="pipe-step reveal">
+      <span class="pipe-num">1</span>
+      <h3>Capture</h3>
+      <p>Every monitor lands in RAM in one shot. ScreenCaptureKit, GDI BitBlt, or PipeWire shm.</p>
+    </li>
+    <li class="pipe-step reveal">
+      <span class="pipe-num">2</span>
+      <h3>Overlay</h3>
+      <p>Borderless window per monitor dims the frames and tracks the drag in virtual coordinates.</p>
+    </li>
+    <li class="pipe-step reveal">
+      <span class="pipe-num">3</span>
+      <h3>Map</h3>
+      <p>Selection coordinates resolve through each monitor's origin and DPI scale factor.</p>
+    </li>
+    <li class="pipe-step reveal">
+      <span class="pipe-num">4</span>
+      <h3>Stitch</h3>
+      <p>Per-monitor crops merge on a worker thread while the event loop stays free.</p>
+    </li>
+  </ol>
+</section>
+
+<section class="section download" id="download">
+  <h2 class="reveal">Grab it.</h2>
+  <div class="dl-grid">
+    <div class="dl-card reveal" data-tilt>
+      <h3>DMG</h3>
+      <p class="dl-desc">Download, open, drag to Applications. Unsigned build: right-click, Open, once.</p>
+      <a class="btn btn-primary magnetic" href="https://github.com/truongnat/quickshort/releases/latest" target="_blank" rel="noopener">Latest release</a>
+    </div>
+    <div class="dl-card reveal" data-tilt>
+      <h3>Homebrew</h3>
+      <p class="dl-desc">Custom tap, quarantine stripped for you.</p>
+      <div class="code-block">
+        <code id="brewcmd">brew tap truongnat/tap
+brew install --cask quickshort</code>
+        <button class="copy-btn" data-copy="brew tap truongnat/tap && brew install --cask quickshort" aria-label="Copy install command">Copy</button>
+      </div>
+    </div>
+  </div>
+  <p class="dl-note reveal">macOS 14+ needs Screen Recording and Accessibility permissions. Linux builds from source, Windows is compile-checked.</p>
+</section>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <img src="assets/icon.png" alt="" width="24" height="24">
+    <span>Quickshort</span>
+    <a href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">github.com/truongnat/quickshort</a>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
