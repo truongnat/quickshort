@@ -194,6 +194,49 @@ if (!reduced && "IntersectionObserver" in window) {
   });
 })();
 
+/* ---------- OS detection: pick the right download ---------- */
+(() => {
+  const ua = navigator.userAgent;
+  const plat = navigator.userAgentData?.platform || navigator.platform || "";
+  let os = "macos";
+  if (/Windows/i.test(ua + plat)) os = "windows";
+  else if (/Android|Linux/i.test(ua + plat) && !/Mac/i.test(plat)) os = "linux";
+  else if (/Mac|iPhone|iPad/i.test(ua + plat)) os = "macos";
+
+  const cta = document.getElementById("heroCta");
+  const note = document.getElementById("osNote");
+  const dlMac = document.getElementById("dlMac");
+  const dlOther = document.getElementById("dlOther");
+  const title = document.getElementById("otherTitle");
+  const desc = document.getElementById("otherDesc");
+  const perm = document.getElementById("permNote");
+  if (!cta || !dlMac || !dlOther) return;
+
+  const NAMES = { macos: "macOS", windows: "Windows", linux: "Linux" };
+  if (os === "macos") {
+    cta.textContent = "Download for macOS";
+    if (note) note.textContent = "Detected macOS — DMG or Homebrew.";
+  } else {
+    cta.textContent = `Download for ${NAMES[os]}`;
+    dlMac.hidden = true;
+    dlOther.hidden = false;
+    if (note) note.textContent = `Detected ${NAMES[os]} — no signed binary yet.`;
+    if (os === "windows") {
+      if (title) title.textContent = "Windows — build from source";
+      if (desc) desc.textContent = "Windows backend is compile-checked (GDI BitBlt, Windows.Media.Ocr). A packaged installer is on the roadmap — for now, cargo builds it.";
+      if (perm) perm.textContent = "Windows: builds clean from source. macOS DMG + Homebrew cask are the packaged channels today.";
+    } else {
+      if (title) title.textContent = "Linux — build from source";
+      if (desc) desc.textContent = "Linux backend supports X11 and GNOME Wayland (PipeWire). OCR on Linux fails loudly for now — no backend chosen yet.";
+      if (perm) perm.textContent = "Linux: X11 + GNOME Wayland capture work from a source build. macOS DMG + Homebrew cask are the packaged channels today.";
+    }
+    // show the mac card too, dimmed, so mac visitors landing here still see it
+    const other = dlOther.querySelector(".dl-card");
+    if (other) other.classList.add("fcard-wide");
+  }
+  document.body.dataset.os = os;
+})();
+
 /* ---------- copy buttons ---------- */
 document.querySelectorAll(".copy-btn").forEach((btn) => {
   btn.addEventListener("click", async () => {

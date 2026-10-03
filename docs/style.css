@@ -542,6 +542,20 @@ body {
 .copy-btn.copied { background: var(--mint); }
 
 .dl-note { font-size: 13.5px; font-weight: 500; color: var(--ink-dim); max-width: 62ch; }
+.dl-grid[hidden], .dl-other[hidden] { display: none; }
+.dl-other { grid-template-columns: 1fr; }
+#osNote {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--blue);
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-line);
+  background: rgba(255,255,255,0.5);
+  backdrop-filter: blur(10px);
+}
 
 /* ---------- footer ---------- */
 .footer { margin-top: 110px; padding: 40px 6vw 46px; }

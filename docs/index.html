@@ -44,7 +44,7 @@
     </h1>
     <p class="sub">Pixel-perfect region captures across every monitor, with annotations and native OCR. Pure Rust, no Electron.</p>
     <div class="cta-row">
-      <a class="btn btn-primary magnetic" href="#download">Download for macOS</a>
+      <a class="btn btn-primary magnetic" id="heroCta" href="#download">Download</a>
       <a class="btn btn-ghost magnetic" href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">View on GitHub</a>
     </div>
   </div>
@@ -142,7 +142,8 @@
 
 <section class="section download" id="download">
   <h2 class="reveal">Grab it.</h2>
-  <div class="dl-grid">
+  <p class="dl-note reveal" id="osNote" style="margin:-30px 0 30px">Detected: macOS</p>
+  <div class="dl-grid" id="dlMac">
     <div class="dl-card reveal" data-tilt>
       <h3>DMG</h3>
       <p class="dl-desc">Download, open, drag to Applications. Unsigned build: right-click, Open, once.</p>
@@ -158,7 +159,20 @@ brew install --cask quickshort</code>
       </div>
     </div>
   </div>
-  <p class="dl-note reveal">macOS 14+ needs Screen Recording and Accessibility permissions. Linux builds from source, Windows is compile-checked.</p>
+  <div class="dl-grid dl-other" id="dlOther" hidden>
+    <div class="dl-card fcard-wide reveal" data-tilt>
+      <div>
+        <h3 id="otherTitle">Build from source</h3>
+        <p class="dl-desc" id="otherDesc">Native binary for your platform is not published yet — build takes a minute.</p>
+        <div class="code-block">
+          <code id="srccmd">git clone https://github.com/truongnat/quickshort
+cd quickshort && cargo build --release</code>
+          <button class="copy-btn" data-copy="git clone https://github.com/truongnat/quickshort && cd quickshort && cargo build --release" aria-label="Copy build command">Copy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="dl-note reveal" id="permNote">macOS 14+ needs Screen Recording and Accessibility permissions. Linux builds from source, Windows is compile-checked.</p>
 </section>
 
 <footer class="footer">
