@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/qs-app", "crates/qs-capture", "crates/qs-core", "crates/qs-ocr", "crates/qs-overlay"]
+members = ["crates/qs-app", "crates/qs-capture", "crates/qs-core", "crates/qs-ocr", "crates/qs-overlay", "crates/qs-translate"]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -9,3 +9,4 @@ qs-core = { path = "crates/qs-core" }
 qs-capture = { path = "crates/qs-capture" }
 qs-ocr = { path = "crates/qs-ocr" }
 qs-overlay = { path = "crates/qs-overlay" }
+qs-translate = { path = "crates/qs-translate" }

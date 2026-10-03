@@ -824,13 +824,14 @@ impl Session {
                     return;
                 }
                 // ⌘/Ctrl shortcuts in the toolbar phase — same actions as
-                // the buttons; T = extract text (OCR) straight to clipboard
+                // the buttons; T = translate to clipboard, X = raw OCR text
                 if self.sel.is_some() && (self.mods.super_key() || self.mods.control_key()) {
                     if let Key::Character(c) = &event.logical_key {
                         let act = match c.as_str() {
                             "s" | "S" => Some(Action::Save),
                             "c" | "C" => Some(Action::Copy),
-                            "t" | "T" => Some(Action::Ocr),
+                            "t" | "T" => Some(Action::Translate),
+                            "x" | "X" => Some(Action::Ocr),
                             _ => None,
                         };
                         if let Some(a) = act {

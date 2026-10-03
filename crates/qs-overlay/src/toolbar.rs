@@ -13,6 +13,8 @@ pub enum Action {
     Save,
     Copy,
     Ocr,
+    /// OCR, translate the text, copy the translation
+    Translate,
 }
 
 /// Drawing tools — stay in the overlay and annotate the canvas.
@@ -50,6 +52,7 @@ const MAIN: &[Item] = &[
     Item::Act(Action::Save),
     Item::Act(Action::Copy),
     Item::Act(Action::Ocr),
+    Item::Act(Action::Translate),
 ];
 
 const OPTS: &[Item] = &[
@@ -421,6 +424,19 @@ fn draw_icon(
                 cv.blend(x, y, bg, fill); // occlude back square
             }
             let a = stroke(d_back, STROKE).max(stroke(d_front, STROKE)) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Act(Action::Translate) => {
+            // language swap: top arrow points right, bottom arrow points left
+            let d = seg_sdf(lx, ly, -5.5, -2.6, 5.0, -2.6)
+                .min(seg_sdf(lx, ly, 5.0, -2.6, 2.0, -5.0))
+                .min(seg_sdf(lx, ly, 5.0, -2.6, 2.0, -0.2))
+                .min(seg_sdf(lx, ly, 5.5, 2.6, -5.0, 2.6))
+                .min(seg_sdf(lx, ly, -5.0, 2.6, -2.0, 5.0))
+                .min(seg_sdf(lx, ly, -5.0, 2.6, -2.0, 0.2));
+            let a = stroke(d, STROKE) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }

@@ -1,0 +1,9 @@
+[package]
+name = "qs-translate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+ureq = { version = "3", features = ["json"] }
+serde_json = "1"

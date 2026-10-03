@@ -19,6 +19,10 @@ pub enum Outcome {
     Copied,
     /// chars of extracted text put on the clipboard
     TextCopied(usize),
+    /// chars of translated text put on the clipboard
+    Translated(usize),
+    /// translation failed — the raw OCR text was copied instead
+    TranslateFailed(usize),
     /// OCR ran but found no text
     NoText,
 }
@@ -32,6 +36,7 @@ pub fn dispatch(
     action: Action,
     annots: &[Annotation],
     target: &SaveTarget,
+    cfg: &crate::config::Config,
     wait_clipboard: bool,
 ) -> Result<Outcome> {
     let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
@@ -57,6 +62,28 @@ pub fn dispatch(
             copy_text_to_clipboard(&t, wait_clipboard);
             eprintln!("copied {n} chars of text to clipboard");
             Ok(Outcome::TextCopied(n))
+        }
+        Action::Translate => {
+            let t = qs_ocr::extract_text(&img)?;
+            if t.is_empty() {
+                return Ok(Outcome::NoText);
+            }
+            match qs_translate::translate(&t, &cfg.translate_source, &cfg.translate_target) {
+                Ok(tr) => {
+                    let n = tr.chars().count();
+                    copy_text_to_clipboard(&tr, wait_clipboard);
+                    eprintln!("copied {n} chars of translated text");
+                    Ok(Outcome::Translated(n))
+                }
+                // a translation failure still hands the user the raw text —
+                // clipboard with something beats a dead end
+                Err(e) => {
+                    eprintln!("translate failed ({e:#}), copied raw text");
+                    let n = t.chars().count();
+                    copy_text_to_clipboard(&t, wait_clipboard);
+                    Ok(Outcome::TranslateFailed(n))
+                }
+            }
         }
     }
 }

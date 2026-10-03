@@ -82,10 +82,20 @@ fn card_general() -> LRect {
     (MARGIN, CARD2_Y, W - MARGIN * 2.0, ROW_H)
 }
 fn card_recents(n: usize) -> LRect {
-    (MARGIN, CARD3_Y, W - MARGIN * 2.0, 12.0 + n.max(1) as f64 * RECENT_ROW_H)
+    (
+        MARGIN,
+        CARD3_Y,
+        W - MARGIN * 2.0,
+        12.0 + n.max(1) as f64 * RECENT_ROW_H,
+    )
 }
 fn recent_row(i: usize) -> LRect {
-    (MARGIN + 6.0, CARD3_Y + 6.0 + i as f64 * RECENT_ROW_H, W - MARGIN * 2.0 - 12.0, RECENT_ROW_H)
+    (
+        MARGIN + 6.0,
+        CARD3_Y + 6.0 + i as f64 * RECENT_ROW_H,
+        W - MARGIN * 2.0 - 12.0,
+        RECENT_ROW_H,
+    )
 }
 fn record_btn() -> LRect {
     (W - MARGIN - 14.0 - 68.0, CARD1_Y + 7.0, 68.0, 30.0)
@@ -451,7 +461,12 @@ impl Settings {
             let tw = p.text_w(msg, 12.0);
             p.text(&mut cv, rb.0 - tw - 12.0, r1y + 27.0, 12.0, msg, col);
         } else {
-            p.keycaps(&mut cv, &cfg.hotkey, rb.0 - keycaps_w(&p, &cfg.hotkey) - 10.0, r1y + 7.0);
+            p.keycaps(
+                &mut cv,
+                &cfg.hotkey,
+                rb.0 - keycaps_w(&p, &cfg.hotkey) - 10.0,
+                r1y + 7.0,
+            );
         }
         p.ghost_button(&mut cv, rb, "Record", hover == Some(Hit::Record));
         // hairline
@@ -461,7 +476,14 @@ impl Settings {
         let dir = short_path(&cfg.save_dir().display().to_string());
         let bb = browse_btn();
         let tw = p.text_w(&tail(&dir, 20), 11.5);
-        p.text(&mut cv, bb.0 - tw - 12.0, r2y + 27.0, 11.5, &tail(&dir, 20), FG_DIM);
+        p.text(
+            &mut cv,
+            bb.0 - tw - 12.0,
+            r2y + 27.0,
+            11.5,
+            &tail(&dir, 20),
+            FG_DIM,
+        );
         p.ghost_button(&mut cv, bb, "Browse", hover == Some(Hit::Browse));
 
         // ── general ─────────────────────────────────────────────────────
@@ -480,7 +502,14 @@ impl Settings {
         let c3 = card_recents(recents.len());
         p.card(&mut cv, c3);
         if recents.is_empty() {
-            p.text(&mut cv, COL_LBL_X, c3.1 + 36.0, 12.5, "No captures yet", FG_DIM);
+            p.text(
+                &mut cv,
+                COL_LBL_X,
+                c3.1 + 36.0,
+                12.5,
+                "No captures yet",
+                FG_DIM,
+            );
         }
         for (i, r) in recents.iter().enumerate() {
             let rr = recent_row(i);
@@ -501,7 +530,14 @@ impl Settings {
             };
             let age = age_label(r);
             let tw = p.text_w(&age, 10.5);
-            p.text(&mut cv, rr.0 + rr.2 - tw - right, rr.1 + 22.0, 10.5, &age, FG_FAINT);
+            p.text(
+                &mut cv,
+                rr.0 + rr.2 - tw - right,
+                rr.1 + 22.0,
+                10.5,
+                &age,
+                FG_FAINT,
+            );
         }
 
         let _ = buf.present();
