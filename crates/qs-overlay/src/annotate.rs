@@ -26,8 +26,18 @@ pub const PALETTE: [u32; 8] = [
 pub const SIZES: [f64; 3] = [2.0, 3.6, 6.0];
 pub const MARKER_SIZES: [f64; 3] = [6.0, 9.5, 14.0];
 const MARKER_A: f64 = 0.42;
-/// Font sizes per size level (S/M/L) for the text tool, logical px.
-pub const FONT_PX: [f64; 3] = [16.0, 24.0, 34.0];
+/// Font size presets for the text tool — (logical px, toolbar label).
+/// Picked as a number, independent from the stroke S/M/L levels.
+pub const TEXT_SIZES: [(f64, &str); 6] = [
+    (12.0, "12"),
+    (14.0, "14"),
+    (18.0, "18"),
+    (24.0, "24"),
+    (32.0, "32"),
+    (48.0, "48"),
+];
+/// Index into `TEXT_SIZES` armed by default — 14 px.
+pub const TEXT_SIZE_DEFAULT: usize = 1;
 pub const PIX_BLOCK: i32 = 8; // pixelate block, logical px
 const ACCENT: u32 = 0x0A84FF; // pixelate drag-preview outline
 
@@ -540,32 +550,60 @@ fn render_text(
 /// Raster resolution of the letter icon masks (grid covers logical ±8).
 pub(crate) const ICON_MASK_N: usize = 56;
 
-/// Letter glyph coverage grid for the Text/Bold toolbar icons — the real
-/// font instead of a hand-drawn SDF letter, so they stay legible.
-pub(crate) fn letter_mask(c: char, bold: bool) -> &'static [f32] {
-    static MASKS: OnceLock<HashMap<(char, bool), Vec<f32>>> = OnceLock::new();
+/// Text-label coverage grid for the toolbar icons — the real font instead
+/// of hand-drawn SDF glyphs, so "T", "B" and the size numbers stay legible.
+pub(crate) fn label_mask(label: &'static str, bold: bool) -> &'static [f32] {
+    static MASKS: OnceLock<HashMap<(&'static str, bool), Vec<f32>>> = OnceLock::new();
     &MASKS.get_or_init(|| {
-        [('T', false), ('B', true)]
-            .into_iter()
-            .map(|k| (k, letter_raster(k.0, k.1)))
-            .collect()
-    })[&(c, bold)]
+        let mut m = HashMap::new();
+        m.insert(("T", false), raster_label("T", false));
+        m.insert(("B", true), raster_label("B", true));
+        for (_, lbl) in TEXT_SIZES {
+            m.insert((lbl, false), raster_label(lbl, false));
+        }
+        m
+    })[&(label, bold)]
 }
 
-fn letter_raster(c: char, bold: bool) -> Vec<f32> {
+fn raster_label(label: &str, bold: bool) -> Vec<f32> {
     let n = ICON_MASK_N;
     let mut m = vec![0f32; n * n];
     with_font(16.0, bold, |f| {
         let px = n as f32 * 0.72;
         let s = f.as_scaled(px);
-        let id = s.glyph_id(c);
-        if let Some(og) = f.outline_glyph(id.with_scale_and_position(px, point(0.0, s.ascent()))) {
-            let bb = og.px_bounds();
-            // draw() yields offsets from px_bounds' min — shifting by
-            // (n - ink)/2 - min centers the ink box in the grid
-            og.draw(|x, y, cov| {
-                let gx = (x as f32 + (n as f32 - bb.width()) / 2.0) as i32;
-                let gy = (y as f32 + (n as f32 - bb.height()) / 2.0) as i32;
+        // lay the run out along a y=0 baseline and keep the outlines
+        let mut pen = point(0.0, 0.0);
+        let mut prev = None;
+        let mut glyphs = Vec::new();
+        for c in label.chars() {
+            let id = s.glyph_id(c);
+            if let Some(p) = prev {
+                pen.x += s.kern(p, id);
+            }
+            if let Some(og) = f.outline_glyph(id.with_scale_and_position(px, pen)) {
+                glyphs.push(og);
+            }
+            pen.x += s.h_advance(id);
+            prev = Some(id);
+        }
+        if glyphs.is_empty() {
+            return;
+        }
+        // union ink bounds -> center the whole run in the grid
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for g in &glyphs {
+            let b = g.px_bounds();
+            x0 = x0.min(b.min.x);
+            y0 = y0.min(b.min.y);
+            x1 = x1.max(b.max.x);
+            y1 = y1.max(b.max.y);
+        }
+        let (w, h) = (x1 - x0, y1 - y0);
+        for g in &glyphs {
+            let bb = g.px_bounds();
+            g.draw(|x, y, cov| {
+                let gx = (bb.min.x - x0 + x as f32 + (n as f32 - w) / 2.0) as i32;
+                let gy = (bb.min.y - y0 + y as f32 + (n as f32 - h) / 2.0) as i32;
                 if (0..n as i32).contains(&gx) && (0..n as i32).contains(&gy) {
                     let i = gy as usize * n + gx as usize;
                     m[i] = m[i].max(cov);
@@ -609,6 +647,14 @@ mod tests {
         assert!(bold > reg, "bold {bold} should exceed regular {reg}");
         let (w, h) = text_extent("Quick", 28.0, false);
         assert!(w > 40.0 && h > 20.0, "extent {w}x{h}");
+        // toolbar label masks (digits + letters) must contain real ink
+        for (lbl, b) in [("T", false), ("B", true), ("14", false), ("48", false)] {
+            let m = label_mask(lbl, b);
+            assert!(
+                m.iter().any(|&v| v > 0.5),
+                "label mask {lbl:?} has no ink"
+            );
+        }
     }
 
     /// Eyeball check — `cargo test -p qs-overlay -- --ignored` then open
@@ -621,21 +667,21 @@ mod tests {
             Annotation::Text {
                 pos: Point::new(20, 20),
                 text: "Quick short".into(),
-                px: FONT_PX[0],
+                px: TEXT_SIZES[1].0,
                 bold: false,
                 rgb: PALETTE[4],
             },
             Annotation::Text {
                 pos: Point::new(20, 60),
                 text: "Regular & Bold".into(),
-                px: FONT_PX[1],
+                px: TEXT_SIZES[3].0,
                 bold: true,
                 rgb: PALETTE[6],
             },
             Annotation::Text {
                 pos: Point::new(20, 110),
                 text: "Xin chào Việt Nam".into(),
-                px: FONT_PX[2],
+                px: TEXT_SIZES[5].0,
                 bold: false,
                 rgb: PALETTE[0],
             },

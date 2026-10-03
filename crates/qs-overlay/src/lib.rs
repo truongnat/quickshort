@@ -213,10 +213,12 @@ struct Session {
     backups: Vec<PixBackup>,
     /// (annotation, pixelate backup) entries popped by Undo
     redo: Vec<(Annotation, Option<PixBackup>)>,
-    /// current stroke size level / palette index / text weight
+    /// current stroke size level / palette index / text weight+size
     size: u8,
     color: usize,
     bold: bool,
+    /// index into annotate::TEXT_SIZES for the text tool
+    font_size: usize,
     mods: winit::keyboard::ModifiersState,
     result: Option<(Rect, Action, Vec<Annotation>)>,
     done: bool,
@@ -244,6 +246,7 @@ impl Session {
             size: 1,
             color: 0,
             bold: false,
+            font_size: annotate::TEXT_SIZE_DEFAULT,
             mods: winit::keyboard::ModifiersState::empty(),
             result: None,
             done: false,
@@ -322,7 +325,7 @@ impl Session {
             Tool::Text => Annotation::Text {
                 pos: p,
                 text: String::new(),
-                px: annotate::FONT_PX[self.size as usize],
+                px: annotate::TEXT_SIZES[self.font_size].0,
                 bold: self.bold,
                 rgb,
             },
@@ -829,8 +832,15 @@ impl Session {
                                 if let Some(tb) = &mut self.toolbar {
                                     tb.size = s;
                                 }
+                                self.dirty = true;
+                            }
+                            Item::FontSize(s) => {
+                                self.font_size = s as usize;
+                                if let Some(tb) = &mut self.toolbar {
+                                    tb.font_size = s;
+                                }
                                 if let Some(Annotation::Text { px, .. }) = &mut self.active {
-                                    *px = annotate::FONT_PX[s as usize];
+                                    *px = annotate::TEXT_SIZES[s as usize].0;
                                 }
                                 self.dirty = true;
                             }

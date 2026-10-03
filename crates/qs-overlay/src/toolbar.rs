@@ -39,6 +39,8 @@ pub enum Item {
     Color(usize),
     /// Bold toggle — options row, only while the text tool is armed
     Bold,
+    /// Font size preset index into annotate::TEXT_SIZES — text tool only
+    FontSize(u8),
 }
 
 const MAIN: &[Item] = &[
@@ -95,6 +97,8 @@ pub struct Toolbar {
     pub color: usize,
     /// bold state for the text tool
     pub bold: bool,
+    /// selected index into annotate::TEXT_SIZES for the text tool
+    pub font_size: u8,
     /// whether Undo/Redo have something to pop (dims the buttons otherwise)
     pub has_annots: bool,
     pub has_redo: bool,
@@ -112,6 +116,7 @@ impl Toolbar {
             size: 1,
             color: 0,
             bold: false,
+            font_size: crate::annotate::TEXT_SIZE_DEFAULT as u8,
             has_annots: false,
             has_redo: false,
         };
@@ -123,11 +128,17 @@ impl Toolbar {
     pub fn layout(&mut self, sel: Rect, mr: Rect, opts: bool) {
         let d = R * 2.0;
         let n = MAIN.len() as f64;
-        // the text tool gets a Bold toggle after the size levels
-        let mut opts_row: Vec<Item> = OPTS.to_vec();
-        if self.tool == Some(Tool::Text) {
-            opts_row.insert(3, Item::Bold);
-        }
+        // the text tool swaps stroke sizes for real font sizes + a Bold
+        // toggle; colors stay shared
+        let opts_row: Vec<Item> = if self.tool == Some(Tool::Text) {
+            (0..crate::annotate::TEXT_SIZES.len() as u8)
+                .map(Item::FontSize)
+                .chain([Item::Bold])
+                .chain((0..PALETTE.len()).map(Item::Color))
+                .collect()
+        } else {
+            OPTS.to_vec()
+        };
         let on = opts_row.len() as f64;
         let rows = if opts { 2.0 } else { 1.0 };
         // second row aligns under the main row, slightly narrower
@@ -243,6 +254,7 @@ impl Toolbar {
             let active = matches!(item, Item::Tool(t) if self.tool == Some(*t))
                 || matches!(item, Item::Size(s) if self.size == *s)
                 || matches!(item, Item::Color(c) if self.color == *c)
+                || matches!(item, Item::FontSize(s) if self.font_size == *s)
                 || matches!(item, Item::Bold) && self.bold;
             let enabled = match item {
                 Item::Undo => self.has_annots,
@@ -374,14 +386,14 @@ fn draw_icon(
                 cv.blend(x, y, FG, a);
             }
         }
-        Item::Tool(Tool::Text) | Item::Bold => {
-            // real letter glyphs — rasterized once into a coverage grid
-            let (c, b) = if matches!(item, Item::Bold) {
-                ('B', true)
-            } else {
-                ('T', false)
+        Item::Tool(Tool::Text) | Item::Bold | Item::FontSize(_) => {
+            // real font glyphs — rasterized once into coverage grids
+            let (lbl, b) = match item {
+                Item::Bold => ("B", true),
+                Item::FontSize(i) => (crate::annotate::TEXT_SIZES[i as usize].1, false),
+                _ => ("T", false),
             };
-            let m = crate::annotate::letter_mask(c, b);
+            let m = crate::annotate::label_mask(lbl, b);
             let n = crate::annotate::ICON_MASK_N;
             let gx = ((lx + 8.0) / 16.0 * n as f64) as i32;
             let gy = ((ly + 8.0) / 16.0 * n as f64) as i32;
