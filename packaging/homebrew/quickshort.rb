@@ -6,7 +6,7 @@
 #   brew install --cask quickshort
 cask "quickshort" do
   version "0.1.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "09bbe30e7eff230b704795bf936c60aec1434654f2992a129e5758982c0f4921"
 
   url "https://github.com/truongnat/quickshort/releases/download/v#{version}/Quickshort-v#{version}-macos.zip"
   name "Quickshort"
@@ -16,9 +16,10 @@ cask "quickshort" do
   app "Quickshort.app"
 
   # unsigned build: strip quarantine so Gatekeeper doesn't block first launch
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Quickshort.app"]
+  postflight_steps do
+    run "/usr/bin/xattr",
+        args:           ["-dr", "com.apple.quarantine", "{{appdir}}/Quickshort.app"],
+        writable_paths: ["{{appdir}}/Quickshort.app"]
   end
 
   zap trash: [
