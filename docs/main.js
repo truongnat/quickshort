@@ -42,8 +42,9 @@ if (!reduced && window.gsap) {
     ease: "back.out(2)",
   });
 
-  // hero card entrance + idle float
-  gsap.from("#shotCard", {
+  // hero card entrance + idle float — on the WRAPPER so the inner
+  // card's transform stays free for pointer tilt
+  gsap.from("#floatWrap", {
     opacity: 0,
     rotateY: -38,
     z: -180,
@@ -52,7 +53,7 @@ if (!reduced && window.gsap) {
     ease: "power3.out",
     delay: 0.4,
   });
-  gsap.to("#shotCard", {
+  gsap.to("#floatWrap", {
     y: -14,
     duration: 3.4,
     ease: "sine.inOut",
@@ -85,27 +86,6 @@ if (!reduced && window.gsap) {
     .to(sel, { width: "70%", height: "56%", duration: 1, ease: "power2.inOut" })
     .to(sel, { opacity: 0, duration: 0.4, ease: "power1.out" }, "+=1.2");
 
-  // scroll reveals with a tiny spring
-  document.querySelectorAll(".reveal").forEach((el, i) => {
-    gsap.to(el, {
-      opacity: 1,
-      y: 0,
-      scale: 1,
-      duration: 1,
-      ease: "back.out(1.15)",
-      scrollTrigger: { trigger: el, start: "top 88%" },
-      delay: (i % 4) * 0.06,
-    });
-  });
-
-  // marquee
-  gsap.to(".marquee-track", {
-    xPercent: -50,
-    duration: 30,
-    ease: "none",
-    repeat: -1,
-  });
-
   // pipeline step badges pop in
   gsap.utils.toArray(".pipe-num").forEach((el) => {
     gsap.from(el, {
@@ -132,6 +112,28 @@ if (!reduced && window.gsap) {
     el.style.transform = "none";
   });
   document.querySelectorAll(".crop-corner").forEach((el) => (el.style.opacity = 1));
+}
+
+/* ---------- scroll reveals: IntersectionObserver + CSS transition ---------- */
+/* (kept off GSAP so it never writes an inline transform that would
+    fight the fcard :hover / tilt transforms) */
+if (!reduced && "IntersectionObserver" in window) {
+  const io = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((e, i) => {
+        if (!e.isIntersecting) return;
+        const el = e.target;
+        el.style.transitionDelay = `${(i % 4) * 70}ms`;
+        el.classList.add("shown");
+        setTimeout(() => (el.style.transitionDelay = ""), 1200);
+        io.unobserve(el);
+      });
+    },
+    { rootMargin: "0px 0px -10% 0px" }
+  );
+  document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+} else if (window.gsap === undefined) {
+  document.querySelectorAll(".reveal").forEach((el) => el.classList.add("shown"));
 }
 
 /* ---------- pointer 3D tilt on the hero card ---------- */
@@ -184,7 +186,7 @@ if (!reduced && window.gsap) {
       const r = el.getBoundingClientRect();
       const nx = (e.clientX - r.left) / r.width - 0.5;
       const ny = (e.clientY - r.top) / r.height - 0.5;
-      el.style.transform = `translateY(-8px) scale(1.015) rotateX(${ny * -4}deg) rotateY(${nx * 5}deg)`;
+      el.style.transform = `translateY(-10px) scale(1.02) rotateX(${ny * -8}deg) rotateY(${nx * 10}deg)`;
     });
     el.addEventListener("pointerleave", () => {
       el.style.transform = "";
