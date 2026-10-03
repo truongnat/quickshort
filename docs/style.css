@@ -104,8 +104,36 @@ nav, .hero, .strip, .section, .footer { position: relative; z-index: 1; }
   display: flex; flex-direction: column; align-items: center;
   padding: 150px 24px 0;
   text-align: center;
+  position: relative;
+  overflow: hidden;
 }
-.hero-inner { max-width: 760px; }
+.hero-inner { max-width: 760px; position: relative; z-index: 1; }
+
+/* dashed hairline grid behind the hero, nextjs.org-style */
+.hero-lines { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.vline, .hline { position: absolute; }
+.vline { top: 0; bottom: 0; border-left: 1px dashed #232323; }
+.hline { left: 0; right: 0; border-top: 1px dashed #232323; }
+.lcircle { position: absolute; border: 1px dashed #232323; border-radius: 50%; }
+
+/* bright dash segment running along a line */
+.runv, .runh { position: absolute; overflow: hidden; }
+.runv { top: 0; bottom: 0; width: 1px; }
+.runv::before {
+  content: ""; position: absolute; left: 0; width: 1px; height: 90px;
+  background: linear-gradient(180deg, transparent, rgba(255,255,255,0.55), transparent);
+  animation: runV 6s linear infinite;
+  animation-delay: inherit;
+}
+@keyframes runV { from { top: -12%; } to { top: 112%; } }
+.runh { left: 0; right: 0; height: 1px; }
+.runh::before {
+  content: ""; position: absolute; top: 0; height: 1px; width: 140px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+  animation: runH 7.5s linear infinite;
+  animation-delay: inherit;
+}
+@keyframes runH { from { left: -12%; } to { left: 112%; } }
 
 .chip {
   display: inline-flex; align-items: center; gap: 8px;
@@ -143,6 +171,7 @@ nav, .hero, .strip, .section, .footer { position: relative; z-index: 1; }
 /* hero frame: hairline-bordered screenshot with + corners */
 .hero-frame {
   position: relative;
+  z-index: 1;
   width: min(960px, 100%);
   margin-top: 72px;
   border: 1px solid var(--line);
