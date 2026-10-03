@@ -9,6 +9,7 @@ mod host;
 mod settings;
 mod toast;
 mod tray;
+mod update;
 
 use actions::SaveTarget;
 use anyhow::{Context, Result};

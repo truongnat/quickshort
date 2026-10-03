@@ -15,10 +15,13 @@ pub const ID_LOGIN: &str = "launch_at_login";
 pub const ID_QUIT: &str = "quit";
 /// Recent-capture items carry `recent:<abs path>` as their id.
 pub const ID_RECENT_PREFIX: &str = "recent:";
+pub const ID_UPDATE: &str = "update";
 pub const RECENT_MAX: usize = 8;
 
-/// Rebuild the tray menu. `recents` = newest-first saved PNGs.
-pub fn build_menu(cfg: &Config, recents: &[PathBuf]) -> Menu {
+/// Rebuild the tray menu. `recents` = newest-first saved PNGs;
+/// `pending_update` = version waiting to be installed (changes the
+/// "Check for Updates…" item into a one-click updater).
+pub fn build_menu(cfg: &Config, recents: &[PathBuf], pending_update: Option<&str>) -> Menu {
     let menu = Menu::new();
     let capture = MenuItem::with_id(
         ID_CAPTURE,
@@ -44,6 +47,15 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf]) -> Menu {
     let login =
         CheckMenuItem::with_id(ID_LOGIN, "Launch at Login", true, cfg.launch_at_login, None);
     let settings = MenuItem::with_id(ID_SETTINGS, "Settings…", true, None);
+    let update = MenuItem::with_id(
+        ID_UPDATE,
+        match pending_update {
+            Some(v) => format!("Update to v{v} — Restart to Install"),
+            None => "Check for Updates…".to_string(),
+        },
+        true,
+        None,
+    );
     let quit = MenuItem::with_id(ID_QUIT, "Quit Quickshort", true, None);
     let _ = menu.append_items(&[
         &capture,
@@ -53,6 +65,7 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf]) -> Menu {
         &settings,
         &login,
         &PredefinedMenuItem::separator(),
+        &update,
         &quit,
     ]);
     menu

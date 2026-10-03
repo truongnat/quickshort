@@ -13,6 +13,9 @@ pub struct Config {
     /// Screenshot folder override; `None` = `~/Pictures/quickshort`.
     pub save_dir: Option<PathBuf>,
     pub launch_at_login: bool,
+    /// Unix ts of the last update check (auto-checks once a day).
+    #[serde(default)]
+    pub last_update_check: u64,
 }
 
 impl Default for Config {
@@ -21,6 +24,7 @@ impl Default for Config {
             hotkey: "CmdOrCtrl+Shift+S".into(),
             save_dir: None,
             launch_at_login: false,
+            last_update_check: 0,
         }
     }
 }

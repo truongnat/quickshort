@@ -45,6 +45,40 @@ one connection multiplexes all monitor streams.
 
 ## Install
 
+### macOS
+
+**DMG** — grab `Quickshort-v*-macos.dmg` from
+[Releases](https://github.com/truongnat/quickshort/releases), open it, drag
+**Quickshort** into Applications.
+
+**Homebrew** (custom tap):
+
+```bash
+brew tap truongnat/tap
+brew install --cask quickshort
+```
+
+**Unsigned build** — there is no Developer ID signature or notarization.
+On first launch Gatekeeper may warn; right-click the app → **Open** →
+**Open** to bypass once. The Homebrew cask strips the quarantine
+attribute automatically so `brew install` needs no workaround. The app
+is signed with a stable self-signed identity purely so macOS keeps your
+Screen Recording / Accessibility grants across updates — this does
+**not** make it Gatekeeper-trusted.
+
+Required permissions (System Settings → Privacy & Security):
+
+- **Screen Recording** — needed to capture the screen at all
+- **Accessibility** — needed for the global hotkey
+
+**Updates** — the app checks GitHub Releases once a day in the
+background and shows a toast when a new version is out; the tray item
+turns into *Update to vX — Restart to Install*. Manual check:
+tray menu → **Check for Updates…**. Homebrew users can also
+`brew upgrade --cask quickshort`.
+
+### Linux
+
 ```bash
 ./install.sh                    # build release -> ~/.local/bin + GNOME hotkey
 ./install.sh --hotkey '<Super><Shift>S'   # custom binding
@@ -75,9 +109,13 @@ hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax
 launch_at_login = false
 ```
 
-macOS app bundle: `packaging/macos/bundle.sh` produces `quickshort.app`
-(LSUIElement tray-only, ad-hoc signed). Linux one-shot hotkey binding is
-still handled by `install.sh`.
+macOS app bundle: `packaging/macos/bundle.sh` produces `Quickshort.app`
+(LSUIElement tray-only). `packaging/macos/release.sh` runs the full
+pipeline — release build (universal when both rustup targets exist),
+bundle, self-signed identity, zip + dmg + sha256 into `dist/`. Tagging
+`v*` triggers the GitHub workflow which does the same and publishes a
+GitHub Release. Linux one-shot hotkey binding is still handled by
+`install.sh`.
 
 **Selection toolbar**: drag to select, then pick a drawing tool (pen,
 arrow, rect, ellipse, marker, pixelate) — a second row offers 3 stroke

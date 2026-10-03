@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::settings::{Settings, SettingsEvent};
 use crate::toast::Toast;
 use crate::tray;
+use crate::update::{self, Release};
 
 /// Everything that wakes the loop besides window events.
 enum HostEvent {
@@ -25,6 +26,13 @@ enum HostEvent {
     Menu(MenuId),
     /// Action worker finished — refresh the menu, update the toast.
     Done(Result<Outcome, String>),
+    /// Release check finished — `manual` gates the "up to date" toast.
+    UpdateCheck {
+        res: Result<Option<Release>, String>,
+        manual: bool,
+    },
+    /// Update install finished — relaunch on success.
+    UpdateInstall(Result<PathBuf, String>),
 }
 
 /// Run the resident tray app. Blocks until Quit.
@@ -68,6 +76,8 @@ struct Host {
     hotkey_suspended: bool,
     settings: Option<Settings>,
     toast: Option<Toast>,
+    /// Newer release found, waiting for the user to click Update.
+    pending_update: Option<Release>,
 }
 
 impl Host {
@@ -83,14 +93,57 @@ impl Host {
             hotkey_suspended: false,
             settings: None,
             toast: None,
+            pending_update: None,
         }
     }
 
     fn rebuild_menu(&self) {
         if let Some(t) = &self.tray {
             let recents = actions::recent_captures(&self.cfg.save_dir(), tray::RECENT_MAX);
-            t.set_menu(Some(Box::new(tray::build_menu(&self.cfg, &recents))));
+            t.set_menu(Some(Box::new(tray::build_menu(
+                &self.cfg,
+                &recents,
+                self.pending_update.as_ref().map(|r| r.version.as_str()),
+            ))));
         }
+    }
+
+    /// Hit GitHub Releases on a worker; `manual` shows a busy toast now and
+    /// an "up to date" toast later.
+    fn check_updates(&mut self, el: &ActiveEventLoop, manual: bool) {
+        self.cfg.last_update_check = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.cfg.save();
+        if manual && self.toast.is_none() {
+            if let Ok(t) = Toast::open(el, "Checking for updates…") {
+                self.toast = Some(t);
+            }
+        }
+        let px = self.proxy.clone();
+        std::thread::spawn(move || {
+            let _ = px.send_event(HostEvent::UpdateCheck {
+                res: update::check().map_err(|e| format!("{e:#}")),
+                manual,
+            });
+        });
+    }
+
+    /// Download + swap the pending release on a worker.
+    fn install_update(&mut self, el: &ActiveEventLoop, rel: Release) {
+        if self.toast.is_none() {
+            let msg = format!("Updating to v{}…", rel.version);
+            if let Ok(t) = Toast::open(el, &msg) {
+                self.toast = Some(t);
+            }
+        }
+        let px = self.proxy.clone();
+        std::thread::spawn(move || {
+            let _ = px.send_event(HostEvent::UpdateInstall(
+                update::install(&rel).map_err(|e| format!("{e:#}")),
+            ));
+        });
     }
 
     /// Capture every monitor and spawn the overlay session.
@@ -119,6 +172,13 @@ impl Host {
             tray::ID_CAPTURE => self.trigger(el),
             tray::ID_OPEN_DIR => actions::open_path(&self.cfg.save_dir()),
             tray::ID_QUIT => el.exit(),
+            tray::ID_UPDATE => {
+                if let Some(rel) = self.pending_update.take() {
+                    self.install_update(el, rel);
+                } else {
+                    self.check_updates(el, true);
+                }
+            }
             tray::ID_SETTINGS => {
                 if self.settings.is_none() {
                     match Settings::open(el, &self.cfg) {
@@ -220,7 +280,7 @@ impl ApplicationHandler<HostEvent> for Host {
         let recents = actions::recent_captures(&self.cfg.save_dir(), tray::RECENT_MAX);
         let builder = tray_icon::TrayIcon::builder()
             .with_tooltip("Quickshort — region screenshot")
-            .with_menu(Box::new(tray::build_menu(&self.cfg, &recents)));
+            .with_menu(Box::new(tray::build_menu(&self.cfg, &recents, None)));
         // template icon = auto dark/light menu-bar tinting (macOS only)
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(tray::tray_icon(44));
@@ -244,12 +304,48 @@ impl ApplicationHandler<HostEvent> for Host {
             },
             Err(e) => eprintln!("bad hotkey {:?}: {e}", self.cfg.hotkey),
         }
+
+        // background update check, at most once a day
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if now.saturating_sub(self.cfg.last_update_check) > 24 * 3600 {
+            self.check_updates(_el, false);
+        }
     }
 
     fn user_event(&mut self, el: &ActiveEventLoop, ev: HostEvent) {
         match ev {
             HostEvent::Trigger => self.trigger(el),
             HostEvent::Menu(id) => self.on_menu(el, id),
+            HostEvent::UpdateCheck { res, manual } => match res {
+                Ok(Some(rel)) => {
+                    let v = rel.version.clone();
+                    self.pending_update = Some(rel);
+                    self.rebuild_menu();
+                    self.toast_done(el, format!("v{v} available — Update from the menu"), true);
+                }
+                Ok(None) => {
+                    if manual {
+                        self.toast_done(el, "You're up to date".to_string(), true);
+                    }
+                }
+                Err(e) => {
+                    if manual {
+                        self.toast_done(el, format!("Update check failed: {e}"), false);
+                    } else {
+                        eprintln!("update check: {e}");
+                    }
+                }
+            },
+            HostEvent::UpdateInstall(res) => match res {
+                Ok(app) => {
+                    let _ = update::relaunch(&app);
+                    el.exit();
+                }
+                Err(e) => self.toast_done(el, format!("Update failed: {e}"), false),
+            },
             HostEvent::Done(res) => match res {
                 Ok(Outcome::Saved(p)) => {
                     self.rebuild_menu();
