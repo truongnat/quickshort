@@ -11,6 +11,7 @@ use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::application::ApplicationHandler;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
@@ -29,6 +30,38 @@ pub use annotate::{annotate_image, Annotation};
 pub use toolbar::{Action, Item, Tool};
 
 const MIN_SELECT: u32 = 3;
+const ACCENT: u32 = 0x0A84FF;
+
+/// Stroke a `thick`-px rect outline into the physical buffer (clipped).
+#[allow(clippy::too_many_arguments)]
+fn frame_rect(
+    buf: &mut [u32],
+    sw: usize,
+    sh: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    thick: i32,
+    rgb: u32,
+) {
+    for i in 0..thick {
+        for x in x0..x1 {
+            for yy in [y0 + i, y1 - 1 - i] {
+                if x >= 0 && yy >= 0 && (x as usize) < sw && (yy as usize) < sh {
+                    buf[yy as usize * sw + x as usize] = rgb;
+                }
+            }
+        }
+        for y in y0..y1 {
+            for xx in [x0 + i, x1 - 1 - i] {
+                if xx >= 0 && y >= 0 && (xx as usize) < sw && (y as usize) < sh {
+                    buf[y as usize * sw + xx as usize] = rgb;
+                }
+            }
+        }
+    }
+}
 
 /// Outcome of a finished overlay session.
 pub enum OverlayEvent {
@@ -195,6 +228,41 @@ struct WinCtx {
 /// Pixelate undo record: canvas-space rect + the pixels it overwrote.
 type PixBackup = (Rect, Vec<u32>);
 
+/// A committed edit, in order — the undo log. Pixelate carries its pixel
+/// backup here instead of a parallel stack.
+enum Op {
+    Add {
+        pix: Option<PixBackup>,
+    },
+    Move {
+        idx: usize,
+        before: Annotation,
+        after: Annotation,
+    },
+    Remove {
+        idx: usize,
+        annot: Annotation,
+    },
+}
+
+/// Inverse data needed to re-apply an undone op.
+enum RedoOp {
+    Add(Annotation),
+    Move { idx: usize, after: Annotation },
+    Remove { idx: usize },
+}
+
+/// Annotation mid-move: pulled out of `annots` so it rides the preview
+/// path; `before` is the pristine copy for cancel + the undo record.
+struct Grab {
+    idx: usize,
+    annot: Annotation,
+    before: Annotation,
+    start: Point,
+    /// last cursor position — the incremental-translate baseline
+    last: Point,
+}
+
 struct Session {
     bounds: Rect,
     /// canvas px per logical px (= densest monitor's scale)
@@ -209,10 +277,18 @@ struct Session {
     annots: Vec<Annotation>,    // committed strokes
     active: Option<Annotation>, // stroke in progress
     shape_anchor: Point,        // press point for rect/ellipse/arrow/pixelate
-    /// bright-canvas backups for undoable pixelate ops
-    backups: Vec<PixBackup>,
-    /// (annotation, pixelate backup) entries popped by Undo
-    redo: Vec<(Annotation, Option<PixBackup>)>,
+    /// committed edits, in order — the undo log. Ops are applied and undone
+    /// strictly LIFO, which keeps their `idx` fields valid indexes into
+    /// `annots`
+    ops: Vec<Op>,
+    /// ops popped by Undo, holding what redo needs to re-apply them
+    redo: Vec<RedoOp>,
+    /// annotation index selected via the Select tool
+    selected: Option<usize>,
+    /// annotation being dragged — pulled out of `annots` until release
+    grabbed: Option<Grab>,
+    /// in-flight IME composition, rendered after the draft text
+    preedit: String,
     /// current stroke size level / palette index / text weight+size
     size: u8,
     color: usize,
@@ -241,8 +317,11 @@ impl Session {
             annots: Vec::new(),
             active: None,
             shape_anchor: Point::default(),
-            backups: Vec::new(),
+            ops: Vec::new(),
             redo: Vec::new(),
+            selected: None,
+            grabbed: None,
+            preedit: String::new(),
             size: 1,
             color: 0,
             bold: false,
@@ -300,6 +379,7 @@ impl Session {
         let rgb = annotate::PALETTE[self.color];
         let w = annotate::SIZES[self.size as usize];
         self.active = Some(match t {
+            Tool::Select => return, // armed select grabs, never strokes
             Tool::Pen => Annotation::Pen {
                 pts: vec![p],
                 w,
@@ -335,6 +415,7 @@ impl Session {
 
     /// Commit the in-progress stroke into the annotation layer / bright canvas.
     fn commit_annot(&mut self) {
+        self.preedit.clear();
         let Some(an) = self.active.take() else { return };
         let ok = match &an {
             Annotation::Pen { pts, .. } | Annotation::Marker { pts, .. } => pts.len() >= 2,
@@ -347,25 +428,27 @@ impl Session {
         if !ok {
             return;
         }
-        if let Annotation::Pixelate(r) = an {
+        let op = if let Annotation::Pixelate(r) = an {
             let rc = self.canvas_rect(r);
+            let (cw, ch) = self.canvas_dims();
             let backup = annotate::pixelate_canvas(
                 &mut self.bright,
-                (self.bounds.w as f64 * self.cscale).round() as usize,
-                (self.bounds.h as f64 * self.cscale).round() as usize,
+                cw,
+                ch,
                 rc,
                 (annotate::PIX_BLOCK as f64 * self.cscale).round().max(2.0) as i32,
             );
-            self.backups.push((rc, backup));
+            Op::Add {
+                pix: Some((rc, backup)),
+            }
         } else {
             self.blit_to_layers(&an);
-        }
+            Op::Add { pix: None }
+        };
         self.annots.push(an);
-        self.redo.clear(); // a fresh stroke invalidates the redo stack
-        if let Some(tb) = &mut self.toolbar {
-            tb.has_annots = true;
-            tb.has_redo = false;
-        }
+        self.ops.push(op);
+        self.redo.clear(); // a fresh edit invalidates the redo stack
+        self.sync_tb_flags();
         self.dirty = true;
     }
 
@@ -400,62 +483,109 @@ impl Session {
         }
         let annots = std::mem::take(&mut self.annots);
         for a in &annots {
-            self.blit_to_layers(a);
+            // pixelate lives in `bright`, not the stroke layer — rendering it
+            // here would bake its preview border into the committed layer
+            if a.movable() {
+                self.blit_to_layers(a);
+            }
         }
         self.annots = annots;
     }
 
-    fn sync_tb_flags(&mut self) {
-        if let Some(tb) = &mut self.toolbar {
-            tb.has_annots = !self.annots.is_empty();
-            tb.has_redo = !self.redo.is_empty();
-        }
-    }
-
-    fn undo(&mut self) {
-        let Some(an) = self.annots.pop() else { return };
-        let backup = if matches!(an, Annotation::Pixelate(_)) {
-            self.backups.pop().inspect(|(rc, back)| {
-                annotate::restore_canvas(
-                    &mut self.bright,
-                    (self.bounds.w as f64 * self.cscale).round() as usize,
-                    (self.bounds.h as f64 * self.cscale).round() as usize,
-                    *rc,
-                    back,
-                );
-            })
-        } else {
-            None
-        };
-        self.redo.push((an, backup));
+    /// `annots` changed: layers and toolbar catch up, selection invalidates.
+    fn after_edit(&mut self) {
+        self.selected = None;
         self.rerender_layers();
         self.sync_tb_flags();
         self.dirty = true;
     }
 
+    /// Index of the topmost annotation under `p` (last-to-first), if any.
+    fn hit_top(&self, p: Point) -> Option<usize> {
+        self.annots.iter().rposition(|a| a.hit(p))
+    }
+
+    /// Physical dims of the `bright` canvas, for pixel-edit ops.
+    fn canvas_dims(&self) -> (usize, usize) {
+        (
+            (self.bounds.w as f64 * self.cscale).round() as usize,
+            (self.bounds.h as f64 * self.cscale).round() as usize,
+        )
+    }
+
+    fn sync_tb_flags(&mut self) {
+        if let Some(tb) = &mut self.toolbar {
+            tb.can_undo = !self.ops.is_empty();
+            tb.has_redo = !self.redo.is_empty();
+        }
+    }
+
+    fn undo(&mut self) {
+        // while an annot is detached in `grabbed`, op indexes into `annots`
+        // would desync — no undo until the drag settles
+        if self.grabbed.is_some() {
+            return;
+        }
+        let Some(op) = self.ops.pop() else { return };
+        match op {
+            Op::Add { pix } => {
+                let an = self.annots.pop().expect("Add op without annotation");
+                if let Some((rc, back)) = pix {
+                    let (cw, ch) = self.canvas_dims();
+                    annotate::restore_canvas(&mut self.bright, cw, ch, rc, &back);
+                }
+                self.redo.push(RedoOp::Add(an));
+            }
+            Op::Move { idx, before, after } => {
+                self.annots[idx] = before;
+                self.redo.push(RedoOp::Move { idx, after });
+            }
+            Op::Remove { idx, annot } => {
+                self.annots.insert(idx, annot);
+                self.redo.push(RedoOp::Remove { idx });
+            }
+        }
+        self.after_edit();
+    }
+
     fn redo(&mut self) {
-        let Some((an, backup)) = self.redo.pop() else {
+        if self.grabbed.is_some() {
+            return;
+        }
+        let Some(op) = self.redo.pop() else {
             return;
         };
-        if let Annotation::Pixelate(_) = an {
-            // deterministic: re-pixelating the restored pixels reproduces both
-            // the edit and the backup it had
-            if let Some((rc, _)) = backup {
-                let nb = annotate::pixelate_canvas(
-                    &mut self.bright,
-                    (self.bounds.w as f64 * self.cscale).round() as usize,
-                    (self.bounds.h as f64 * self.cscale).round() as usize,
-                    rc,
-                    (annotate::PIX_BLOCK as f64 * self.cscale).round().max(2.0) as i32,
-                );
-                self.backups.push((rc, nb));
+        match op {
+            RedoOp::Add(an) => {
+                let pix = if let Annotation::Pixelate(r) = an {
+                    // deterministic: re-pixelating the restored pixels
+                    // reproduces both the edit and the backup it had
+                    let rc = self.canvas_rect(r);
+                    let (cw, ch) = self.canvas_dims();
+                    let nb = annotate::pixelate_canvas(
+                        &mut self.bright,
+                        cw,
+                        ch,
+                        rc,
+                        (annotate::PIX_BLOCK as f64 * self.cscale).round().max(2.0) as i32,
+                    );
+                    Some((rc, nb))
+                } else {
+                    None
+                };
+                self.annots.push(an);
+                self.ops.push(Op::Add { pix });
             }
-        } else {
-            self.blit_to_layers(&an);
+            RedoOp::Move { idx, after } => {
+                let before = std::mem::replace(&mut self.annots[idx], after.clone());
+                self.ops.push(Op::Move { idx, before, after });
+            }
+            RedoOp::Remove { idx } => {
+                let annot = self.annots.remove(idx);
+                self.ops.push(Op::Remove { idx, annot });
+            }
         }
-        self.annots.push(an);
-        self.sync_tb_flags();
-        self.dirty = true;
+        self.after_edit();
     }
 
     /// Reset annotation state when the user starts a fresh selection.
@@ -464,18 +594,24 @@ impl Session {
         self.redo.clear();
         self.active = None;
         self.tool = None;
+        self.selected = None;
+        self.grabbed = None;
         for w in &mut self.wins {
             w.layer = None;
         }
-        for (rc, back) in self.backups.drain(..) {
-            annotate::restore_canvas(
-                &mut self.bright,
-                (self.bounds.w as f64 * self.cscale).round() as usize,
-                (self.bounds.h as f64 * self.cscale).round() as usize,
-                rc,
-                &back,
-            );
+        // newest-first: overlapping pixelate backups must peel back in LIFO
+        // order or the newer backup re-stamps scrambled pixels over the
+        // older one's originals
+        let (cw, ch) = self.canvas_dims();
+        for op in self.ops.drain(..).rev() {
+            if let Op::Add {
+                pix: Some((rc, back)),
+            } = op
+            {
+                annotate::restore_canvas(&mut self.bright, cw, ch, rc, &back);
+            }
         }
+        self.preedit.clear();
     }
 
     fn redraw_all(&self) {
@@ -594,7 +730,6 @@ impl Session {
                     buf[y * sw + x0..y * sw + x1].copy_from_slice(&srow);
                 }
                 // accent border around the local rect (1.5 logical px)
-                const ACCENT: u32 = 0x0A84FF;
                 let b = (1.5 * scale).round().max(1.0) as i32;
                 let (lx0, ly0) = (
                     (local.x as f64 * scale) as i32,
@@ -604,22 +739,7 @@ impl Session {
                     (local.right() as f64 * scale) as i32,
                     (local.bottom() as f64 * scale) as i32,
                 );
-                for i in 0..b {
-                    for x in lx0..lx1 {
-                        for yy in [ly0 + i, ly1 - 1 - i] {
-                            if x >= 0 && yy >= 0 && (x as usize) < sw && (yy as usize) < sh {
-                                buf[yy as usize * sw + x as usize] = ACCENT;
-                            }
-                        }
-                    }
-                    for y in ly0..ly1 {
-                        for xx in [lx0 + i, lx1 - 1 - i] {
-                            if xx >= 0 && y >= 0 && (xx as usize) < sw && (y as usize) < sh {
-                                buf[y as usize * sw + xx as usize] = ACCENT;
-                            }
-                        }
-                    }
-                }
+                frame_rect(&mut buf, sw, sh, lx0, ly0, lx1, ly1, b, ACCENT);
             }
         }
         // committed annotation layer (physical-res ARGB, 1:1 with buf) —
@@ -633,7 +753,8 @@ impl Session {
                     w: sw,
                     h: sh,
                 };
-                for a in &self.annots {
+                // same filter as rerender_layers: pixelate lives in `bright`
+                for a in self.annots.iter().filter(|a| a.movable()) {
                     a.render_phys(&mut al, wctx.vrect, scale);
                 }
             }
@@ -666,9 +787,27 @@ impl Session {
                 }
             }
         }
+        // in-flight IME composition appended to the Text draft — built once,
+        // shared by the preview render and the caret position below
+        let composed = match &self.active {
+            Some(Annotation::Text {
+                pos,
+                text,
+                px,
+                bold,
+                rgb,
+            }) if !self.preedit.is_empty() => Some(Annotation::Text {
+                pos: *pos,
+                text: format!("{text}{}", self.preedit),
+                px: *px,
+                bold: *bold,
+                rgb: *rgb,
+            }),
+            _ => None,
+        };
         // in-progress stroke preview at physical res
         if let Some(an) = &self.active {
-            an.render_phys(
+            composed.as_ref().unwrap_or(an).render_phys(
                 &mut sdf::Canvas {
                     buf: &mut buf,
                     w: sw,
@@ -682,10 +821,18 @@ impl Session {
         // text caret right after the typed run — the only visible marker
         // while the draft text is still empty
         if let Some(Annotation::Text {
-            pos, text, px, bold, rgb,
+            pos,
+            text,
+            px,
+            bold,
+            rgb,
         }) = &self.active
         {
-            let (tw, _) = annotate::text_extent(text, *px, *bold);
+            let shown: &str = match &composed {
+                Some(Annotation::Text { text, .. }) => text,
+                _ => text,
+            };
+            let (tw, _) = annotate::text_extent(shown, *px, *bold);
             let x0 = ((pos.x - wctx.vrect.x) as f64 * scale + tw * scale + scale) as i32;
             let y0 = ((pos.y - wctx.vrect.y) as f64 * scale) as i32;
             let y1 = y0 + (*px * scale) as i32;
@@ -696,6 +843,46 @@ impl Session {
                         buf[y as usize * sw + x as usize] = *rgb;
                     }
                 }
+            }
+            // keep the IME candidate popup anchored under the caret
+            wctx.win.set_ime_cursor_area(
+                PhysicalPosition::new(x0 + cw, y0),
+                PhysicalSize::new(cw as u32, (y1 - y0) as u32),
+            );
+        }
+        // grabbed annotation rides the preview path — it left `annots` and
+        // the window layers on grab, so it needs live rendering
+        if let Some(g) = &self.grabbed {
+            g.annot.render_phys(
+                &mut sdf::Canvas {
+                    buf: &mut buf,
+                    w: sw,
+                    h: sh,
+                    scale,
+                },
+                wctx.vrect,
+                scale,
+            );
+        }
+        // accent outline on the selected or grabbed annotation
+        let outlined = self
+            .grabbed
+            .as_ref()
+            .map(|g| &g.annot)
+            .or_else(|| self.selected.and_then(|i| self.annots.get(i)));
+        if let Some(an) = outlined {
+            if let Some(l) = an
+                .bbox()
+                .intersection(&wctx.vrect)
+                .map(|r| r.translated(-wctx.vrect.x, -wctx.vrect.y))
+            {
+                let b = (1.2 * scale).round().max(1.0) as i32;
+                let (x0, y0) = ((l.x as f64 * scale) as i32, (l.y as f64 * scale) as i32);
+                let (x1, y1) = (
+                    (l.right() as f64 * scale) as i32,
+                    (l.bottom() as f64 * scale) as i32,
+                );
+                frame_rect(&mut buf, sw, sh, x0, y0, x1, y1, b, ACCENT);
             }
         }
         if let Some(tb) = &self.toolbar {
@@ -735,6 +922,9 @@ impl Session {
             // launched via global hotkey -> no activation token; nudge the
             // compositor so keyboard focus lands on us (Esc must reach us)
             win.request_user_attention(Some(winit::window::UserAttentionType::Critical));
+            // without this winit never routes keys through the input context,
+            // so IME-composed text (Vietnamese Telex, CJK) cannot arrive
+            win.set_ime_allowed(true);
             let surf = Context::new(win.clone()).and_then(|c| Surface::new(&c, win.clone()));
             match surf {
                 Ok(surf) => self.wins.push(WinCtx {
@@ -771,7 +961,17 @@ impl Session {
                     v.x + (position.x / s).round() as i32,
                     v.y + (position.y / s).round() as i32,
                 );
-                if self.anchor.is_some() || self.active.is_some() {
+                if let Some(g) = &mut self.grabbed {
+                    // incremental integer delta — no drift, no per-frame
+                    // clone of `before`
+                    let dx = self.cursor.x - g.last.x;
+                    let dy = self.cursor.y - g.last.y;
+                    if dx != 0 || dy != 0 {
+                        g.annot.translate(dx, dy);
+                        g.last = self.cursor;
+                        self.dirty = true;
+                    }
+                } else if self.anchor.is_some() || self.active.is_some() {
                     if let Some(an) = &mut self.active {
                         match an {
                             Annotation::Pen { pts, .. } | Annotation::Marker { pts, .. } => {
@@ -794,6 +994,12 @@ impl Session {
                         self.dirty = true;
                         self.wins[i].win.set_cursor(if h.is_some() {
                             winit::window::CursorIcon::Pointer
+                        } else if self.tool == Some(Tool::Select) {
+                            if self.hit_top(self.cursor).is_some() {
+                                winit::window::CursorIcon::Move
+                            } else {
+                                winit::window::CursorIcon::Default
+                            }
                         } else if self.tool.is_some() {
                             winit::window::CursorIcon::Crosshair
                         } else {
@@ -867,18 +1073,27 @@ impl Session {
                             Item::Tool(t) => {
                                 let nt = if self.tool == Some(t) { None } else { Some(t) };
                                 self.tool = nt;
+                                if nt != Some(Tool::Select) {
+                                    self.selected = None;
+                                }
                                 let mr = self.sel.map(|s| self.sel_monitor(s));
                                 if let Some(tb) = &mut self.toolbar {
                                     tb.tool = nt;
                                     // options row toggles -> reflow the bar
+                                    // (Select has no stroke options to show)
                                     if let (Some(sel), Some(mr)) = (self.sel, mr) {
-                                        tb.layout(sel, mr, nt.is_some());
+                                        tb.layout(
+                                            sel,
+                                            mr,
+                                            nt.is_some() && nt != Some(Tool::Select),
+                                        );
                                     }
                                     tb.hover = None;
                                 }
                                 self.dirty = true;
                                 self.wins[i].win.set_cursor(match self.tool {
                                     Some(Tool::Text) => winit::window::CursorIcon::Text,
+                                    Some(Tool::Select) => winit::window::CursorIcon::Default,
                                     Some(_) => winit::window::CursorIcon::Crosshair,
                                     None => winit::window::CursorIcon::Pointer,
                                 });
@@ -893,6 +1108,26 @@ impl Session {
                         // armed tool: a click outside the toolbar starts a
                         // stroke — or moves the text caret when typing
                         if let Some(t) = self.tool {
+                            if t == Tool::Select {
+                                // grab the topmost picked annotation: it
+                                // leaves `annots` and rides the preview path
+                                if let Some(i) = self.hit_top(self.cursor) {
+                                    let an = self.annots.remove(i);
+                                    self.grabbed = Some(Grab {
+                                        idx: i,
+                                        before: an.clone(),
+                                        annot: an,
+                                        start: self.cursor,
+                                        last: self.cursor,
+                                    });
+                                    self.selected = None;
+                                    self.rerender_layers();
+                                } else {
+                                    self.selected = None;
+                                }
+                                self.dirty = true;
+                                return;
+                            }
                             self.commit_annot();
                             self.begin_annot(t, self.cursor);
                             return;
@@ -909,6 +1144,23 @@ impl Session {
                     self.anchor = Some(self.cursor);
                 }
                 ElementState::Released => {
+                    if let Some(g) = self.grabbed.take() {
+                        // a drag is a Move op; a bare click just selects
+                        if self.cursor != g.start {
+                            self.ops.push(Op::Move {
+                                idx: g.idx,
+                                before: g.before,
+                                after: g.annot.clone(),
+                            });
+                            self.redo.clear();
+                        }
+                        self.annots.insert(g.idx, g.annot);
+                        self.after_edit();
+                        if self.cursor == g.start {
+                            self.selected = Some(g.idx);
+                        }
+                        return;
+                    }
                     if self.active.is_some() {
                         // text stays live for keyboard input until Enter /
                         // the next click — strokes commit on release
@@ -930,8 +1182,16 @@ impl Session {
                 }
             },
             // IME-composed text (Vietnamese Telex/VNI, dead keys) arrives as
-            // Commit strings, not KeyboardInput
+            // Commit strings, not KeyboardInput; Preedit is the in-flight
+            // composition — shown so the user can see what is being typed
+            WindowEvent::Ime(winit::event::Ime::Preedit(s, _)) => {
+                if matches!(self.active, Some(Annotation::Text { .. })) {
+                    self.preedit = s;
+                    self.dirty = true;
+                }
+            }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
+                self.preedit.clear();
                 if let Some(Annotation::Text { text, .. }) = &mut self.active {
                     text.push_str(&s);
                     self.dirty = true;
@@ -943,7 +1203,10 @@ impl Session {
                 // Enter commits, Esc drops the draft, chars append
                 if matches!(self.active, Some(Annotation::Text { .. })) {
                     match &event.logical_key {
-                        Key::Named(NamedKey::Escape) => self.active = None,
+                        Key::Named(NamedKey::Escape) => {
+                            self.active = None;
+                            self.preedit.clear();
+                        }
                         Key::Named(NamedKey::Enter) => self.commit_annot(),
                         Key::Named(NamedKey::Backspace) => {
                             if let Some(Annotation::Text { text, .. }) = &mut self.active {
@@ -955,9 +1218,7 @@ impl Session {
                                 text.push(' ');
                             }
                         }
-                        Key::Character(s)
-                            if !self.mods.super_key() && !self.mods.control_key() =>
-                        {
+                        Key::Character(s) if !self.mods.super_key() && !self.mods.control_key() => {
                             if let Some(Annotation::Text { text, .. }) = &mut self.active {
                                 text.push_str(s.as_str());
                             }
@@ -967,6 +1228,34 @@ impl Session {
                     self.dirty = true;
                     return;
                 }
+                // Esc mid-grab: cancel the move, keep the annotation
+                if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                    && self.grabbed.is_some()
+                {
+                    if let Some(g) = self.grabbed.take() {
+                        self.annots.insert(g.idx, g.before);
+                        self.after_edit();
+                    }
+                    return;
+                }
+                // Select tool: Esc deselects, Delete/Backspace removes it
+                if let Some(i) = self.selected {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.selected = None;
+                            self.dirty = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete) => {
+                            let annot = self.annots.remove(i);
+                            self.ops.push(Op::Remove { idx: i, annot });
+                            self.redo.clear();
+                            self.after_edit();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                     self.finish(None);
                     return;
@@ -975,6 +1264,17 @@ impl Session {
                 // the buttons; T = extract text (OCR) straight to clipboard
                 if self.sel.is_some() && (self.mods.super_key() || self.mods.control_key()) {
                     if let Key::Character(c) = &event.logical_key {
+                        match c.as_str() {
+                            "z" => {
+                                self.undo();
+                                return;
+                            }
+                            "Z" => {
+                                self.redo();
+                                return;
+                            }
+                            _ => {}
+                        }
                         let act = match c.as_str() {
                             "s" | "S" => Some(Action::Save),
                             "c" | "C" => Some(Action::Copy),

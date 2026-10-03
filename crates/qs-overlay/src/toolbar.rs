@@ -18,6 +18,8 @@ pub enum Action {
 /// Drawing tools — stay in the overlay and annotate the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
+    /// Pick, move and delete existing annotations
+    Select,
     Pen,
     Arrow,
     Rect,
@@ -44,6 +46,7 @@ pub enum Item {
 }
 
 const MAIN: &[Item] = &[
+    Item::Tool(Tool::Select),
     Item::Tool(Tool::Pen),
     Item::Tool(Tool::Arrow),
     Item::Tool(Tool::Rect),
@@ -100,7 +103,7 @@ pub struct Toolbar {
     /// selected index into annotate::TEXT_SIZES for the text tool
     pub font_size: u8,
     /// whether Undo/Redo have something to pop (dims the buttons otherwise)
-    pub has_annots: bool,
+    pub can_undo: bool,
     pub has_redo: bool,
 }
 
@@ -117,7 +120,7 @@ impl Toolbar {
             color: 0,
             bold: false,
             font_size: crate::annotate::TEXT_SIZE_DEFAULT as u8,
-            has_annots: false,
+            can_undo: false,
             has_redo: false,
         };
         tb.layout(sel, mr, opts);
@@ -257,7 +260,7 @@ impl Toolbar {
                 || matches!(item, Item::FontSize(s) if self.font_size == *s)
                 || matches!(item, Item::Bold) && self.bold;
             let enabled = match item {
-                Item::Undo => self.has_annots,
+                Item::Undo => self.can_undo,
                 Item::Redo => self.has_redo,
                 _ => true,
             };
@@ -342,6 +345,27 @@ fn draw_icon(
 ) {
     let stroke = |d: f64, w: f64| stroke_cov(d, w, scale);
     match item {
+        Item::Tool(Tool::Select) => {
+            // pointer arrow: outline of the classic up-left cursor
+            let pts = [
+                (-4.2, -5.6),
+                (-4.2, 4.0),
+                (-1.4, 1.4),
+                (0.8, 5.0),
+                (2.9, 4.2),
+                (0.7, -0.2),
+                (4.6, -0.2),
+                (-4.2, -5.6),
+            ];
+            let mut d = f64::INFINITY;
+            for s in pts.windows(2) {
+                d = d.min(seg_sdf(lx, ly, s[0].0, s[0].1, s[1].0, s[1].1));
+            }
+            let a = stroke(d, 1.6) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
         Item::Tool(Tool::Pen) => {
             // pencil: body + pointed nib
             let d =

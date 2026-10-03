@@ -83,6 +83,59 @@ pub enum Annotation {
 }
 
 impl Annotation {
+    /// Whether the Select tool can grab it — pixelate is a destructive
+    /// canvas edit, not a movable block (its undo lives on the pixel
+    /// backup path).
+    pub fn movable(&self) -> bool {
+        !matches!(self, Self::Pixelate(_))
+    }
+
+    /// Pick test at logical point: strokes hit near their centreline
+    /// (stroke width + a grab margin), text hits inside its bbox.
+    pub fn hit(&self, p: Point) -> bool {
+        if !self.movable() {
+            return false;
+        }
+        match self {
+            Self::Text { .. } => {
+                let b = self.bbox();
+                p.x >= b.x && p.x < b.right() && p.y >= b.y && p.y < b.bottom()
+            }
+            _ => {
+                let w = self.params().map(|(w, ..)| w).unwrap_or(2.0);
+                // shape SDFs are signed — hit only on the stroke ring,
+                // not the hollow interior
+                self.dist(p.x as f64, p.y as f64).abs() <= w / 2.0 + 5.0
+            }
+        }
+    }
+
+    /// Shift all geometry by a logical delta.
+    pub fn translate(&mut self, dx: i32, dy: i32) {
+        match self {
+            Self::Pen { pts, .. } | Self::Marker { pts, .. } => {
+                for p in pts {
+                    p.x += dx;
+                    p.y += dy;
+                }
+            }
+            Self::Arrow { a, b, .. } => {
+                a.x += dx;
+                a.y += dy;
+                b.x += dx;
+                b.y += dy;
+            }
+            Self::Rect { r, .. } | Self::Ellipse { r, .. } | Self::Pixelate(r) => {
+                r.x += dx;
+                r.y += dy;
+            }
+            Self::Text { pos, .. } => {
+                pos.x += dx;
+                pos.y += dy;
+            }
+        }
+    }
+
     /// Stroke params (width, rgb, alpha); `None` for pixel edits.
     fn params(&self) -> Option<(f64, u32, f64)> {
         Some(match self {
@@ -125,21 +178,29 @@ impl Annotation {
     pub fn bbox(&self) -> Rect {
         let mut b = match self {
             Self::Pen { pts, .. } | Self::Marker { pts, .. } => {
-                pts.iter()
-                    .fold(Rect::new(pts[0].x, pts[0].y, 0, 0), |b, p| {
-                        let x = b.x.min(p.x);
-                        let y = b.y.min(p.y);
-                        Rect::new(
-                            x,
-                            y,
-                            (b.right().max(p.x) - x) as u32,
-                            (b.bottom().max(p.y) - y) as u32,
-                        )
-                    })
+                let Some(&p0) = pts.first() else {
+                    return Rect::default();
+                };
+                pts.iter().fold(Rect::new(p0.x, p0.y, 0, 0), |b, p| {
+                    let x = b.x.min(p.x);
+                    let y = b.y.min(p.y);
+                    Rect::new(
+                        x,
+                        y,
+                        (b.right().max(p.x) - x) as u32,
+                        (b.bottom().max(p.y) - y) as u32,
+                    )
+                })
             }
             Self::Arrow { a, b, .. } => Rect::from_drag(*a, *b),
             Self::Rect { r, .. } | Self::Ellipse { r, .. } | Self::Pixelate(r) => *r,
-            Self::Text { pos, text, px, bold, .. } => {
+            Self::Text {
+                pos,
+                text,
+                px,
+                bold,
+                ..
+            } => {
                 let (w, h) = text_extent(text, *px, *bold);
                 Rect::new(pos.x, pos.y, w.ceil() as u32 + 2, h.ceil() as u32 + 2)
             }
@@ -201,7 +262,14 @@ impl Annotation {
             }
             return;
         }
-        if let Self::Text { pos, text, px, bold, rgb } = self {
+        if let Self::Text {
+            pos,
+            text,
+            px,
+            bold,
+            rgb,
+        } = self
+        {
             render_text(t, *pos, text, *px, *bold, *rgb, vrect, scale);
             return;
         }
@@ -650,11 +718,36 @@ mod tests {
         // toolbar label masks (digits + letters) must contain real ink
         for (lbl, b) in [("T", false), ("B", true), ("14", false), ("48", false)] {
             let m = label_mask(lbl, b);
-            assert!(
-                m.iter().any(|&v| v > 0.5),
-                "label mask {lbl:?} has no ink"
-            );
+            assert!(m.iter().any(|&v| v > 0.5), "label mask {lbl:?} has no ink");
         }
+    }
+
+    /// Picking + moving: outlines hit on the stroke (not the hollow
+    /// interior), text hits its bbox, pixelate is not movable.
+    #[test]
+    fn translate_and_hit() {
+        let mut r = Annotation::Rect {
+            r: Rect::new(10, 10, 40, 20),
+            w: 3.0,
+            rgb: 0xFF0000,
+        };
+        assert!(!r.hit(Point::new(30, 20)), "hollow interior must not hit");
+        assert!(r.hit(Point::new(10, 20)), "left edge should hit");
+        r.translate(50, 0);
+        assert!(r.hit(Point::new(60, 20)));
+        assert!(!r.hit(Point::new(10, 20)), "old position must miss");
+
+        let t = Annotation::Text {
+            pos: Point::new(20, 20),
+            text: "hi".into(),
+            px: 14.0,
+            bold: false,
+            rgb: 0,
+        };
+        assert!(t.hit(Point::new(25, 25)));
+        assert!(!t.hit(Point::new(5, 5)));
+
+        assert!(!Annotation::Pixelate(Rect::new(0, 0, 10, 10)).movable());
     }
 
     /// Eyeball check — `cargo test -p qs-overlay -- --ignored` then open
