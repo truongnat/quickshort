@@ -99,11 +99,10 @@ fn run_one_shot(args: Args) -> Result<()> {
         return Ok(());
     };
 
-    let cfg = config::Config::load();
     let target = match args.out {
         Some(p) => SaveTarget::File(p),
-        None => SaveTarget::Dir(cfg.save_dir()),
+        None => SaveTarget::Dir(config::Config::load().save_dir()),
     };
-    actions::dispatch(frames, sel, action, &annots, &target, &cfg, true)?;
+    actions::dispatch(frames, sel, action, &annots, &target, true)?;
     Ok(())
 }

@@ -14,7 +14,6 @@ qs-core.workspace = true
 qs-capture.workspace = true
 qs-ocr.workspace = true
 qs-overlay.workspace = true
-qs-translate.workspace = true
 arboard = "3"
 dirs = "7.0.0"
 global-hotkey = "0.8.0"

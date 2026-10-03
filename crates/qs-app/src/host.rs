@@ -263,14 +263,6 @@ impl ApplicationHandler<HostEvent> for Host {
                 Ok(Outcome::TextCopied(n)) => {
                     self.toast_done(el, format!("Copied {n} chars"), true)
                 }
-                Ok(Outcome::Translated(n)) => {
-                    self.toast_done(el, format!("Translated · copied {n} chars"), true)
-                }
-                Ok(Outcome::TranslateFailed(n)) => self.toast_done(
-                    el,
-                    format!("Translate failed — copied {n} chars (original)"),
-                    false,
-                ),
                 Ok(Outcome::NoText) => self.toast_done(el, "No text found".to_string(), false),
                 Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
             },
@@ -315,26 +307,18 @@ impl ApplicationHandler<HostEvent> for Host {
             return;
         };
         if let OverlayEvent::Done(sel, action, annots) = out {
-            // OCR/translate can take a beat — show a live toast up front
-            let busy = match action {
-                qs_overlay::Action::Ocr => Some("Extracting text…"),
-                qs_overlay::Action::Translate => Some("Translating…"),
-                _ => None,
-            };
-            if let Some(msg) = busy {
-                if self.toast.is_none() {
-                    match Toast::open(el, msg) {
-                        Ok(t) => self.toast = Some(t),
-                        Err(e) => eprintln!("toast: {e:#}"),
-                    }
+            // OCR can take a beat — show a live toast before dispatching
+            if action == qs_overlay::Action::Ocr && self.toast.is_none() {
+                match Toast::open(el, "Extracting text…") {
+                    Ok(t) => self.toast = Some(t),
+                    Err(e) => eprintln!("toast: {e:#}"),
                 }
             }
             // stitch + encode off the UI thread; Done updates menu/toast later
             let px = self.proxy.clone();
             let target = SaveTarget::Dir(self.cfg.save_dir());
-            let cfg = self.cfg.clone();
             std::thread::spawn(move || {
-                let res = actions::dispatch(frames, sel, action, &annots, &target, &cfg, false)
+                let res = actions::dispatch(frames, sel, action, &annots, &target, false)
                     .map_err(|e| e.to_string());
                 let _ = px.send_event(HostEvent::Done(res));
             });

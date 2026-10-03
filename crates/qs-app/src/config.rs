@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Global hotkey in `global-hotkey` syntax, e.g. "CmdOrCtrl+Shift+S".
@@ -13,10 +13,6 @@ pub struct Config {
     /// Screenshot folder override; `None` = `~/Pictures/quickshort`.
     pub save_dir: Option<PathBuf>,
     pub launch_at_login: bool,
-    /// Target language for ⌘T translate (BCP-47: "vi", "en", "ja", ...).
-    pub translate_target: String,
-    /// Source language; "auto" lets the backend detect it.
-    pub translate_source: String,
 }
 
 impl Default for Config {
@@ -25,8 +21,6 @@ impl Default for Config {
             hotkey: "CmdOrCtrl+Shift+S".into(),
             save_dir: None,
             launch_at_login: false,
-            translate_target: "vi".into(),
-            translate_source: "auto".into(),
         }
     }
 }
