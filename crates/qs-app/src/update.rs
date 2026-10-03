@@ -23,16 +23,18 @@ pub struct Release {
 
 /// `Some` when the latest GitHub release is newer than this binary.
 pub fn check() -> Result<Option<Release>> {
-    let body: Value = ureq::get(&format!(
+    let resp = ureq::get(&format!(
         "https://api.github.com/repos/{REPO}/releases/latest"
     ))
     .header("User-Agent", "quickshort")
     .header("Accept", "application/vnd.github+json")
-    .call()
-    .context("release check failed")?
-    .body_mut()
-    .read_json()
-    .context("release reply is not JSON")?;
+    .call();
+    let body: Value = match resp {
+        Ok(mut r) => r.body_mut().read_json().context("release reply is not JSON")?,
+        // 404 = no release published yet — that's "up to date", not an error
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
+        Err(e) => return Err(e).context("release check failed"),
+    };
 
     let tag = body
         .get("tag_name")
