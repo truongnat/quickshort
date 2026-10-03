@@ -1,47 +1,37 @@
-# quickshort
+<div align="center">
+  <img src="assets/icon.png" width="120" alt="Quickshort">
+  <h1>Quickshort</h1>
+  <p><strong>Region screenshots with annotations and OCR — in Rust, native all the way down.</strong></p>
+  <p>
+    <a href="https://github.com/truongnat/quickshort/releases"><img src="https://img.shields.io/github/v/release/truongnat/quickshort?include_prereleases&label=release" alt="Release"></a>
+    <a href="https://github.com/truongnat/quickshort/actions/workflows/release.yml"><img src="https://github.com/truongnat/quickshort/actions/workflows/release.yml/badge.svg" alt="Build"></a>
+    <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-blue" alt="Platform">
+  </p>
+</div>
 
-A fast multi-monitor screenshot-selection tool in Rust. Pick a region —
-including across monitor boundaries — then Save to PNG, Copy the image,
-or extract its text via OCR, from an on-selection toolbar.
+<div align="center">
+  <img src="assets/screenshot.png" width="640" alt="Quickshort overlay: region selection with annotation toolbar">
+</div>
 
-Designed around a 4-layer pipeline:
+Press the global hotkey, drag a region — even across monitors — then save a
+pixel-perfect PNG, copy it, or pull its text out with the OS-native OCR
+engine. Draw on it first if you like. No Electron, no runtime, no model
+downloads.
 
-1. **Capture** every monitor into RAM
-2. **Overlay** borderless windows (one per monitor) showing the captured
-   frames dimmed, tracking a drag selection in a global virtual coordinate
-   space
-3. **Map** selection coordinates through each monitor's origin and DPI
-   scale factor
-4. **Stitch** per-monitor crops on a worker thread after the overlay closes
+## Features
 
-## Platforms
-
-| Session | Status | Backend |
-|---|---|---|
-| GNOME Wayland (Ubuntu/Fedora default) | ✅ works | `org.gnome.Mutter.ScreenCast` → PipeWire shm frames |
-| X11 (Xorg, i3, XFCE…) | ✅ works | RandR layout + `GetImage` |
-| KDE Plasma / wlroots Wayland | ❌ | needs xdg-desktop-portal fallback |
-| macOS 14+ | ✅ works | `SCScreenshotManager` per-display one-shot; needs Screen Recording permission for the terminal app |
-| Windows | ✅ works (untested on hardware) | GDI BitBlt per monitor, PER_MONITOR_AWARE_V2 |
-
-OCR (toolbar's text button) uses the OS-native engine — Vision
-`VNRecognizeTextRequest` on macOS, WinRT `Windows.Media.Ocr` on Windows —
-so no models ship with the binary. Linux has no native OCR API; the plan
-is an opt-in `paddle-ocr-rs` backend (PP-OCRv5 det + cls + `latin` rec
-covers vi+en) behind a cargo feature, added when Linux support is
-actually installed — until then it fails loud.
-
-On Wayland there is no portal dialog and no subprocess: the backend talks
-to mutter's private ScreenCast API (the same one the GNOME portal uses
-internally), then reads shared-memory buffers from PipeWire in-process —
-one connection multiplexes all monitor streams.
-
-## Requirements (GNOME Wayland)
-
-- Rust toolchain
-- `libpipewire-0.3-dev`, `libspa-0.2-dev`
-- For bindgen without clang: `.cargo/config.toml` already points at GCC's
-  freestanding headers; installing `clang` makes that file unnecessary
+- **Multi-monitor selection** — drag across monitor boundaries; per-monitor
+  crops are stitched through a virtual coordinate space
+- **Full physical resolution** — Retina and mixed-DPI displays are captured
+  and stitched at native framebuffer pixels, never downsampled
+- **Annotations** — pen, arrow, rect, ellipse, marker, pixelate, undo/redo,
+  stroke sizes, color palette — rendered at output resolution
+- **Native OCR** — Vision `VNRecognizeTextRequest` on macOS,
+  `Windows.Media.Ocr` on Windows; nothing ships in the binary
+- **Resident tray app** — menu-bar icon, global hotkey, launch at login,
+  recent captures, settings window, auto-update
+- **One-shot CLI** — `quickshort --capture` fits into scripts and window
+  manager keybinds
 
 ## Install
 
@@ -58,29 +48,24 @@ brew tap truongnat/tap
 brew install --cask quickshort
 ```
 
-**Unsigned build** — there is no Developer ID signature or notarization.
-On first launch Gatekeeper may warn; right-click the app → **Open** →
-**Open** to bypass once. The Homebrew cask strips the quarantine
-attribute automatically so `brew install` needs no workaround. The app
-is signed with a stable self-signed identity purely so macOS keeps your
-Screen Recording / Accessibility grants across updates — this does
-**not** make it Gatekeeper-trusted.
+> **Unsigned build** — no Developer ID signature or notarization. On first
+> launch, right-click the app → **Open** → **Open** once. The cask strips
+> quarantine automatically. The app is signed with a stable self-signed
+> identity purely so macOS keeps your permission grants across updates.
 
 Required permissions (System Settings → Privacy & Security):
 
-- **Screen Recording** — needed to capture the screen at all
+- **Screen Recording** — needed to capture anything
 - **Accessibility** — needed for the global hotkey
 
-**Updates** — the app checks GitHub Releases once a day in the
-background and shows a toast when a new version is out; the tray item
-turns into *Update to vX — Restart to Install*. Manual check:
-tray menu → **Check for Updates…**. Homebrew users can also
-`brew upgrade --cask quickshort`.
+**Updates** — the app checks GitHub Releases once a day in the background;
+the tray item becomes *Update to vX — Restart to Install*. Or: tray menu →
+**Check for Updates…**, or `brew upgrade --cask quickshort`.
 
 ### Linux
 
 ```bash
-./install.sh                    # build release -> ~/.local/bin + GNOME hotkey
+./install.sh                              # build release -> ~/.local/bin + GNOME hotkey
 ./install.sh --hotkey '<Super><Shift>S'   # custom binding
 ```
 
@@ -88,19 +73,29 @@ The script installs the binary and registers a GNOME custom shortcut via
 `gsettings` (default `Ctrl+Alt+Q`, effective immediately). On non-GNOME
 desktops it installs the binary only — bind it yourself.
 
+### Windows
+
+Build from source (`cargo build --release -p qs-app`); installer packaging
+is not wired up yet.
+
 ## Usage
 
 ```bash
-quickshort                      # resident tray app (menu + global hotkey)
-quickshort --capture            # one-shot: select region -> action -> exit
-quickshort --capture --delay 2  # wait before capture (menus, tooltips)
-quickshort --capture --out ~/shots/a.png  # explicit output path
+quickshort                              # resident tray app (default)
+quickshort --capture                    # one-shot: select -> action -> exit
+quickshort --capture --delay 2          # wait first (menus, tooltips)
+quickshort --capture --out ~/shots/a.png
 ```
 
-**Tray app** (default mode): icon sits in the menu bar / system tray. Click
-it or press the global hotkey (default `CmdOrCtrl+Shift+S`) to start a
-selection. The menu offers Capture Region, Recent Captures (opens saved
-files), Open Screenshots Folder, Launch at Login and Quit. Settings live in
+| Context | Shortcut | Action |
+|---|---|---|
+| Anywhere | `⌘⇧S` (configurable) | Start a selection |
+| Selection made | `⌘S` / `⌘C` / `⌘T` | Save PNG / copy image / OCR → clipboard |
+| Selection made | `Esc` | Cancel |
+
+The tray menu offers Capture Region, Recent Captures, Open Screenshots
+Folder, Check for Updates, Launch at Login, Settings and Quit. Settings
+(hotkey, save folder, launch at login) live in
 `~/.config/quickshort/config.toml`:
 
 ```toml
@@ -109,42 +104,66 @@ hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax
 launch_at_login = false
 ```
 
-macOS app bundle: `packaging/macos/bundle.sh` produces `Quickshort.app`
-(LSUIElement tray-only). `packaging/macos/release.sh` runs the full
-pipeline — release build (universal when both rustup targets exist),
-bundle, self-signed identity, zip + dmg + sha256 into `dist/`. Tagging
-`v*` triggers the GitHub workflow which does the same and publishes a
-GitHub Release. Linux one-shot hotkey binding is still handled by
-`install.sh`.
+The selection toolbar docks to whichever edge of the region has room.
+Clicking away starts a new selection; Esc or a click without dragging
+cancels. Saved files go to `~/Pictures/quickshort/quickshort-<ts>.png`.
 
-**Selection toolbar**: drag to select, then pick a drawing tool (pen,
-arrow, rect, ellipse, marker, pixelate) — a second row offers 3 stroke
-sizes and a color palette — or an action: **Save** writes
-`~/Pictures/quickshort/quickshort-<ts>.png`, **Copy** puts the image on
-the clipboard, **OCR** puts the recognized text on the clipboard. The
-toolbar docks to whichever side of the selection has room. Clicking away
-starts a new selection; Esc or a click without dragging cancels. Undo/Redo
-buttons track strokes and pixelate ops. In `--capture` mode on Wayland the
-process stays alive serving the clipboard until you copy something else
-(clipboard is peer-to-peer there).
+## How it works
+
+```
+capture every monitor into RAM
+  → dimmed overlay windows (one per monitor)
+  → selection in global virtual coordinates
+  → map through each monitor's origin + DPI scale
+  → stitch per-monitor crops on a worker thread
+```
+
+| Crate | Role |
+|---|---|
+| `qs-core` | geometry + stitching, pure |
+| `qs-capture` | per-OS backends behind `ScreenCapture` |
+| `qs-overlay` | winit + softbuffer, SDF-drawn toolbar, annotation layers |
+| `qs-ocr` | native text extraction |
+| `qs-app` | CLI + resident tray app (`tray-icon`/`muda`/`global-hotkey`), updates |
+
+Capture backends:
+
+| Platform | Backend |
+|---|---|
+| macOS 14+ | `SCScreenshotManager` per-display one-shot at framebuffer pixels |
+| Windows | GDI BitBlt per monitor, `PER_MONITOR_AWARE_V2` |
+| GNOME Wayland | `org.gnome.Mutter.ScreenCast` → PipeWire shm frames, in-process |
+| X11 | RandR layout + `GetImage` |
+
+On Wayland there is no portal dialog and no subprocess — the backend talks
+to mutter's private ScreenCast API (the same one the GNOME portal uses
+internally), then reads shared-memory buffers from PipeWire, one connection
+multiplexing all monitor streams. KDE Plasma / wlroots need an
+xdg-desktop-portal fallback (not built yet).
+
+OCR on Linux has no native API; the plan is an opt-in `paddle-ocr-rs`
+backend behind a cargo feature — until then it fails loud.
 
 ## Development
 
 ```bash
-cargo test                      # unit tests (core stitching)
-cargo test -p qs-capture mutter -- --ignored   # real capture, needs GNOME Wayland
-cargo run -p qs-app
+cargo test                                       # unit tests
+cargo test -p qs-capture -- --ignored            # real capture (needs Wayland/macOS)
+cargo run -p qs-app                              # resident app
+cargo run -p qs-app -- --capture                 # one-shot
 ```
 
-Layout: `qs-core` (geometry + stitch, pure), `qs-capture` (per-OS
-backends behind `ScreenCapture`), `qs-overlay` (winit + softbuffer,
-SDF-drawn toolbar — exposes a reusable `Overlay` session for embedding
-in a host event loop), `qs-ocr` (native text extraction),
-`qs-app` (one-shot CLI + resident tray app via `tray-icon`/`muda`/
-`global-hotkey`).
+Release packaging: `packaging/macos/release.sh` runs the full pipeline —
+release build (universal when both rustup targets exist), `Quickshort.app`
+bundle, self-signed identity (`packaging/macos/gen_signing_cert.sh`), zip +
+dmg + sha256 into `dist/`. Tagging `v*` triggers the GitHub workflow, which
+does the same and publishes a GitHub Release.
 
 ## Known limits
 
 - Mutter inhibits screencast while the screen is locked
-- Overlay needs one window per monitor (Wayland has no global window
+- Wayland needs one overlay window per monitor (no global window
   positioning); pointer grab carries the selection across monitors
+- Unsigned macOS builds: first launch needs one right-click → Open; the
+  self-signed identity keeps TCC grants across updates but is not a
+  Developer ID
