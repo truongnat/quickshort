@@ -3238,6 +3238,7 @@ dependencies = [
 name = "qs-overlay"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "image",
  "objc2 0.6.4",

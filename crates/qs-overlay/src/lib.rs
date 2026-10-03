@@ -213,9 +213,10 @@ struct Session {
     backups: Vec<PixBackup>,
     /// (annotation, pixelate backup) entries popped by Undo
     redo: Vec<(Annotation, Option<PixBackup>)>,
-    /// current stroke size level / palette index
+    /// current stroke size level / palette index / text weight
     size: u8,
     color: usize,
+    bold: bool,
     mods: winit::keyboard::ModifiersState,
     result: Option<(Rect, Action, Vec<Annotation>)>,
     done: bool,
@@ -242,6 +243,7 @@ impl Session {
             redo: Vec::new(),
             size: 1,
             color: 0,
+            bold: false,
             mods: winit::keyboard::ModifiersState::empty(),
             result: None,
             done: false,
@@ -317,6 +319,13 @@ impl Session {
                 rgb,
             },
             Tool::Pixelate => Annotation::Pixelate(Rect::new(p.x, p.y, 0, 0)),
+            Tool::Text => Annotation::Text {
+                pos: p,
+                text: String::new(),
+                px: annotate::FONT_PX[self.size as usize],
+                bold: self.bold,
+                rgb,
+            },
         });
         self.dirty = true;
     }
@@ -330,6 +339,7 @@ impl Session {
             Annotation::Rect { r, .. }
             | Annotation::Ellipse { r, .. }
             | Annotation::Pixelate(r) => r.w >= MIN_SELECT && r.h >= MIN_SELECT,
+            Annotation::Text { text, .. } => !text.trim().is_empty(),
         };
         if !ok {
             return;
@@ -666,6 +676,25 @@ impl Session {
                 scale,
             );
         }
+        // text caret right after the typed run — the only visible marker
+        // while the draft text is still empty
+        if let Some(Annotation::Text {
+            pos, text, px, bold, rgb,
+        }) = &self.active
+        {
+            let (tw, _) = annotate::text_extent(text, *px, *bold);
+            let x0 = ((pos.x - wctx.vrect.x) as f64 * scale + tw * scale + scale) as i32;
+            let y0 = ((pos.y - wctx.vrect.y) as f64 * scale) as i32;
+            let y1 = y0 + (*px * scale) as i32;
+            let cw = (1.6 * scale).round().max(1.0) as i32;
+            for x in x0..x0 + cw {
+                for y in y0..y1 {
+                    if x >= 0 && y >= 0 && (x as usize) < sw && (y as usize) < sh {
+                        buf[y as usize * sw + x as usize] = *rgb;
+                    }
+                }
+            }
+        }
         if let Some(tb) = &self.toolbar {
             tb.paint(&mut buf, sw, sh, wctx.vrect, scale);
         }
@@ -751,6 +780,7 @@ impl Session {
                             | Annotation::Pixelate(r) => {
                                 *r = Rect::from_drag(self.shape_anchor, self.cursor)
                             }
+                            Annotation::Text { .. } => {}
                         }
                     }
                     self.dirty = true;
@@ -782,6 +812,12 @@ impl Session {
                         .as_ref()
                         .and_then(|tb| tb.hit(self.cursor).map(|bi| tb.buttons[bi].0));
                     if let Some(item) = hit_item {
+                        // actions and tool switches end a text edit so it
+                        // bakes into the result; option clicks (size, color,
+                        // bold) live-update the draft and keep it open
+                        if matches!(item, Item::Act(_) | Item::Tool(_)) {
+                            self.commit_annot();
+                        }
                         match item {
                             Item::Act(action) => {
                                 self.finish(Some(action));
@@ -793,12 +829,28 @@ impl Session {
                                 if let Some(tb) = &mut self.toolbar {
                                     tb.size = s;
                                 }
+                                if let Some(Annotation::Text { px, .. }) = &mut self.active {
+                                    *px = annotate::FONT_PX[s as usize];
+                                }
                                 self.dirty = true;
                             }
                             Item::Color(c) => {
                                 self.color = c;
                                 if let Some(tb) = &mut self.toolbar {
                                     tb.color = c;
+                                }
+                                if let Some(Annotation::Text { rgb, .. }) = &mut self.active {
+                                    *rgb = annotate::PALETTE[c];
+                                }
+                                self.dirty = true;
+                            }
+                            Item::Bold => {
+                                self.bold = !self.bold;
+                                if let Some(tb) = &mut self.toolbar {
+                                    tb.bold = self.bold;
+                                }
+                                if let Some(Annotation::Text { bold, .. }) = &mut self.active {
+                                    *bold = self.bold;
                                 }
                                 self.dirty = true;
                             }
@@ -815,10 +867,10 @@ impl Session {
                                     tb.hover = None;
                                 }
                                 self.dirty = true;
-                                self.wins[i].win.set_cursor(if self.tool.is_some() {
-                                    winit::window::CursorIcon::Crosshair
-                                } else {
-                                    winit::window::CursorIcon::Pointer
+                                self.wins[i].win.set_cursor(match self.tool {
+                                    Some(Tool::Text) => winit::window::CursorIcon::Text,
+                                    Some(_) => winit::window::CursorIcon::Crosshair,
+                                    None => winit::window::CursorIcon::Pointer,
                                 });
                             }
                         }
@@ -828,8 +880,10 @@ impl Session {
                         if tb.contains(self.cursor) {
                             return; // padding area: swallow, don't start a drag
                         }
-                        // armed tool: a click outside the toolbar starts a stroke
+                        // armed tool: a click outside the toolbar starts a
+                        // stroke — or moves the text caret when typing
                         if let Some(t) = self.tool {
+                            self.commit_annot();
                             self.begin_annot(t, self.cursor);
                             return;
                         }
@@ -846,7 +900,11 @@ impl Session {
                 }
                 ElementState::Released => {
                     if self.active.is_some() {
-                        self.commit_annot();
+                        // text stays live for keyboard input until Enter /
+                        // the next click — strokes commit on release
+                        if !matches!(self.active, Some(Annotation::Text { .. })) {
+                            self.commit_annot();
+                        }
                         return;
                     }
                     let Some(a) = self.anchor.take() else { return };
@@ -861,8 +919,44 @@ impl Session {
                     }
                 }
             },
+            // IME-composed text (Vietnamese Telex/VNI, dead keys) arrives as
+            // Commit strings, not KeyboardInput
+            WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
+                if let Some(Annotation::Text { text, .. }) = &mut self.active {
+                    text.push_str(&s);
+                    self.dirty = true;
+                }
+            }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                // text tool owns the keyboard while a Text annotation is live:
+                // Enter commits, Esc drops the draft, chars append
+                if matches!(self.active, Some(Annotation::Text { .. })) {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => self.active = None,
+                        Key::Named(NamedKey::Enter) => self.commit_annot(),
+                        Key::Named(NamedKey::Backspace) => {
+                            if let Some(Annotation::Text { text, .. }) = &mut self.active {
+                                text.pop();
+                            }
+                        }
+                        Key::Named(NamedKey::Space) => {
+                            if let Some(Annotation::Text { text, .. }) = &mut self.active {
+                                text.push(' ');
+                            }
+                        }
+                        Key::Character(s)
+                            if !self.mods.super_key() && !self.mods.control_key() =>
+                        {
+                            if let Some(Annotation::Text { text, .. }) = &mut self.active {
+                                text.push_str(s.as_str());
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.dirty = true;
+                    return;
+                }
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                     self.finish(None);
                     return;

@@ -23,6 +23,7 @@ pub enum Tool {
     Rect,
     Ellipse,
     Marker,
+    Text,
     Pixelate,
 }
 
@@ -36,6 +37,8 @@ pub enum Item {
     Size(u8),
     /// Palette index — options row
     Color(usize),
+    /// Bold toggle — options row, only while the text tool is armed
+    Bold,
 }
 
 const MAIN: &[Item] = &[
@@ -44,6 +47,7 @@ const MAIN: &[Item] = &[
     Item::Tool(Tool::Rect),
     Item::Tool(Tool::Ellipse),
     Item::Tool(Tool::Marker),
+    Item::Tool(Tool::Text),
     Item::Tool(Tool::Pixelate),
     Item::Undo,
     Item::Redo,
@@ -89,6 +93,8 @@ pub struct Toolbar {
     /// selected size level / palette index for the next stroke
     pub size: u8,
     pub color: usize,
+    /// bold state for the text tool
+    pub bold: bool,
     /// whether Undo/Redo have something to pop (dims the buttons otherwise)
     pub has_annots: bool,
     pub has_redo: bool,
@@ -105,6 +111,7 @@ impl Toolbar {
             tool: None,
             size: 1,
             color: 0,
+            bold: false,
             has_annots: false,
             has_redo: false,
         };
@@ -116,7 +123,12 @@ impl Toolbar {
     pub fn layout(&mut self, sel: Rect, mr: Rect, opts: bool) {
         let d = R * 2.0;
         let n = MAIN.len() as f64;
-        let on = OPTS.len() as f64;
+        // the text tool gets a Bold toggle after the size levels
+        let mut opts_row: Vec<Item> = OPTS.to_vec();
+        if self.tool == Some(Tool::Text) {
+            opts_row.insert(3, Item::Bold);
+        }
+        let on = opts_row.len() as f64;
         let rows = if opts { 2.0 } else { 1.0 };
         // second row aligns under the main row, slightly narrower
         let (hw, hh) = (
@@ -198,7 +210,7 @@ impl Toolbar {
         self.buttons.clear();
         place(MAIN, false, &mut self.buttons);
         if opts {
-            place(OPTS, true, &mut self.buttons);
+            place(&opts_row, true, &mut self.buttons);
         }
     }
 
@@ -230,7 +242,8 @@ impl Toolbar {
             let cy = (r.y as f64 + r.h as f64 / 2.0 - vrect.y as f64) * scale;
             let active = matches!(item, Item::Tool(t) if self.tool == Some(*t))
                 || matches!(item, Item::Size(s) if self.size == *s)
-                || matches!(item, Item::Color(c) if self.color == *c);
+                || matches!(item, Item::Color(c) if self.color == *c)
+                || matches!(item, Item::Bold) && self.bold;
             let enabled = match item {
                 Item::Undo => self.has_annots,
                 Item::Redo => self.has_redo,
@@ -357,6 +370,26 @@ fn draw_icon(
             }
             let d2 = seg_sdf(lx, ly, 1.6, -2.0, 4.8, -5.2);
             let a = stroke(d2, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Tool(Tool::Text) | Item::Bold => {
+            // real letter glyphs — rasterized once into a coverage grid
+            let (c, b) = if matches!(item, Item::Bold) {
+                ('B', true)
+            } else {
+                ('T', false)
+            };
+            let m = crate::annotate::letter_mask(c, b);
+            let n = crate::annotate::ICON_MASK_N;
+            let gx = ((lx + 8.0) / 16.0 * n as f64) as i32;
+            let gy = ((ly + 8.0) / 16.0 * n as f64) as i32;
+            let a = if (0..n as i32).contains(&gx) && (0..n as i32).contains(&gy) {
+                m[gy as usize * n + gx as usize] as f64 * fg_a
+            } else {
+                0.0
+            };
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }

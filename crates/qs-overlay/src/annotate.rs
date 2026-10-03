@@ -4,8 +4,11 @@
 //! stitched image — `stitch` normalizes to scale 1.0 so coords map 1:1.
 
 use crate::sdf::{ellipse_sdf, rrect_sdf, seg_sdf, stroke_cov, Canvas};
+use ab_glyph::{point, Font, FontVec, ScaleFont, VariableFont};
 use image::RgbaImage;
 use qs_core::{Point, Rect};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 /// Palette for drawing tools (system colors).
 pub const PALETTE: [u32; 8] = [
@@ -23,6 +26,8 @@ pub const PALETTE: [u32; 8] = [
 pub const SIZES: [f64; 3] = [2.0, 3.6, 6.0];
 pub const MARKER_SIZES: [f64; 3] = [6.0, 9.5, 14.0];
 const MARKER_A: f64 = 0.42;
+/// Font sizes per size level (S/M/L) for the text tool, logical px.
+pub const FONT_PX: [f64; 3] = [16.0, 24.0, 34.0];
 pub const PIX_BLOCK: i32 = 8; // pixelate block, logical px
 const ACCENT: u32 = 0x0A84FF; // pixelate drag-preview outline
 
@@ -56,6 +61,15 @@ pub enum Annotation {
     },
     /// Destructive pixel edit — kept in the list so output ordering survives.
     Pixelate(Rect),
+    /// Placed text — `pos` is the top-left of the line (logical coords).
+    Text {
+        pos: Point,
+        text: String,
+        /// font size, logical px
+        px: f64,
+        bold: bool,
+        rgb: u32,
+    },
 }
 
 impl Annotation {
@@ -67,7 +81,7 @@ impl Annotation {
             Self::Arrow { w, rgb, .. }
             | Self::Rect { w, rgb, .. }
             | Self::Ellipse { w, rgb, .. } => (*w, *rgb, 1.0),
-            Self::Pixelate(_) => return None,
+            Self::Pixelate(_) | Self::Text { .. } => return None,
         })
     }
 
@@ -93,7 +107,7 @@ impl Annotation {
                 r.w as f64 / 2.0,
                 r.h as f64 / 2.0,
             ),
-            Self::Pixelate(_) => f64::INFINITY,
+            Self::Pixelate(_) | Self::Text { .. } => f64::INFINITY,
         }
     }
 
@@ -115,6 +129,10 @@ impl Annotation {
             }
             Self::Arrow { a, b, .. } => Rect::from_drag(*a, *b),
             Self::Rect { r, .. } | Self::Ellipse { r, .. } | Self::Pixelate(r) => *r,
+            Self::Text { pos, text, px, bold, .. } => {
+                let (w, h) = text_extent(text, *px, *bold);
+                Rect::new(pos.x, pos.y, w.ceil() as u32 + 2, h.ceil() as u32 + 2)
+            }
         };
         let pad = 4 + self
             .params()
@@ -171,6 +189,10 @@ impl Annotation {
                 t.blend(x0, y, ACCENT, 0.9);
                 t.blend(x1 - 1, y, ACCENT, 0.9);
             }
+            return;
+        }
+        if let Self::Text { pos, text, px, bold, rgb } = self {
+            render_text(t, *pos, text, *px, *bold, *rgb, vrect, scale);
             return;
         }
         let Some((w, rgb, alpha)) = self.params() else {
@@ -429,4 +451,196 @@ pub fn annotate_image(img: &mut RgbaImage, sel: Rect, annots: &[Annotation], sca
         }
     }
     flush(&layer, img);
+}
+
+/// Bundled Inter variable font (OFL — fonts/OFL.txt): `wght` 100–900 and
+/// `opsz` live in one file, so Regular/Bold are runtime coordinates.
+/// `set_variation` needs `&mut`, so the instance sits in a Mutex.
+fn with_font<T>(px: f64, bold: bool, f: impl FnOnce(&FontVec) -> T) -> T {
+    static FONT: OnceLock<Mutex<FontVec>> = OnceLock::new();
+    let mut font = FONT
+        .get_or_init(|| {
+            Mutex::new(
+                FontVec::try_from_vec(include_bytes!("../fonts/Inter.var.ttf").to_vec())
+                    .expect("bundled Inter.var.ttf must parse"),
+            )
+        })
+        .lock()
+        .unwrap();
+    font.set_variation(b"wght", if bold { 700.0 } else { 400.0 });
+    font.set_variation(b"opsz", px as f32);
+    f(&font)
+}
+
+/// (advance width, line height) of `text` at `px` logical — used for the
+/// caret position and the annotation bbox.
+pub fn text_extent(text: &str, px: f64, bold: bool) -> (f64, f64) {
+    with_font(px, bold, |f| {
+        let s = f.as_scaled(px as f32);
+        let mut w = 0.0f32;
+        let mut prev = None;
+        for c in text.chars() {
+            let id = s.glyph_id(c);
+            if let Some(p) = prev {
+                w += s.kern(p, id);
+            }
+            w += s.h_advance(id);
+            prev = Some(id);
+        }
+        (w as f64, s.height() as f64)
+    })
+}
+
+/// Rasterize text at physical res into the blend target. `pos` is the
+/// top-left in logical coords; the baseline sits at `pos.y + ascent`.
+#[allow(clippy::too_many_arguments)]
+fn render_text(
+    t: &mut impl Blend,
+    pos: Point,
+    text: &str,
+    px: f64,
+    bold: bool,
+    rgb: u32,
+    vrect: Rect,
+    scale: f64,
+) {
+    if text.is_empty() {
+        return;
+    }
+    with_font(px, bold, |f| {
+        let s = f.as_scaled((px * scale) as f32);
+        let mut pen = point(
+            (pos.x - vrect.x) as f32 * scale as f32,
+            (pos.y - vrect.y) as f32 * scale as f32 + s.ascent(),
+        );
+        let mut prev = None;
+        for c in text.chars() {
+            let id = s.glyph_id(c);
+            if let Some(p) = prev {
+                pen.x += s.kern(p, id);
+            }
+            if let Some(og) = f.outline_glyph(id.with_scale_and_position((px * scale) as f32, pen))
+            {
+                let bb = og.px_bounds();
+                og.draw(|gx, gy, cov| {
+                    t.blend(
+                        bb.min.x as i32 + gx as i32,
+                        bb.min.y as i32 + gy as i32,
+                        rgb,
+                        cov as f64,
+                    );
+                });
+            }
+            pen.x += s.h_advance(id);
+            prev = Some(id);
+        }
+    });
+}
+
+/// Raster resolution of the letter icon masks (grid covers logical ±8).
+pub(crate) const ICON_MASK_N: usize = 56;
+
+/// Letter glyph coverage grid for the Text/Bold toolbar icons — the real
+/// font instead of a hand-drawn SDF letter, so they stay legible.
+pub(crate) fn letter_mask(c: char, bold: bool) -> &'static [f32] {
+    static MASKS: OnceLock<HashMap<(char, bool), Vec<f32>>> = OnceLock::new();
+    &MASKS.get_or_init(|| {
+        [('T', false), ('B', true)]
+            .into_iter()
+            .map(|k| (k, letter_raster(k.0, k.1)))
+            .collect()
+    })[&(c, bold)]
+}
+
+fn letter_raster(c: char, bold: bool) -> Vec<f32> {
+    let n = ICON_MASK_N;
+    let mut m = vec![0f32; n * n];
+    with_font(16.0, bold, |f| {
+        let px = n as f32 * 0.72;
+        let s = f.as_scaled(px);
+        let id = s.glyph_id(c);
+        if let Some(og) = f.outline_glyph(id.with_scale_and_position(px, point(0.0, s.ascent()))) {
+            let bb = og.px_bounds();
+            // draw() yields offsets from px_bounds' min — shifting by
+            // (n - ink)/2 - min centers the ink box in the grid
+            og.draw(|x, y, cov| {
+                let gx = (x as f32 + (n as f32 - bb.width()) / 2.0) as i32;
+                let gy = (y as f32 + (n as f32 - bb.height()) / 2.0) as i32;
+                if (0..n as i32).contains(&gx) && (0..n as i32).contains(&gy) {
+                    let i = gy as usize * n + gx as usize;
+                    m[i] = m[i].max(cov);
+                }
+            });
+        }
+    });
+    m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Text must rasterize, and bold must lay down more ink than regular.
+    #[test]
+    fn text_renders_and_bold_fattens() {
+        fn ink(text: &str, bold: bool) -> usize {
+            let mut buf = vec![0u32; 220 * 60];
+            let an = Annotation::Text {
+                pos: Point::new(6, 6),
+                text: text.into(),
+                px: 28.0,
+                bold,
+                rgb: 0xFF0000,
+            };
+            an.render_phys(
+                &mut ArgbLayer {
+                    buf: &mut buf,
+                    w: 220,
+                    h: 60,
+                },
+                Rect::new(0, 0, 220, 60),
+                1.0,
+            );
+            buf.iter().filter(|&&p| (p >> 24) > 0).count()
+        }
+        let reg = ink("Quick", false);
+        let bold = ink("Quick", true);
+        assert!(reg > 200, "regular text left no ink: {reg}");
+        assert!(bold > reg, "bold {bold} should exceed regular {reg}");
+        let (w, h) = text_extent("Quick", 28.0, false);
+        assert!(w > 40.0 && h > 20.0, "extent {w}x{h}");
+    }
+
+    /// Eyeball check — `cargo test -p qs-overlay -- --ignored` then open
+    /// /tmp/qs-text-test.png
+    #[test]
+    #[ignore]
+    fn text_visual() {
+        let mut img = RgbaImage::from_pixel(400, 200, image::Rgba([40, 44, 52, 255]));
+        let annots = vec![
+            Annotation::Text {
+                pos: Point::new(20, 20),
+                text: "Quick short".into(),
+                px: FONT_PX[0],
+                bold: false,
+                rgb: PALETTE[4],
+            },
+            Annotation::Text {
+                pos: Point::new(20, 60),
+                text: "Regular & Bold".into(),
+                px: FONT_PX[1],
+                bold: true,
+                rgb: PALETTE[6],
+            },
+            Annotation::Text {
+                pos: Point::new(20, 110),
+                text: "Xin chào Việt Nam".into(),
+                px: FONT_PX[2],
+                bold: false,
+                rgb: PALETTE[0],
+            },
+        ];
+        annotate_image(&mut img, Rect::new(0, 0, 400, 200), &annots, 1.0);
+        img.save("/tmp/qs-text-test.png").unwrap();
+    }
 }
