@@ -110,6 +110,37 @@ impl Annotation {
         }
     }
 
+    /// Byte index of the text gap nearest logical `p` — used to place the
+    /// editing caret on click. `None` for non-Text annotations.
+    pub fn text_index_at(&self, p: Point) -> Option<usize> {
+        let Self::Text {
+            pos,
+            text,
+            px,
+            bold,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let rel = (p.x - pos.x) as f64;
+        let mut best = 0usize;
+        let mut best_d = f64::INFINITY;
+        for i in text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+        {
+            let (w, _) = text_extent(&text[..i], *px, *bold);
+            let d = (w - rel).abs();
+            if d < best_d {
+                best = i;
+                best_d = d;
+            }
+        }
+        Some(best)
+    }
+
     /// Shift all geometry by a logical delta.
     pub fn translate(&mut self, dx: i32, dy: i32) {
         match self {
@@ -753,6 +784,24 @@ mod tests {
     /// Eyeball check — `cargo test -p qs-overlay -- --ignored` then open
     /// /tmp/qs-text-test.png
     #[test]
+    /// Click-to-caret: byte indexes snap to glyph gaps, left/right edges
+    /// land on the string ends.
+    #[test]
+    fn text_index_at_snaps_to_gaps() {
+        let t = Annotation::Text {
+            pos: Point::new(100, 50),
+            text: "abcd".into(),
+            px: 20.0,
+            bold: false,
+            rgb: 0,
+        };
+        assert_eq!(t.text_index_at(Point::new(90, 60)), Some(0));
+        assert_eq!(t.text_index_at(Point::new(500, 60)), Some(4));
+        // mid-string clicks never return a non-boundary index
+        let i = t.text_index_at(Point::new(110, 60)).unwrap();
+        assert!("abcd".is_char_boundary(i));
+    }
+
     #[ignore]
     fn text_visual() {
         let mut img = RgbaImage::from_pixel(400, 200, image::Rgba([40, 44, 52, 255]));

@@ -242,11 +242,7 @@ impl Host {
                 match m.register(hk) {
                     Ok(()) => {
                         self.hotkey = Some(hk);
-                        self.toast_done(
-                            el,
-                            format!("Hotkey set to {}", self.cfg.hotkey),
-                            true,
-                        );
+                        self.toast_done(el, format!("Hotkey set to {}", self.cfg.hotkey), true);
                     }
                     Err(e) => {
                         eprintln!("hotkey register failed: {e:#}");
@@ -257,7 +253,10 @@ impl Host {
                         }
                         self.toast_done(
                             el,
-                            format!("Hotkey {} is already in use — kept the old one", self.cfg.hotkey),
+                            format!(
+                                "Hotkey {} is already in use — kept the old one",
+                                self.cfg.hotkey
+                            ),
                             false,
                         );
                     }

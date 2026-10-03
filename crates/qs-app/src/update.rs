@@ -30,7 +30,10 @@ pub fn check() -> Result<Option<Release>> {
     .header("Accept", "application/vnd.github+json")
     .call();
     let body: Value = match resp {
-        Ok(mut r) => r.body_mut().read_json().context("release reply is not JSON")?,
+        Ok(mut r) => r
+            .body_mut()
+            .read_json()
+            .context("release reply is not JSON")?,
         // 404 = no release published yet — that's "up to date", not an error
         Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(e) => return Err(e).context("release check failed"),

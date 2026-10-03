@@ -25,10 +25,11 @@ downloads.
 - **Full physical resolution** — Retina and mixed-DPI displays are captured
   and stitched at native framebuffer pixels, never downsampled
 - **Annotations** — pen, arrow, rect, ellipse, marker, text, pixelate,
-  undo/redo, stroke sizes, color palette — rendered at output resolution.
-  Text gets real font sizes (12–48), a bold toggle, and Vietnamese IME input.
-  Shapes and text stay editable blocks: the Select tool picks, drags and
-  deletes them
+  undo/redo, stroke sizes, color palette — rendered at output resolution and
+  confined to the captured region. Text gets real font sizes (12–48), a bold
+  toggle, a proper editing box (arrows, selection, ⌘A) and Vietnamese IME
+  input. Shapes and text stay editable blocks: the Select tool picks, drags
+  and deletes them
 - **Native OCR** — Vision `VNRecognizeTextRequest` on macOS,
   `Windows.Media.Ocr` on Windows; nothing ships in the binary
 - **Resident tray app** — menu-bar icon, global hotkey, launch at login,
@@ -96,7 +97,8 @@ quickshort --capture --out ~/shots/a.png
 | Selection made | `⌘S` / `⌘C` / `⌘T` | Save PNG / copy image / OCR → clipboard |
 | Selection made | `⌘Z` / `⌘⇧Z` | Undo / redo an edit |
 | Block selected | `Delete` / `⌫` / `Esc` | Remove block / deselect |
-| Text draft | `Enter` / `Esc` / `⌫` | Commit / discard / delete char |
+| Text draft | `Enter` / `Esc` | Commit / discard |
+| Text draft | `⌘A`, `⇧`+arrows, `←→`, `⌫`/`⌦` | Select, move caret, delete |
 | Selection made | `Esc` | Cancel |
 
 The tray menu offers Capture Region, Recent Captures, Open Screenshots

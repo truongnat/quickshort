@@ -32,6 +32,33 @@ pub use toolbar::{Action, Item, Tool};
 const MIN_SELECT: u32 = 3;
 const ACCENT: u32 = 0x0A84FF;
 
+/// Largest char boundary ≤ `i` — guards stale byte indexes after edits.
+fn floor_boundary(text: &str, i: usize) -> usize {
+    let mut b = i.min(text.len());
+    while !text.is_char_boundary(b) {
+        b -= 1;
+    }
+    b
+}
+
+fn prev_boundary(text: &str, i: usize) -> usize {
+    let i = floor_boundary(text, i);
+    text[..i]
+        .char_indices()
+        .next_back()
+        .map(|(j, _)| j)
+        .unwrap_or(0)
+}
+
+fn next_boundary(text: &str, i: usize) -> usize {
+    let i = floor_boundary(text, i);
+    text[i..]
+        .chars()
+        .next()
+        .map(|c| i + c.len_utf8())
+        .unwrap_or(i)
+}
+
 /// Stroke a `thick`-px rect outline into the physical buffer (clipped).
 #[allow(clippy::too_many_arguments)]
 fn frame_rect(
@@ -289,6 +316,16 @@ struct Session {
     grabbed: Option<Grab>,
     /// in-flight IME composition, rendered after the draft text
     preedit: String,
+    /// editing caret / selection anchor — byte indexes into the draft
+    /// text; `caret_anchor` set means [anchor..caret] is selected
+    caret: usize,
+    caret_anchor: Option<usize>,
+    /// whether a space key-down was seen — a release without one means
+    /// the IME ate the press as its commit trigger (winit#4526)
+    space_down: bool,
+    /// any IME event seen while this draft is live — gates the
+    /// swallowed-space payback so stray releases don't insert text
+    ime_seen: bool,
     /// current stroke size level / palette index / text weight+size
     size: u8,
     color: usize,
@@ -322,6 +359,10 @@ impl Session {
             selected: None,
             grabbed: None,
             preedit: String::new(),
+            caret: 0,
+            caret_anchor: None,
+            space_down: false,
+            ime_seen: false,
             size: 1,
             color: 0,
             bold: false,
@@ -375,7 +416,12 @@ impl Session {
 
     /// Begin a stroke with the armed tool at the cursor.
     fn begin_annot(&mut self, t: Tool, p: Point) {
+        // annotations live inside the captured region only
+        let p = self.sel_clamp(p);
         self.shape_anchor = p;
+        self.caret = 0;
+        self.caret_anchor = None;
+        self.ime_seen = false;
         let rgb = annotate::PALETTE[self.color];
         let w = annotate::SIZES[self.size as usize];
         self.active = Some(match t {
@@ -416,6 +462,8 @@ impl Session {
     /// Commit the in-progress stroke into the annotation layer / bright canvas.
     fn commit_annot(&mut self) {
         self.preedit.clear();
+        self.caret_anchor = None;
+        self.ime_seen = false;
         let Some(an) = self.active.take() else { return };
         let ok = match &an {
             Annotation::Pen { pts, .. } | Annotation::Marker { pts, .. } => pts.len() >= 2,
@@ -503,6 +551,112 @@ impl Session {
     /// Index of the topmost annotation under `p` (last-to-first), if any.
     fn hit_top(&self, p: Point) -> Option<usize> {
         self.annots.iter().rposition(|a| a.hit(p))
+    }
+
+    /// Point clamped into the confirmed selection — drawing, writing
+    /// and moving are confined to the captured region.
+    fn sel_clamp(&self, p: Point) -> Point {
+        match self.sel {
+            Some(s) => Point::new(p.x.clamp(s.x, s.right()), p.y.clamp(s.y, s.bottom())),
+            None => p,
+        }
+    }
+
+    /// Ordered byte range of the draft-text selection, if non-empty.
+    fn edit_range(&self) -> Option<(usize, usize)> {
+        let a = self.caret_anchor?;
+        (a != self.caret).then_some((a.min(self.caret), a.max(self.caret)))
+    }
+
+    /// Insert `s` at the caret, replacing any selected text.
+    fn edit_insert(&mut self, s: &str) {
+        let range = self.edit_range();
+        if let Some(Annotation::Text { text, .. }) = &mut self.active {
+            if let Some((a, b)) = range {
+                text.drain(a..b);
+                self.caret = a;
+            }
+            let c = floor_boundary(text, self.caret);
+            text.insert_str(c, s);
+            self.caret = c + s.len();
+        }
+        self.caret_anchor = None;
+        self.dirty = true;
+    }
+
+    /// Backspace: delete the selection, else the char before the caret.
+    fn edit_backspace(&mut self) {
+        let range = self.edit_range();
+        if let Some(Annotation::Text { text, .. }) = &mut self.active {
+            if let Some((a, b)) = range {
+                text.drain(a..b);
+                self.caret = a;
+            } else {
+                let c = floor_boundary(text, self.caret);
+                let prev = prev_boundary(text, c);
+                text.drain(prev..c);
+                self.caret = prev;
+            }
+        }
+        self.caret_anchor = None;
+        self.dirty = true;
+    }
+
+    /// Forward-delete: same, for the char after the caret.
+    fn edit_delete(&mut self) {
+        let range = self.edit_range();
+        if let Some(Annotation::Text { text, .. }) = &mut self.active {
+            if let Some((a, b)) = range {
+                text.drain(a..b);
+                self.caret = a;
+            } else {
+                let c = floor_boundary(text, self.caret);
+                let next = next_boundary(text, c);
+                text.drain(c..next);
+            }
+        }
+        self.caret_anchor = None;
+        self.dirty = true;
+    }
+
+    /// Arrow key: shift extends the selection, ⌘/Ctrl jumps to an end,
+    /// plain arrows collapse the selection or step one char.
+    fn edit_move(&mut self, left: bool) {
+        let Some(Annotation::Text { text, .. }) = &self.active else {
+            return;
+        };
+        if self.mods.shift_key() {
+            self.caret_anchor.get_or_insert(self.caret);
+        } else if let Some((a, b)) = self.edit_range() {
+            self.caret = if left { a } else { b };
+            self.caret_anchor = None;
+            self.dirty = true;
+            return;
+        } else {
+            self.caret_anchor = None;
+        }
+        let c = floor_boundary(text, self.caret);
+        self.caret = if self.mods.super_key() || self.mods.control_key() {
+            if left {
+                0
+            } else {
+                text.len()
+            }
+        } else if left {
+            prev_boundary(text, c)
+        } else {
+            next_boundary(text, c)
+        };
+        self.dirty = true;
+    }
+
+    /// ⌘A: select the whole draft.
+    fn edit_select_all(&mut self) {
+        if let Some(Annotation::Text { text, .. }) = &self.active {
+            self.caret_anchor = Some(0);
+            self.caret = text.len();
+            self.dirty = true;
+        }
     }
 
     /// Physical dims of the `bright` canvas, for pixel-edit ops.
@@ -612,6 +766,7 @@ impl Session {
             }
         }
         self.preedit.clear();
+        self.ime_seen = false;
     }
 
     fn redraw_all(&self) {
@@ -638,6 +793,9 @@ impl Session {
         let Some(i) = self.wins.iter().position(|w| w.win.id() == id) else {
             return;
         };
+        // resolved before the `wins` borrow below — caret state is a
+        // plain field, the range helper needs `&self`
+        let sel_range = self.edit_range();
         let wctx = &mut self.wins[i];
         let size = wctx.win.inner_size();
         let (sw, sh) = match (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
@@ -787,7 +945,7 @@ impl Session {
                 }
             }
         }
-        // in-flight IME composition appended to the Text draft — built once,
+        // in-flight IME composition spliced at the caret — built once,
         // shared by the preview render and the caret position below
         let composed = match &self.active {
             Some(Annotation::Text {
@@ -796,13 +954,16 @@ impl Session {
                 px,
                 bold,
                 rgb,
-            }) if !self.preedit.is_empty() => Some(Annotation::Text {
-                pos: *pos,
-                text: format!("{text}{}", self.preedit),
-                px: *px,
-                bold: *bold,
-                rgb: *rgb,
-            }),
+            }) if !self.preedit.is_empty() => {
+                let c = floor_boundary(text, self.caret);
+                Some(Annotation::Text {
+                    pos: *pos,
+                    text: format!("{}{}{}", &text[..c], self.preedit, &text[c..]),
+                    px: *px,
+                    bold: *bold,
+                    rgb: *rgb,
+                })
+            }
             _ => None,
         };
         // in-progress stroke preview at physical res
@@ -818,8 +979,8 @@ impl Session {
                 scale,
             );
         }
-        // text caret right after the typed run — the only visible marker
-        // while the draft text is still empty
+        // selection highlight + caret at the editing position — the only
+        // visible marker while the draft text is still empty
         if let Some(Annotation::Text {
             pos,
             text,
@@ -828,12 +989,33 @@ impl Session {
             rgb,
         }) = &self.active
         {
-            let shown: &str = match &composed {
-                Some(Annotation::Text { text, .. }) => text,
-                _ => text,
-            };
-            let (tw, _) = annotate::text_extent(shown, *px, *bold);
-            let x0 = ((pos.x - wctx.vrect.x) as f64 * scale + tw * scale + scale) as i32;
+            if let Some((a, b)) = sel_range {
+                let (wa, _) = annotate::text_extent(&text[..a], *px, *bold);
+                let (wb, _) = annotate::text_extent(&text[..b], *px, *bold);
+                let x0 = ((pos.x - wctx.vrect.x) as f64 * scale + wa * scale) as i32;
+                let x1 = ((pos.x - wctx.vrect.x) as f64 * scale + wb * scale) as i32;
+                let y0 = ((pos.y - wctx.vrect.y) as f64 * scale) as i32;
+                let y1 = y0 + (*px * scale) as i32;
+                for x in x0..x1 {
+                    for y in y0..y1 {
+                        if x >= 0 && y >= 0 && (x as usize) < sw && (y as usize) < sh {
+                            let i = y as usize * sw + x as usize;
+                            let d = buf[i];
+                            let f = 0.35;
+                            let mix = |s: u32, d: u32| {
+                                (s as f64 * f + d as f64 * (1.0 - f)).round() as u32
+                            };
+                            buf[i] = mix((ACCENT >> 16) & 0xFF, (d >> 16) & 0xFF) << 16
+                                | mix((ACCENT >> 8) & 0xFF, (d >> 8) & 0xFF) << 8
+                                | mix(ACCENT & 0xFF, d & 0xFF);
+                        }
+                    }
+                }
+            }
+            let c = floor_boundary(text, self.caret);
+            let (wc, _) = annotate::text_extent(&text[..c], *px, *bold);
+            let (wp, _) = annotate::text_extent(&self.preedit, *px, *bold);
+            let x0 = ((pos.x - wctx.vrect.x) as f64 * scale + (wc + wp) * scale + scale) as i32;
             let y0 = ((pos.y - wctx.vrect.y) as f64 * scale) as i32;
             let y1 = y0 + (*px * scale) as i32;
             let cw = (1.6 * scale).round().max(1.0) as i32;
@@ -968,21 +1150,39 @@ impl Session {
                     let dy = self.cursor.y - g.last.y;
                     if dx != 0 || dy != 0 {
                         g.annot.translate(dx, dy);
+                        // blocks stay inside the captured region
+                        if let Some(s) = self.sel {
+                            let b = g.annot.bbox();
+                            let fx = if b.x < s.x {
+                                s.x - b.x
+                            } else if b.right() > s.right() {
+                                s.right() - b.right()
+                            } else {
+                                0
+                            };
+                            let fy = if b.y < s.y {
+                                s.y - b.y
+                            } else if b.bottom() > s.bottom() {
+                                s.bottom() - b.bottom()
+                            } else {
+                                0
+                            };
+                            g.annot.translate(fx, fy);
+                        }
                         g.last = self.cursor;
                         self.dirty = true;
                     }
                 } else if self.anchor.is_some() || self.active.is_some() {
+                    let p = self.sel_clamp(self.cursor);
                     if let Some(an) = &mut self.active {
                         match an {
                             Annotation::Pen { pts, .. } | Annotation::Marker { pts, .. } => {
-                                pts.push(self.cursor)
+                                pts.push(p)
                             }
-                            Annotation::Arrow { b, .. } => *b = self.cursor,
+                            Annotation::Arrow { b, .. } => *b = p,
                             Annotation::Rect { r, .. }
                             | Annotation::Ellipse { r, .. }
-                            | Annotation::Pixelate(r) => {
-                                *r = Rect::from_drag(self.shape_anchor, self.cursor)
-                            }
+                            | Annotation::Pixelate(r) => *r = Rect::from_drag(self.shape_anchor, p),
                             Annotation::Text { .. } => {}
                         }
                     }
@@ -1128,6 +1328,22 @@ impl Session {
                                 self.dirty = true;
                                 return;
                             }
+                            // click inside the live draft moves the caret
+                            // instead of ending the edit
+                            if t == Tool::Text
+                                && self.active.as_ref().is_some_and(|a| a.hit(self.cursor))
+                            {
+                                if let Some(i) = self
+                                    .active
+                                    .as_ref()
+                                    .and_then(|a| a.text_index_at(self.cursor))
+                                {
+                                    self.caret = i;
+                                    self.caret_anchor = None;
+                                    self.dirty = true;
+                                }
+                                return;
+                            }
                             self.commit_annot();
                             self.begin_annot(t, self.cursor);
                             return;
@@ -1187,41 +1403,70 @@ impl Session {
             WindowEvent::Ime(winit::event::Ime::Preedit(s, _)) => {
                 if matches!(self.active, Some(Annotation::Text { .. })) {
                     self.preedit = s;
+                    self.ime_seen = true;
                     self.dirty = true;
                 }
             }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
                 self.preedit.clear();
-                if let Some(Annotation::Text { text, .. }) = &mut self.active {
-                    text.push_str(&s);
-                    self.dirty = true;
+                if matches!(self.active, Some(Annotation::Text { .. })) {
+                    self.ime_seen = true;
+                    self.edit_insert(&s);
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            // a space the IME ate as its commit trigger leaks its release
+            // without a press — pay it back, once (winit#4526)
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Released => {
+                let swallowed =
+                    matches!(event.logical_key, Key::Named(NamedKey::Space)) && !self.space_down;
+                self.space_down = false;
+                if swallowed
+                    && self.ime_seen
+                    && self.preedit.is_empty()
+                    && !self.mods.super_key()
+                    && !self.mods.control_key()
+                {
+                    if let Some(Annotation::Text { text, .. }) = &mut self.active {
+                        // a commit that already carried the space isn't
+                        // owed a second one
+                        let c = floor_boundary(text, self.caret);
+                        if !text[..c].ends_with(' ') {
+                            text.insert_str(c, " ");
+                            self.caret = c + 1;
+                            self.dirty = true;
+                        }
+                    }
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                // text tool owns the keyboard while a Text annotation is live:
-                // Enter commits, Esc drops the draft, chars append
+                if matches!(event.logical_key, Key::Named(NamedKey::Space)) {
+                    self.space_down = true;
+                }
+                // text tool owns the keyboard while a Text annotation is
+                // live: a real editing box — caret, selection, arrows,
+                // ⌘A; Enter commits, Esc drops the draft
                 if matches!(self.active, Some(Annotation::Text { .. })) {
                     match &event.logical_key {
                         Key::Named(NamedKey::Escape) => {
                             self.active = None;
                             self.preedit.clear();
+                            self.ime_seen = false;
                         }
                         Key::Named(NamedKey::Enter) => self.commit_annot(),
-                        Key::Named(NamedKey::Backspace) => {
-                            if let Some(Annotation::Text { text, .. }) = &mut self.active {
-                                text.pop();
-                            }
-                        }
-                        Key::Named(NamedKey::Space) => {
-                            if let Some(Annotation::Text { text, .. }) = &mut self.active {
-                                text.push(' ');
-                            }
+                        Key::Named(NamedKey::Backspace) => self.edit_backspace(),
+                        Key::Named(NamedKey::Delete) => self.edit_delete(),
+                        Key::Named(NamedKey::ArrowLeft) => self.edit_move(true),
+                        Key::Named(NamedKey::ArrowRight) => self.edit_move(false),
+                        Key::Named(NamedKey::Space) => self.edit_insert(" "),
+                        Key::Character(c)
+                            if (self.mods.super_key() || self.mods.control_key())
+                                && c.as_str() == "a" =>
+                        {
+                            self.edit_select_all()
                         }
                         Key::Character(s) if !self.mods.super_key() && !self.mods.control_key() => {
-                            if let Some(Annotation::Text { text, .. }) = &mut self.active {
-                                text.push_str(s.as_str());
-                            }
+                            self.edit_insert(s.as_str());
                         }
                         _ => {}
                     }
@@ -1289,5 +1534,27 @@ impl Session {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_boundaries_are_unicode_safe() {
+        // 'ệ' is 3 UTF-8 bytes — index arithmetic must never split it
+        let s = "việt"; // v=0, i=1, ệ=2..5, t=5
+        assert_eq!(s.len(), 6);
+        // inside the 'ệ': floor snaps back to its first byte
+        assert_eq!(floor_boundary(s, 3), 2);
+        assert_eq!(floor_boundary(s, 99), s.len());
+        // prev/next walk whole chars, not bytes
+        assert_eq!(prev_boundary(s, 4), 1);
+        assert_eq!(prev_boundary(s, 5), 2);
+        assert_eq!(next_boundary(s, 1), 2);
+        assert_eq!(next_boundary(s, 2), 5);
+        assert_eq!(next_boundary(s, s.len()), s.len());
+        assert_eq!(prev_boundary(s, 0), 0);
     }
 }
