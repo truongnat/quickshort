@@ -24,8 +24,9 @@ downloads.
   crops are stitched through a virtual coordinate space
 - **Full physical resolution** — Retina and mixed-DPI displays are captured
   and stitched at native framebuffer pixels, never downsampled
-- **Annotations** — pen, arrow, rect, ellipse, marker, pixelate, undo/redo,
-  stroke sizes, color palette — rendered at output resolution
+- **Annotations** — pen, arrow, rect, ellipse, marker, text, pixelate,
+  undo/redo, stroke sizes, color palette — rendered at output resolution.
+  Text gets real font sizes (12–48), a bold toggle, and Vietnamese IME input
 - **Native OCR** — Vision `VNRecognizeTextRequest` on macOS,
   `Windows.Media.Ocr` on Windows; nothing ships in the binary
 - **Resident tray app** — menu-bar icon, global hotkey, launch at login,
@@ -91,6 +92,7 @@ quickshort --capture --out ~/shots/a.png
 |---|---|---|
 | Anywhere | `⌘⇧S` (configurable) | Start a selection |
 | Selection made | `⌘S` / `⌘C` / `⌘T` | Save PNG / copy image / OCR → clipboard |
+| Text draft | `Enter` / `Esc` / `⌫` | Commit / discard / delete char |
 | Selection made | `Esc` | Cancel |
 
 The tray menu offers Capture Region, Recent Captures, Open Screenshots
@@ -122,7 +124,7 @@ capture every monitor into RAM
 |---|---|
 | `qs-core` | geometry + stitching, pure |
 | `qs-capture` | per-OS backends behind `ScreenCapture` |
-| `qs-overlay` | winit + softbuffer, SDF-drawn toolbar, annotation layers |
+| `qs-overlay` | winit + softbuffer, SDF-drawn toolbar, annotation layers, text via embedded Inter (ab_glyph) |
 | `qs-ocr` | native text extraction |
 | `qs-app` | CLI + resident tray app (`tray-icon`/`muda`/`global-hotkey`), updates |
 
