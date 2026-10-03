@@ -189,7 +189,7 @@ impl Host {
                     // focus the existing window
                     if let Some(s) = &self.settings {
                         s.win().request_user_attention(None);
-                        s.win().focus_window();
+                        s.focus();
                     }
                 }
             }
@@ -232,7 +232,7 @@ impl Host {
 
     /// Persist config, (re)register the hotkey, refresh the tray menu —
     /// called after the settings window mutates `cfg`.
-    fn apply_cfg(&mut self) {
+    fn apply_cfg(&mut self, el: &ActiveEventLoop) {
         self.cfg.save();
         if let (Some(m), Ok(hk)) = (&self.hotkeys, self.cfg.hotkey.parse::<HotKey>()) {
             if Some(hk) != self.hotkey {
@@ -240,8 +240,27 @@ impl Host {
                     let _ = m.unregister(old);
                 }
                 match m.register(hk) {
-                    Ok(()) => self.hotkey = Some(hk),
-                    Err(e) => eprintln!("hotkey register failed: {e:#}"),
+                    Ok(()) => {
+                        self.hotkey = Some(hk);
+                        self.toast_done(
+                            el,
+                            format!("Hotkey set to {}", self.cfg.hotkey),
+                            true,
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("hotkey register failed: {e:#}");
+                        // restore the old grab — a dead hotkey is worse than
+                        // a stale one, and self.hotkey must stay truthful
+                        if let Some(old) = self.hotkey {
+                            let _ = m.register(old);
+                        }
+                        self.toast_done(
+                            el,
+                            format!("Hotkey {} is already in use — kept the old one", self.cfg.hotkey),
+                            false,
+                        );
+                    }
                 }
             }
         }
@@ -380,10 +399,12 @@ impl ApplicationHandler<HostEvent> for Host {
             let ev = s.window_event(&mut self.cfg, event);
             let recording = s.is_recording();
             match ev {
-                // a recorded chord ends recording — resume the grab, then apply
                 Some(SettingsEvent::Changed) => {
-                    self.suspend_hotkey(false);
-                    self.apply_cfg();
+                    // resume the grab only when the chord actually ended
+                    // recording — a Browse/login change while still armed
+                    // must keep it suspended or the next chord fires capture
+                    self.suspend_hotkey(recording);
+                    self.apply_cfg(el);
                 }
                 Some(SettingsEvent::HotkeyRecord) => self.suspend_hotkey(recording),
                 Some(SettingsEvent::Closed) => {

@@ -157,6 +157,10 @@ impl Settings {
             }
         }
         let win = Rc::new(el.create_window(attrs).context("settings window")?);
+        // an accessory app opened from the tray stays deactivated — without
+        // activation the window never gets KeyboardInput, so the hotkey
+        // recorder looks dead
+        refocus(&win);
         let scale = win.scale_factor();
         let logo_px = (36.0 * scale) as u32;
         let logo = logo.map(|i| {
@@ -192,6 +196,11 @@ impl Settings {
 
     pub fn win(&self) -> &Window {
         &self.win
+    }
+
+    /// Bring the app + window to the front (see `refocus`).
+    pub fn focus(&self) {
+        refocus(&self.win);
     }
 
     /// True while the Record button is armed — the host uses this to
