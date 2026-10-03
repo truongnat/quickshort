@@ -15,14 +15,14 @@ use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::settings::system_font;
 
-const W: f64 = 232.0;
-const H: f64 = 52.0;
+const W: f64 = 272.0;
+const H: f64 = 58.0;
 const DONE_TTL: Duration = Duration::from_millis(1800);
 
-const CARD_TOP: u32 = 0x34343A;
-const CARD_BOT: u32 = 0x242429;
+const CARD_TOP: u32 = 0x3A3A41;
+const CARD_BOT: u32 = 0x26262C;
 const FG: u32 = 0xF2F2F7;
-const FG_DIM: u32 = 0x98989D;
+const FG_DIM: u32 = 0xA9A9B1;
 const ACCENT: u32 = 0x0A84FF;
 const OK: u32 = 0x30D158;
 const ERR: u32 = 0xFF453A;
@@ -106,12 +106,12 @@ impl Toast {
         if self.expired() {
             return None;
         }
-        if self.dirty || self.state == State::Working {
+        if self.dirty || self.state == State::Working || self.deadline.is_some() {
             self.win.request_redraw();
         }
         match self.state {
             State::Working => Some(Instant::now() + Duration::from_millis(60)),
-            _ => self.deadline,
+            _ => Some(Instant::now() + Duration::from_millis(100)),
         }
     }
 
@@ -153,16 +153,17 @@ impl Toast {
             scale,
         };
 
-        // card
-        glass_card(&mut cv, (0.0, 0.0, W, H), 16.0, CARD_TOP, CARD_BOT);
+        // softbuffer ignores per-pixel alpha — the card must fill the whole
+        // window or the uncovered corners render as an opaque black frame.
+        glass_card(&mut cv, (0.0, 0.0, W, H), 2.0, CARD_TOP, CARD_BOT);
 
-        // indicator: pulsing accent dot while working, tick / cross when done
-        let (cx, cy, rad) = (26.0, H / 2.0, 9.0);
+        // state icon: filled circle, glyph inside
+        let (cx, cy, rad) = (28.0, H / 2.0 - 1.5, 11.0);
         match self.state {
             State::Working => {
                 let a = 0.45 + 0.55 * self.pulse.sin().abs();
                 fill_circle(&mut cv, cx, cy, rad, ACCENT, a, scale);
-                ring(&mut cv, cx, cy, rad + 3.0, ACCENT, a * 0.35, scale);
+                ring(&mut cv, cx, cy, rad + 3.5, ACCENT, a * 0.35, scale);
             }
             State::Ok => {
                 fill_circle(&mut cv, cx, cy, rad, OK, 1.0, scale);
@@ -181,12 +182,26 @@ impl Toast {
         };
         t.draw(
             &mut cv,
-            46.0,
-            H / 2.0 + 4.5,
-            12.5,
+            50.0,
+            H / 2.0 + 4.0,
+            13.0,
             &self.msg,
             if working { FG_DIM } else { FG },
         );
+
+        // countdown bar: accent strip along the bottom edge while done
+        if let Some(d) = self.deadline {
+            let rem = (d - Instant::now()).as_secs_f64() / DONE_TTL.as_secs_f64();
+            let frac = rem.clamp(0.0, 1.0);
+            let col = if self.state == State::Err { ERR } else { OK };
+            let bw = (W - 24.0) * frac;
+            let y = H - 4.0;
+            for py in (y * scale) as i32..((y + 2.0) * scale) as i32 {
+                for px in (12.0 * scale) as i32..((12.0 + bw) * scale) as i32 {
+                    cv.blend(px, py, col, 0.85);
+                }
+            }
+        }
 
         let _ = buf.present();
     }

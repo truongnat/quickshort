@@ -419,6 +419,15 @@ body {
   display: block;
   overflow: hidden;
   border-radius: 18px;
+  margin: -14px -14px 18px;
+  border: 1px solid rgba(255,255,255,0.5);
+  box-shadow: 0 8px 24px rgba(93,106,190,0.15);
+}
+.fcard-tall .fcard-media { margin: 0; border: none; box-shadow: none; }
+.fcard-media-side {
+  margin: 0 0 0 auto;
+  flex-shrink: 0;
+  max-width: 300px;
 }
 .fcard-media img {
   width: 100%;
