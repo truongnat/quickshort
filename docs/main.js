@@ -42,7 +42,7 @@ if (!reduced && window.gsap) {
     ease: "back.out(2)",
   });
 
-  // hero card entrance + idle float — on the WRAPPER so the inner
+  // hero card entrance + idle float, on the WRAPPER so the inner
   // card's transform stays free for pointer tilt
   gsap.from("#floatWrap", {
     opacity: 0,
@@ -215,19 +215,19 @@ if (!reduced && "IntersectionObserver" in window) {
   const NAMES = { macos: "macOS", windows: "Windows", linux: "Linux" };
   if (os === "macos") {
     cta.textContent = "Download for macOS";
-    if (note) note.textContent = "Detected macOS — DMG or Homebrew.";
+    if (note) note.textContent = "Detected macOS. DMG or Homebrew.";
   } else {
     cta.textContent = `Download for ${NAMES[os]}`;
     dlMac.hidden = true;
     dlOther.hidden = false;
-    if (note) note.textContent = `Detected ${NAMES[os]} — no signed binary yet.`;
+    if (note) note.textContent = `Detected ${NAMES[os]}. No signed binary yet.`;
     if (os === "windows") {
-      if (title) title.textContent = "Windows — build from source";
-      if (desc) desc.textContent = "Windows backend is compile-checked (GDI BitBlt, Windows.Media.Ocr). A packaged installer is on the roadmap — for now, cargo builds it.";
+      if (title) title.textContent = "Windows: build from source";
+      if (desc) desc.textContent = "Windows backend is compile-checked (GDI BitBlt, Windows.Media.Ocr). A packaged installer is on the roadmap. For now, cargo builds it.";
       if (perm) perm.textContent = "Windows: builds clean from source. macOS DMG + Homebrew cask are the packaged channels today.";
     } else {
-      if (title) title.textContent = "Linux — build from source";
-      if (desc) desc.textContent = "Linux backend supports X11 and GNOME Wayland (PipeWire). OCR on Linux fails loudly for now — no backend chosen yet.";
+      if (title) title.textContent = "Linux: build from source";
+      if (desc) desc.textContent = "Linux backend supports X11 and GNOME Wayland (PipeWire). OCR on Linux fails loudly for now, no backend chosen yet.";
       if (perm) perm.textContent = "Linux: X11 + GNOME Wayland capture work from a source build. macOS DMG + Homebrew cask are the packaged channels today.";
     }
     // show the mac card too, dimmed, so mac visitors landing here still see it
