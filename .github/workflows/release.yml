@@ -68,7 +68,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VER: ${{ github.event.inputs.version || github.ref_name }}
         run: |
-          gh release upload "v${VER#v}" \
+          gh release upload "v${VER#v}" --clobber \
             dist/Quickshort-v*-macos.zip \
             dist/Quickshort-v*-macos.zip.sha256 \
             dist/Quickshort-v*-macos.dmg \
@@ -111,6 +111,6 @@ jobs:
           mkdir -p dist
           cp target/release/quickshort.exe "dist/Quickshort-v$TAG-windows.exe"
           (cd dist && sha256sum "Quickshort-v$TAG-windows.exe" > "Quickshort-v$TAG-windows.exe.sha256")
-          gh release upload "v$TAG" \
+          gh release upload "v$TAG" --clobber \
             "dist/Quickshort-v$TAG-windows.exe" \
             "dist/Quickshort-v$TAG-windows.exe.sha256"
