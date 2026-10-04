@@ -69,10 +69,12 @@ if (!reduced && "IntersectionObserver" in window) {
     dlMac.hidden = true;
     dlOther.hidden = false;
     if (note) note.textContent = `Detected ${NAMES[os]}. No signed binary yet.`;
+    const dlBtn = document.getElementById("otherDlBtn");
     if (os === "windows") {
-      if (title) title.textContent = "Windows: build from source";
-      if (desc) desc.textContent = "Windows backend is compile-checked (GDI BitBlt, Windows.Media.Ocr). A packaged installer is on the roadmap. For now, cargo builds it.";
-      if (perm) perm.textContent = "Windows: builds clean from source. macOS DMG + Homebrew cask are the packaged channels today.";
+      if (title) title.textContent = "Windows (experimental)";
+      if (desc) desc.textContent = "A bare exe ships with each release — unsigned, no installer, compile-checked backend (GDI BitBlt, Windows.Media.Ocr). Grab it under Assets, or build from source below.";
+      if (dlBtn) { dlBtn.hidden = false; dlBtn.textContent = "Windows exe"; }
+      if (perm) perm.textContent = "Windows: experimental exe in the release assets. macOS DMG + Homebrew cask are the packaged channels.";
     } else {
       if (title) title.textContent = "Linux: build from source";
       if (desc) desc.textContent = "Linux backend supports X11 and GNOME Wayland (PipeWire). OCR on Linux fails loudly for now, no backend chosen yet.";

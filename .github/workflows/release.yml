@@ -13,7 +13,18 @@ permissions:
   contents: write
 
 jobs:
+  # the release must exist before either platform job can upload assets
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ github.event.inputs.version || github.ref_name }}
+        run: gh release create "v${VER#v}" --title "Quickshort v${VER#v}" --generate-notes
+
   macos:
+    needs: create-release
     runs-on: macos-latest
     env:
       SIGNING_P12_B64: ${{ secrets.QS_SIGN_P12 }}
@@ -57,13 +68,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VER: ${{ github.event.inputs.version || github.ref_name }}
         run: |
-          TAG="${VER#v}"
-          gh release create "v$TAG" \
+          gh release upload "v${VER#v}" \
             dist/Quickshort-v*-macos.zip \
             dist/Quickshort-v*-macos.zip.sha256 \
             dist/Quickshort-v*-macos.dmg \
-            dist/Quickshort-v*-macos.dmg.sha256 \
-            --title "Quickshort v$TAG" --generate-notes
+            dist/Quickshort-v*-macos.dmg.sha256
 
       # optional: bump the homebrew-tap cask (needs TAP_TOKEN secret and a
       # truongnat/homebrew-tap repo containing Casks/quickshort.rb)
@@ -81,3 +90,27 @@ jobs:
           git -c user.name=devin -c user.email=devin@localhost commit \
             -am "quickshort $VER" || exit 0
           git push
+
+  # windows: compile-checked backend — ships a bare exe as an experimental
+  # artifact until it gets real QA (no installer, no signing)
+  windows:
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --release -p qs-app
+      - name: package + upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ github.event.inputs.version || github.ref_name }}
+        shell: bash
+        run: |
+          TAG="${VER#v}"
+          mkdir -p dist
+          cp target/release/quickshort.exe "dist/Quickshort-v$TAG-windows.exe"
+          (cd dist && sha256sum "Quickshort-v$TAG-windows.exe" > "Quickshort-v$TAG-windows.exe.sha256")
+          gh release upload "v$TAG" \
+            "dist/Quickshort-v$TAG-windows.exe" \
+            "dist/Quickshort-v$TAG-windows.exe.sha256"
