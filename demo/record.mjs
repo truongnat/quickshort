@@ -18,7 +18,7 @@ const ctx = await browser.newContext({
 });
 const page = await ctx.newPage();
 await page.goto(pageUrl);
-await page.waitForTimeout(17500); // full timeline + tail
+await page.waitForTimeout(19000); // full timeline + tail
 const video = page.video();
 await ctx.close();
 await browser.close();
