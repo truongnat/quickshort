@@ -176,9 +176,10 @@ nav, .hero, .strip, .section, .footer { position: relative; z-index: 1; }
   background: var(--bg-raised);
   padding: 10px;
 }
-.showcase-frame img {
+.showcase-frame img, .showcase-frame video {
   display: block; width: 100%; height: auto;
   border-radius: 4px;
+  background: #000;
 }
 
 /* ---------- strip: static hairline row ---------- */

@@ -1,0 +1,280 @@
+<!doctype html>
+<!--
+  Quickshort demo video — pure CSS keyframe timeline (~18s @ 1600x900).
+  Scenes: intro card -> hotkey -> dimmed overlay -> drag selection ->
+  annotate -> save toast -> share toast -> end card.
+  Recorded headless via demo/record.mjs -> docs/assets/demo.mp4.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+:root {
+  --bg: #000;
+  --ink: #ededed;
+  --muted: #a1a1a1;
+  --line: #262626;
+  --accent: #52c7ea;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 1600px; height: 900px; overflow: hidden; background: var(--bg); }
+body { font-family: var(--sans); position: relative; }
+
+/* ================= backdrop: the "screen" being captured ================= */
+.backdrop {
+  position: absolute; inset: 0;
+  background: url("../docs/assets/feat-overlay.png") center/cover no-repeat;
+  opacity: 0;
+  animation: backdropIn 1.4s ease 1.9s both, backdropOut .8s ease 13.8s both;
+}
+.backdrop.dark { filter: brightness(.42); animation-name: backdropIn, none; animation-delay: 1.9s; }
+/* bright copy clipped to the selection rect via clip-path inset */
+.backdrop.bright { clip-path: inset(100% 0 0 0); animation: backdropIn 1.4s ease 1.9s both, backdropOut .8s ease 13.8s both, selClip 1.6s cubic-bezier(.3,1,.4,1) 4.7s both; }
+@keyframes backdropIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes backdropOut { to { opacity: 0; } }
+/* selection rect: from (17%,18%) to (72%,82%) — viewport-relative % */
+@keyframes selClip {
+  0%   { clip-path: inset(18% 82% 82% 17%); }
+  35%  { clip-path: inset(18% 55% 55% 17%); }
+  100% { clip-path: inset(18% 28% 18% 17%); }
+}
+
+/* selection outline + handles */
+.sel-box {
+  position: absolute; left: 17%; top: 18%;
+  width: 0; height: 0;
+  border: 2px solid var(--accent);
+  border-radius: 2px;
+  opacity: 0;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.4);
+  animation: selBoxIn .01s 4.7s both, selBox 1.6s cubic-bezier(.3,1,.4,1) 4.7s both, fadeOut .4s ease 13.8s both;
+}
+@keyframes selBoxIn { to { opacity: 1; } }
+@keyframes selBox {
+  0%   { width: 0;     height: 0; }
+  35%  { width: 27%;   height: 27%; }
+  100% { width: 55%;   height: 64%; }
+}
+@keyframes fadeOut { to { opacity: 0; } }
+.sel-box::after { /* size badge */
+  content: "1584 × 1037";
+  position: absolute; left: 0; bottom: -30px;
+  font-family: var(--mono); font-size: 13px; color: var(--ink);
+  background: rgba(10,10,10,.85); border: 1px solid var(--line);
+  padding: 3px 8px; border-radius: 4px;
+  opacity: 0; animation: badgeIn .3s ease 6.1s both;
+}
+@keyframes badgeIn { to { opacity: 1; } }
+
+/* ================= crosshair cursor ================= */
+.cursor {
+  position: absolute; left: 46%; top: 52%;
+  width: 0; height: 0; z-index: 6;
+  opacity: 0;
+  animation: cursorShow .01s 4.6s both, cursorMove 1.6s cubic-bezier(.3,1,.4,1) 4.7s both, cursorHide .3s ease 7.0s both;
+}
+@keyframes cursorShow { to { opacity: 1; } }
+@keyframes cursorHide { to { opacity: 0; } }
+@keyframes cursorMove {
+  0%   { left: 17%; top: 18%; }
+  35%  { left: 44%; top: 45%; }
+  100% { left: 72%; top: 82%; }
+}
+
+.cursor .ch, .cursor .cv { position: absolute; background: rgba(237,237,237,.28); }
+.cursor .ch { left: -100vw; right: -100vw; height: 1px; top: 0; }
+.cursor .cv { top: -100vh; bottom: -100vh; width: 1px; left: 0; }
+.cursor .dot {
+  position: absolute; left: -3px; top: -3px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 8px rgba(82,199,234,.8);
+}
+
+/* ================= toolbar ================= */
+.toolbar {
+  position: absolute; left: 50%; bottom: 8%;
+  transform: translateX(-50%) translateY(20px);
+  display: flex; gap: 10px; align-items: center;
+  background: rgba(16,16,16,.92);
+  border: 1px solid var(--line); border-radius: 14px;
+  padding: 10px 14px;
+  opacity: 0; z-index: 8;
+  animation: barIn .45s cubic-bezier(.2,1,.3,1) 6.6s both, fadeOut .4s ease 13.8s both;
+}
+@keyframes barIn { to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+.tb {
+  width: 38px; height: 38px; border-radius: 9px;
+  display: grid; place-items: center;
+  color: var(--ink); font-size: 17px;
+  background: transparent;
+}
+.tb.on { background: rgba(82,199,234,.16); color: var(--accent); box-shadow: inset 0 0 0 1px rgba(82,199,234,.4); }
+.tb svg { width: 19px; height: 19px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tb-sep { width: 1px; height: 24px; background: var(--line); }
+
+/* ================= annotations inside the selection ================= */
+.anno { position: absolute; inset: 0; z-index: 5; opacity: 0; animation: badgeIn .01s 7.2s both, fadeOut .4s ease 13.8s both; }
+.anno .arrow {
+  position: absolute; left: 24%; top: 30%; width: 300px; height: 190px;
+  overflow: visible;
+}
+.anno .arrow path {
+  stroke: #ff5f57; stroke-width: 6; fill: none; stroke-linecap: round;
+  stroke-dasharray: 600; stroke-dashoffset: 600;
+  animation: draw .8s ease-out 7.3s both;
+}
+@keyframes draw { to { stroke-dashoffset: 0; } }
+.anno .rect {
+  position: absolute; left: 30%; top: 52%; width: 300px; height: 150px;
+  border: 6px solid var(--accent); border-radius: 6px;
+  clip-path: inset(0 100% 0 0);
+  animation: wipe .7s ease-out 8.5s both;
+}
+@keyframes wipe { to { clip-path: inset(0 0 0 0); } }
+.anno .txt {
+  position: absolute; left: 31%; top: 47%;
+  font-family: var(--mono); font-size: 34px; font-weight: 700; color: #ffd60a;
+  text-shadow: 0 2px 8px rgba(0,0,0,.6);
+}
+.anno .txt .wrap {
+  display: inline-block; overflow: hidden; white-space: nowrap;
+  width: 0; vertical-align: bottom;
+  animation: type 1.1s steps(7) 9.6s both;
+}
+@keyframes type { to { width: 7.6ch; } }
+.anno .txt::after { /* caret */
+  content: ""; display: inline-block; width: 3px; height: 34px;
+  background: #ffd60a; vertical-align: bottom; margin-left: 2px;
+  animation: caret .8s steps(1) infinite;
+}
+@keyframes caret { 50% { opacity: 0; } }
+
+/* ================= keycaps ================= */
+.keycaps {
+  position: absolute; left: 50%; bottom: 12%;
+  transform: translateX(-50%);
+  display: flex; gap: 10px; z-index: 9;
+}
+.kc {
+  font-family: var(--mono); font-size: 22px; color: var(--ink);
+  min-width: 56px; height: 56px; padding: 0 16px;
+  display: grid; place-items: center;
+  background: rgba(20,20,20,.95);
+  border: 1px solid #3a3a3a; border-bottom-width: 3px;
+  border-radius: 10px;
+  opacity: 0; transform: translateY(14px) scale(.9);
+}
+.keycaps.hotkey .kc { animation: kcIn .35s cubic-bezier(.2,1.4,.4,1) both, kcHold .4s ease 3.9s both; }
+.keycaps.hotkey .kc:nth-child(1) { animation-delay: 2.4s, 3.9s; }
+.keycaps.hotkey .kc:nth-child(2) { animation-delay: 2.52s, 3.9s; }
+.keycaps.hotkey .kc:nth-child(3) { animation-delay: 2.64s, 3.9s; }
+.keycaps.hotkey { animation: fadeOut .3s ease 4.2s both; }
+@keyframes kcIn { to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes kcHold { to { transform: translateY(2px) scale(.96); border-bottom-width: 1px; } }
+
+.keycaps.save .kc { animation: kcIn .3s ease 10.8s both, kcHold .5s ease 11.1s both, fadeOut .3s ease 11.7s both; }
+.keycaps.link .kc { animation: kcIn .3s ease 12.4s both, kcHold .5s ease 12.7s both, fadeOut .3s ease 13.3s both; }
+
+/* ================= toasts ================= */
+.toast {
+  position: absolute; left: 50%; bottom: 6%;
+  transform: translateX(-50%) translateY(24px);
+  display: flex; align-items: center; gap: 10px;
+  font-size: 15px; color: var(--ink);
+  background: rgba(16,16,16,.94);
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 13px 20px; z-index: 10;
+  opacity: 0; white-space: nowrap;
+}
+.toast .tick { color: #30d158; font-size: 17px; }
+.toast .url { color: var(--accent); font-family: var(--mono); font-size: 14px; }
+.toast.t1 { animation: toastIn .4s cubic-bezier(.2,1,.3,1) 11.2s both, toastOut .35s ease 12.9s both; }
+.toast.t2 { animation: toastIn .4s cubic-bezier(.2,1,.3,1) 12.75s both, toastOut .4s ease 14.4s both; }
+@keyframes toastIn { to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(-50%) translateY(10px); } }
+
+/* ================= intro + end cards ================= */
+.card {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--bg); text-align: center;
+}
+.card img.icon { width: 92px; height: 92px; border-radius: 22px; }
+.card h1 { font-size: 64px; font-weight: 700; letter-spacing: -.035em; margin-top: 26px; }
+.card .tag { font-family: var(--mono); font-size: 15px; color: var(--muted); margin-top: 14px; letter-spacing: .06em; }
+.card.intro { animation: cardIn .7s ease both, fadeOutCard .6s ease 1.8s both; }
+.card.end { opacity: 0; animation: cardIn .8s ease 14.6s both; }
+@keyframes cardIn { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes fadeOutCard { to { opacity: 0; visibility: hidden; } }
+.card .repo { margin-top: 30px; font-family: var(--mono); font-size: 16px; color: var(--accent);
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px 22px; background: var(--bg-raised, #0a0a0a); }
+.chips { display: flex; gap: 8px; margin-top: 22px; }
+.chips span { font-family: var(--mono); font-size: 11px; letter-spacing: .18em; color: var(--muted);
+  border: 1px solid var(--line); padding: 6px 12px; border-radius: 999px; }
+</style>
+</head>
+<body>
+
+<!-- backdrop layers: dimmed screen + bright copy clipped to selection -->
+<div class="backdrop dark"></div>
+<div class="backdrop bright"></div>
+
+<!-- selection outline -->
+<div class="sel-box"></div>
+
+<!-- crosshair cursor -->
+<div class="cursor"><div class="ch"></div><div class="cv"></div><div class="dot"></div></div>
+
+<!-- annotations -->
+<div class="anno">
+  <svg class="arrow" viewBox="0 0 300 190">
+    <path d="M 290 20 C 200 60 120 110 40 160 M 40 160 L 95 140 M 40 160 L 62 105"/>
+  </svg>
+  <div class="rect"></div>
+  <div class="txt"><span class="wrap">ship it</span></div>
+</div>
+
+<!-- toolbar -->
+<div class="toolbar">
+  <div class="tb"><svg viewBox="0 0 24 24"><path d="M4 20 L8 16 L16 8 L20 4"/><path d="M14 6 L18 10"/></svg></div>
+  <div class="tb on"><svg viewBox="0 0 24 24"><path d="M5 19 L19 5"/><path d="M19 5 L13 5 M19 5 L19 11"/></svg></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/></svg></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><path d="M4 18 L12 6 L20 18"/></svg></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><text x="5" y="18" font-size="15" fill="currentColor" stroke="none" font-family="ui-monospace">T</text></svg></div>
+  <div class="tb-sep"></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><path d="M4 10 a8 8 0 0 1 14 -4 M18 2 L18 6 L14 6"/></svg></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><path d="M20 14 a8 8 0 0 1 -14 4 M6 22 L6 18 L10 18"/></svg></div>
+  <div class="tb-sep"></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><path d="M12 4 L12 16 M7 11 L12 16 L17 11"/><path d="M5 20 L19 20"/></svg></div>
+  <div class="tb"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="13" height="13" rx="2"/><path d="M6 15 L3 15 L3 3 L15 3 L15 6"/></svg></div>
+</div>
+
+<!-- keycaps -->
+<div class="keycaps hotkey"><div class="kc">⌘</div><div class="kc">⇧</div><div class="kc">S</div></div>
+<div class="keycaps save"><div class="kc">⌘</div><div class="kc">S</div></div>
+<div class="keycaps link"><div class="kc">⌘</div><div class="kc">L</div></div>
+
+<!-- toasts -->
+<div class="toast t1"><span class="tick">✓</span> Saved <span style="font-family:var(--mono);font-size:14px">quickshort-1791.png</span> · copied to clipboard</div>
+<div class="toast t2"><span class="tick">✓</span> Link copied — <span class="url">https://quickshort.tunnl.gg/s/9f2ac1</span></div>
+
+<!-- intro card -->
+<div class="card intro">
+  <img class="icon" src="../docs/assets/icon.png" alt="">
+  <h1>Quickshort</h1>
+  <p class="tag">Select. Snip. Ship.</p>
+</div>
+
+<!-- end card -->
+<div class="card end">
+  <img class="icon" src="../docs/assets/icon.png" alt="">
+  <h1>Select. Snip. Ship.</h1>
+  <div class="chips"><span>NATIVE</span><span>PURE RUST</span><span>NO ELECTRON</span></div>
+  <div class="repo">github.com/truongnat/quickshort</div>
+</div>
+
+</body>
+</html>
