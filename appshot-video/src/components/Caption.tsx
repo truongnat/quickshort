@@ -1,11 +1,12 @@
 import { spring, useCurrentFrame, useVideoConfig } from "remotion";
 
+// Landing-language caption: hairline pill, accent dot, word-by-word spring.
 export const Caption: React.FC<{
   text: string;
   delay?: number;
   fontSize?: number;
   maxWidth?: number;
-}> = ({ text, delay = 0, fontSize = 44, maxWidth = 820 }) => {
+}> = ({ text, delay = 0, fontSize = 34, maxWidth = 1100 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -13,28 +14,33 @@ export const Caption: React.FC<{
     frame,
     fps,
     delay,
-    config: { mass: 0.8, damping: 14, stiffness: 100 },
+    config: { mass: 0.8, damping: 15, stiffness: 110 },
   });
 
   const words = text.split(" ");
 
   return (
     <div
-      className="absolute bottom-0 left-0 right-0 z-50 flex justify-center pb-40"
-      style={{ opacity: containerEnter, transform: `translateY(${(1 - containerEnter) * 15}px)` }}
+      className="absolute bottom-0 left-0 right-0 z-50 flex justify-center pb-32"
+      style={{ opacity: containerEnter, transform: `translateY(${(1 - containerEnter) * 14}px)` }}
     >
       <div
-        className="rounded-2xl px-10 py-5"
+        className="flex items-center rounded-full"
         style={{
-          background: "rgba(45, 45, 45, 0.85)",
-          backdropFilter: "blur(16px)",
-          border: "1px solid rgba(255,255,255,0.1)",
+          gap: 16,
+          padding: "16px 34px",
+          background: "rgba(0,0,0,0.88)",
+          border: "1px solid #262626",
           maxWidth,
         }}
       >
+        <span
+          className="rounded-full"
+          style={{ width: 9, height: 9, background: "#52c7ea", flexShrink: 0 }}
+        />
         <p
-          className="text-center font-semibold leading-tight text-white"
-          style={{ fontSize }}
+          className="text-center leading-tight"
+          style={{ fontSize, fontWeight: 550, letterSpacing: "-0.015em", color: "#ededed" }}
         >
           {words.map((word, i) => {
             const wordEnter = spring({
@@ -43,7 +49,6 @@ export const Caption: React.FC<{
               delay: delay + 3 + i * 1.5,
               config: { mass: 0.3, damping: 12, stiffness: 150 },
             });
-
             return (
               <span
                 key={i}

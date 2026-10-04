@@ -1,6 +1,8 @@
 import { spring, useCurrentFrame, useVideoConfig } from "remotion";
+import { CrossCorners } from "./LandingBackground";
 
-// macOS-style dark window chrome: traffic lights + centered title.
+// Landing-language window: hairline frame, flat bar, mono uppercase title,
+// + cross marks at the corners (landing motif).
 export const MacWindow: React.FC<{
   children: React.ReactNode;
   title?: string;
@@ -15,33 +17,26 @@ export const MacWindow: React.FC<{
     frame,
     fps,
     delay,
-    config: { mass: 1.2, damping: 16, stiffness: 80 },
+    config: { mass: 1.1, damping: 17, stiffness: 85 },
   });
 
   return (
     <div
       className={className}
       style={{
+        position: "relative",
         opacity: enter,
-        transform: `scale(${0.92 + enter * 0.08}) scale(${scale})`,
+        transform: `scale(${0.94 + enter * 0.06}) scale(${scale})`,
       }}
     >
+      <CrossCorners />
       <div
         className="overflow-hidden"
-        style={{
-          borderRadius: 14,
-          boxShadow:
-            "0 40px 120px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.08)",
-          border: "1px solid #262626",
-        }}
+        style={{ borderRadius: 8, border: "1px solid #262626", background: "#0a0a0a" }}
       >
         <div
           className="relative flex items-center px-4"
-          style={{
-            height: 40,
-            background: "#161616",
-            borderBottom: "1px solid #262626",
-          }}
+          style={{ height: 44, borderBottom: "1px solid #1a1a1a" }}
         >
           <div className="flex" style={{ gap: 7 }}>
             <div className="rounded-full" style={{ width: 12, height: 12, background: "#FF5F57" }} />
@@ -51,9 +46,9 @@ export const MacWindow: React.FC<{
           {title && (
             <span
               className="absolute left-0 right-0 text-center font-mono"
-              style={{ fontSize: 13, color: "#a1a1a1", pointerEvents: "none" }}
+              style={{ fontSize: 12, letterSpacing: "0.14em", color: "#6b6b6b", pointerEvents: "none" }}
             >
-              {title}
+              {title.toUpperCase()}
             </span>
           )}
         </div>

@@ -1,5 +1,5 @@
 import { interpolate, spring, useCurrentFrame, useVideoConfig, staticFile, Img } from "remotion";
-import { AmbientBackground, Caption, FadeIn, MacWindow } from "../components";
+import { LandingBackground, Caption, MacWindow } from "../components";
 import { appConfig } from "../app-config";
 
 // Annotate: real annotated capture + a live arrow that draws itself +
@@ -20,7 +20,7 @@ export const S3_Annotate: React.FC = () => {
 
   return (
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
-      <AmbientBackground brand={brand} variant="dark" />
+      <LandingBackground />
 
       <div className="relative" style={{ transform: `scale(${zoom})` }}>
         <MacWindow title="annotation" delay={4} scale={0.92}>
@@ -51,18 +51,18 @@ export const S3_Annotate: React.FC = () => {
                 top: 455,
                 width: 430,
                 height: 190,
-                border: `3px dashed ${brand.accent}`,
-                borderRadius: 8,
+                border: `2px dashed ${brand.accent}`,
+                borderRadius: 6,
                 opacity: blockOn * pulse,
-                boxShadow: `0 0 24px ${brand.accent}55`,
+                boxShadow: `0 0 0 5px ${brand.accent}18`,
               }}
             >
               {[[-9, -9], [421, -9], [-9, 181], [421, 181]].map(([x, y], i) => (
                 <div
                   key={i}
                   style={{
-                    position: "absolute", left: x, top: y, width: 18, height: 18,
-                    borderRadius: 4, background: "#0a0a0a", border: `2px solid ${brand.accent}`,
+                    position: "absolute", left: x, top: y, width: 14, height: 14,
+                    borderRadius: 3, background: "#000", border: `2px solid ${brand.accent}`,
                   }}
                 />
               ))}

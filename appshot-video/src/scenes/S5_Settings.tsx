@@ -1,5 +1,5 @@
 import { interpolate, spring, useCurrentFrame, useVideoConfig, staticFile, Img } from "remotion";
-import { AmbientBackground, Caption, FadeIn, MacWindow } from "../components";
+import { LandingBackground, Caption, MacWindow } from "../components";
 import { appConfig } from "../app-config";
 
 // Settings window + self-update proof point.
@@ -13,7 +13,7 @@ export const S5_Settings: React.FC = () => {
 
   return (
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
-      <AmbientBackground brand={brand} variant="dark" />
+      <LandingBackground />
 
       <div className="relative" style={{ transform: `scale(${zoom}) translateY(-70px)` }}>
         <MacWindow title="Quickshort — Settings" delay={4} scale={0.82}>
@@ -28,19 +28,19 @@ export const S5_Settings: React.FC = () => {
           style={{
             right: -30,
             top: -34,
-            gap: 12,
-            padding: "14px 24px",
+            gap: 11,
+            padding: "12px 22px",
             borderRadius: 999,
-            background: "rgba(16,16,16,0.96)",
-            border: `1px solid ${brand.accent}55`,
-            fontSize: 20,
-            color: brand.textPrimary,
+            background: "#0a0a0a",
+            border: "1px solid #262626",
+            fontSize: 16,
+            letterSpacing: "0.14em",
+            color: "#a1a1a1",
             opacity: pill,
             transform: `translateY(${(1 - pill) * 16}px)`,
-            boxShadow: `0 18px 50px rgba(0,0,0,0.5), 0 0 30px ${brand.accent}33`,
           }}
         >
-          <span style={{ color: brand.success }}>↻</span> checks releases daily · swaps in place
+          <span style={{ color: brand.accent }}>↻</span> CHECKS RELEASES DAILY · SWAPS IN PLACE
         </div>
       </div>
 

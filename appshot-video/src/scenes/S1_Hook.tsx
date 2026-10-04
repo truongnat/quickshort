@@ -1,5 +1,5 @@
 import { spring, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
-import { AmbientBackground, AppIcon, Caption, FadeIn } from "../components";
+import { LandingBackground, AppIcon, Caption, FadeIn } from "../components";
 import { appConfig } from "../app-config";
 
 export const S1_Hook: React.FC = () => {
@@ -12,10 +12,10 @@ export const S1_Hook: React.FC = () => {
 
   return (
     <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden">
-      <AmbientBackground brand={brand} variant="dark" />
+      <LandingBackground />
       <div className="relative z-10 flex flex-col items-center">
         <div style={{ opacity: iconEnter, transform: `scale(${breathe})` }}>
-          <AppIcon src={appConfig.app.icon} size={130} glow glowColor={`${brand.primary}55`} />
+          <AppIcon src={appConfig.app.icon} size={130} glow glowColor="rgba(82,199,234,0.33)" />
         </div>
         <FadeIn delay={10} distance={26}>
           <span style={{ fontSize: 76, fontWeight: 800, letterSpacing: "-0.03em", color: brand.textPrimary }}>

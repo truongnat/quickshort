@@ -1,6 +1,7 @@
 import { spring, useCurrentFrame, useVideoConfig } from "remotion";
 
-// Hardware keycap chip — pops in, dips on "press".
+// Landing-language keycap: flat hairline tile.
+// Pressed = cyan text + cyan tint bg + cyan border (active-tab pattern).
 export const Keycap: React.FC<{
   label: string;
   delay?: number;
@@ -9,25 +10,23 @@ export const Keycap: React.FC<{
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  const enter = spring({ frame, fps, delay, config: { mass: 0.6, damping: 12, stiffness: 160 } });
-  const pressed = pressDelay !== undefined && frame >= pressDelay ? 1 : 0;
+  const enter = spring({ frame, fps, delay, config: { mass: 0.6, damping: 13, stiffness: 160 } });
+  const pressed = pressDelay !== undefined && frame >= pressDelay;
 
   return (
     <div
       className="flex items-center justify-center font-mono"
       style={{
-        minWidth: 74,
-        height: 74,
-        padding: "0 20px",
-        fontSize: 30,
-        color: "#ededed",
-        background: "rgba(22,22,22,0.97)",
-        border: "1px solid #3a3a3a",
-        borderBottomWidth: pressed ? 2 : 5,
-        borderRadius: 14,
+        minWidth: 66,
+        height: 66,
+        padding: "0 18px",
+        fontSize: 25,
+        color: pressed ? "#52c7ea" : "#ededed",
+        background: pressed ? "rgba(82,199,234,0.08)" : "#0a0a0a",
+        border: `1px solid ${pressed ? "rgba(82,199,234,0.55)" : "#262626"}`,
+        borderRadius: 8,
         opacity: enter,
-        transform: `translateY(${(1 - enter) * 18 + pressed * 3}px) scale(${0.85 + enter * 0.15 - pressed * 0.04})`,
-        boxShadow: "0 14px 40px rgba(0,0,0,0.6)",
+        transform: `translateY(${(1 - enter) * 14}px)`,
       }}
     >
       {label}

@@ -10,4 +10,5 @@ export { AnimatedCursor } from "./AnimatedCursor";
 export { MacWindow } from "./MacWindow";
 export { Keycap } from "./Keycap";
 export { Toast } from "./Toast";
+export { LandingBackground, CrossCorners } from "./LandingBackground";
 export type { CursorKeyframe } from "./AnimatedCursor";

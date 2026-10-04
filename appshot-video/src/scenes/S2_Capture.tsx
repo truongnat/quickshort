@@ -1,5 +1,5 @@
 import { interpolate, spring, useCurrentFrame, useVideoConfig, staticFile, Img } from "remotion";
-import { AmbientBackground, AnimatedCursor, Caption, FadeIn, MacWindow, Keycap } from "../components";
+import { LandingBackground, AnimatedCursor, Caption, MacWindow, Keycap } from "../components";
 import { appConfig } from "../app-config";
 
 // Hotkey -> dimmed overlay -> drag a region. Real app screenshot + live
@@ -22,7 +22,7 @@ export const S2_Capture: React.FC = () => {
 
   return (
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
-      <AmbientBackground brand={brand} variant="dark" />
+      <LandingBackground />
 
       <div className="relative" style={{ transform: `scale(${zoom})` }}>
         <MacWindow title="Quickshort — overlay" delay={4} scale={0.92}>
@@ -38,9 +38,9 @@ export const S2_Capture: React.FC = () => {
                   top: 170,
                   width: selW,
                   height: selH,
-                  border: `4px solid ${brand.accent}`,
+                  border: `3px solid ${brand.accent}`,
                   borderRadius: 6,
-                  boxShadow: `0 0 0 9999px rgba(0,0,0,0.28), 0 0 30px ${brand.accent}66`,
+                  boxShadow: "0 0 0 9999px rgba(0,0,0,0.32)",
                 }}
               />
             )}
@@ -54,9 +54,9 @@ export const S2_Capture: React.FC = () => {
                 fontFamily: "ui-monospace, monospace",
                 fontSize: 20,
                 color: "#ededed",
-                background: "rgba(10,10,10,0.9)",
-                border: "1px solid #2e2e2e",
-                borderRadius: 8,
+                background: "#0a0a0a",
+                border: "1px solid #262626",
+                borderRadius: 6,
                 padding: "6px 14px",
               }}
             >
@@ -75,7 +75,7 @@ export const S2_Capture: React.FC = () => {
       </div>
 
       {/* hotkey chips */}
-      <div className="absolute flex" style={{ gap: 16, top: 90, left: 0, right: 0, justifyContent: "center" }}>
+      <div className="absolute flex" style={{ gap: 16, top: 44, left: 0, right: 0, justifyContent: "center" }}>
         <Keycap label="⌘" delay={18} pressDelay={56} />
         <Keycap label="⇧" delay={24} pressDelay={56} />
         <Keycap label="S" delay={30} pressDelay={56} />
