@@ -53,41 +53,22 @@ if (!reduced && "IntersectionObserver" in window) {
 
   const cta = document.getElementById("heroCta");
   const note = document.getElementById("osNote");
-  const dlMac = document.getElementById("dlMac");
-  const dlOther = document.getElementById("dlOther");
-  const title = document.getElementById("otherTitle");
-  const desc = document.getElementById("otherDesc");
-  const perm = document.getElementById("permNote");
-  if (!cta || !dlMac || !dlOther) return;
+  const grids = {
+    macos: document.getElementById("dlMac"),
+    windows: document.getElementById("dlWin"),
+    linux: document.getElementById("dlLinux"),
+  };
+  if (!cta || !grids.macos || !grids.windows || !grids.linux) return;
 
   const NAMES = { macos: "macOS", windows: "Windows", linux: "Linux" };
-  if (os === "macos") {
-    cta.textContent = "Download for macOS";
-    if (note) note.textContent = "Detected macOS. DMG or Homebrew.";
-  } else {
-    cta.textContent = `Download for ${NAMES[os]}`;
-    dlMac.hidden = true;
-    dlOther.hidden = false;
-    if (note) note.textContent = `Detected ${NAMES[os]}. No signed binary yet.`;
-    const dlBtn = document.getElementById("otherDlBtn");
-    if (os === "windows") {
-      if (title) title.textContent = "Windows (experimental)";
-      if (desc) desc.textContent = "A bare exe ships with each release — unsigned, no installer, compile-checked backend (GDI BitBlt, Windows.Media.Ocr). Grab it under Assets, or build from source below.";
-      if (dlBtn) { dlBtn.hidden = false; dlBtn.textContent = "Windows exe"; }
-      if (perm) perm.textContent = "Windows: experimental exe in the release assets. macOS DMG + Homebrew cask are the packaged channels.";
-      fetch("https://api.github.com/repos/truongnat/quickshort/releases/latest")
-        .then((r) => r.ok ? r.json() : null)
-        .then((rel) => {
-          const exe = rel && rel.assets && rel.assets.find((a) => /-windows\.exe$/.test(a.name));
-          if (exe && dlBtn) dlBtn.href = exe.browser_download_url;
-        })
-        .catch(() => {});
-    } else {
-      if (title) title.textContent = "Linux: build from source";
-      if (desc) desc.textContent = "Linux backend supports X11 and GNOME Wayland (PipeWire). OCR on Linux fails loudly for now, no backend chosen yet.";
-      if (perm) perm.textContent = "Linux: X11 + GNOME Wayland capture work from a source build. macOS DMG + Homebrew cask are the packaged channels today.";
-    }
-  }
+  const NOTES = {
+    macos: "Detected macOS. DMG or Homebrew.",
+    windows: "Detected Windows. One setup exe.",
+    linux: "Detected Linux. AppImage or .deb.",
+  };
+  for (const k of Object.keys(grids)) grids[k].hidden = k !== os;
+  cta.textContent = `Download for ${NAMES[os]}`;
+  if (note) note.textContent = NOTES[os];
   document.body.dataset.os = os;
 })();
 

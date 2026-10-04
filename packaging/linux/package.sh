@@ -1,0 +1,64 @@
+#!/bin/sh
+# Linux packaging: .deb (dpkg-deb, no extra tools) + .AppImage (linuxdeploy
+# with the gtk plugin so tray-icon's libayatana dependency is bundled).
+# usage: packaging/linux/package.sh [version]
+set -e
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT"
+
+VER="${1:-$(sed -n 's/^version = "\(.*\)"/\1/p' crates/qs-app/Cargo.toml | head -1)}"
+BIN="target/release/quickshort"
+DIST="$ROOT/dist"
+mkdir -p "$DIST"
+
+cargo build --release -p qs-app
+
+# --- .deb ------------------------------------------------------------------
+PKGDIR="$(mktemp -d)/quickshort_${VER}_amd64"
+mkdir -p "$PKGDIR/DEBIAN" "$PKGDIR/usr/bin" \
+  "$PKGDIR/usr/share/applications" "$PKGDIR/usr/share/icons/hicolor/1024x1024/apps"
+cp "$BIN" "$PKGDIR/usr/bin/quickshort"
+cp packaging/linux/quickshort.desktop "$PKGDIR/usr/share/applications/quickshort.desktop"
+cp docs/assets/icon.png "$PKGDIR/usr/share/icons/hicolor/1024x1024/apps/quickshort.png"
+cat > "$PKGDIR/DEBIAN/control" <<EOF
+Package: quickshort
+Version: $VER
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: truongnat <noreply@github.com>
+Depends: libgtk-3-0, libayatana-appindicator3-1, libpipewire-0.3-0
+Description: Region screenshot tool with annotations and native OCR
+ A pure-Rust desktop utility: multi-monitor region capture, annotation
+ layer, OS-native OCR, tray resident.
+EOF
+dpkg-deb --build "$PKGDIR" "$DIST/quickshort_amd64.deb"
+
+# --- .AppImage ---------------------------------------------------------------
+TOOLS="$(mktemp -d)"
+curl -sL -o "$TOOLS/linuxdeploy.AppImage" \
+  "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+curl -sL -o "$TOOLS/gtk.AppImage" \
+  "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
+chmod +x "$TOOLS/linuxdeploy.AppImage" "$TOOLS/gtk.AppImage"
+
+APPDIR="$(mktemp -d)/AppDir"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" \
+  "$APPDIR/usr/share/icons/hicolor/1024x1024/apps"
+cp "$BIN" "$APPDIR/usr/bin/quickshort"
+cp packaging/linux/quickshort.desktop "$APPDIR/usr/share/applications/quickshort.desktop"
+cp docs/assets/icon.png "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/quickshort.png"
+# linuxdeploy wants the desktop file + icon at the appdir root too
+cp packaging/linux/quickshort.desktop "$APPDIR/quickshort.desktop"
+cp docs/assets/icon.png "$APPDIR/quickshort.png"
+
+# AppImages can't self-exec on FUSE-less hosts without this env; CI has none
+export APPIMAGE_EXTRACT_AND_RUN=1
+export LDAI_OUTPUT="$DIST/Quickshort-Linux.AppImage"
+export OUTPUT="$DIST/Quickshort-Linux.AppImage"
+"$TOOLS/linuxdeploy.AppImage" \
+  --appdir "$APPDIR" --plugin gtk --output appimage 2>/dev/null || {
+    echo "linuxdeploy failed; shipping .deb only"
+}
+ls -lh "$DIST"/Quickshort-Linux.AppImage "$DIST/quickshort_amd64.deb" 2>/dev/null
+echo "linux artifacts ready in $DIST"

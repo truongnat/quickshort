@@ -213,21 +213,43 @@ brew install --cask quickshort</code>
     </div>
     <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
-  <div class="grid-cells dl-cells" id="dlOther" hidden>
+  <div class="grid-cells dl-cells" id="dlWin" hidden>
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <div class="cell reveal">
-      <h3 id="otherTitle">Build from source</h3>
-      <p class="dl-desc" id="otherDesc">Native binary for your platform is not published yet. Build takes a minute.</p>
-      <a class="btn btn-primary" id="otherDlBtn" href="https://github.com/truongnat/quickshort/releases/latest" target="_blank" rel="noopener" hidden style="margin-bottom:16px">Latest release</a>
+      <h3>Installer</h3>
+      <p class="dl-desc">Setup wizard: installs to Program Files, Start Menu shortcut, uninstaller included. Unsigned build: SmartScreen will warn once.</p>
+      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest/download/Quickshort-Windows-Setup.exe" target="_blank" rel="noopener">Download .exe</a>
+    </div>
+    <div class="cell reveal">
+      <h3>From source</h3>
+      <p class="dl-desc">Prefer to build it yourself? GDI capture and Windows.Media.Ocr backends are native.</p>
       <div class="code-block">
-        <code id="srccmd">git clone https://github.com/truongnat/quickshort
+        <code>git clone https://github.com/truongnat/quickshort
 cd quickshort && cargo build --release</code>
         <button class="copy-btn" data-copy="git clone https://github.com/truongnat/quickshort && cd quickshort && cargo build --release" aria-label="Copy build command">Copy</button>
       </div>
     </div>
     <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
-  <p class="dl-note reveal" id="permNote">macOS 14+ needs Screen Recording and Accessibility permissions. Windows ships an experimental exe; Linux builds from source.</p>
+  <div class="grid-cells dl-cells" id="dlLinux" hidden>
+    <span class="cross tl">+</span><span class="cross tr">+</span>
+    <div class="cell reveal">
+      <h3>AppImage</h3>
+      <p class="dl-desc">Portable, no install. Download, chmod +x, run. Bundles the tray dependencies.</p>
+      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest/download/Quickshort-Linux.AppImage" target="_blank" rel="noopener">Download AppImage</a>
+    </div>
+    <div class="cell reveal">
+      <h3>Debian / Ubuntu</h3>
+      <p class="dl-desc">Registers a .desktop entry and icon, lands in /usr/bin.</p>
+      <div class="code-block">
+        <code>curl -LO https://github.com/truongnat/quickshort/releases/latest/download/quickshort_amd64.deb
+sudo dpkg -i quickshort_amd64.deb</code>
+        <button class="copy-btn" data-copy="curl -LO https://github.com/truongnat/quickshort/releases/latest/download/quickshort_amd64.deb && sudo dpkg -i quickshort_amd64.deb" aria-label="Copy install command">Copy</button>
+      </div>
+    </div>
+    <span class="cross bl">+</span><span class="cross br">+</span>
+  </div>
+  <p class="dl-note reveal" id="permNote">macOS 14+ needs Screen Recording and Accessibility permissions. Windows installer is unsigned (SmartScreen once). Linux OCR is still without a native backend.</p>
 </section>
 
 <section class="section" id="donate">

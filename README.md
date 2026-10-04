@@ -76,20 +76,28 @@ the tray item becomes *Update to vX — Restart to Install*. Or: tray menu →
 
 ### Linux
 
+**AppImage** — grab `Quickshort-Linux.AppImage` from
+[Releases](https://github.com/truongnat/quickshort/releases), `chmod +x`,
+run. Bundles the tray dependencies (gtk plugin).
+
+**Debian / Ubuntu** — `quickshort_amd64.deb` installs to `/usr/bin` with a
+`.desktop` entry and icon:
+
 ```bash
-./install.sh                              # build release -> ~/.local/bin + GNOME hotkey
-./install.sh --hotkey '<Super><Shift>S'   # custom binding
+sudo dpkg -i quickshort_amd64.deb
 ```
 
-The script installs the binary and registers a GNOME custom shortcut via
-`gsettings` (default `Ctrl+Alt+Q`, effective immediately). On non-GNOME
-desktops it installs the binary only — bind it yourself.
+Or from source — `./install.sh` builds release → `~/.local/bin` and
+registers a GNOME custom shortcut via `gsettings` (default `Ctrl+Alt+Q`).
+On non-GNOME desktops it installs the binary only — bind it yourself.
 
 ### Windows
 
-Each release ships a bare `Quickshort-v*-windows.exe` under
-[Releases](https://github.com/truongnat/quickshort/releases) — unsigned, no
-installer, no auto-update. Or build from source
+`Quickshort-Windows-Setup.exe` under
+[Releases](https://github.com/truongnat/quickshort/releases) — NSIS
+installer: Program Files install, Start Menu shortcut, uninstaller entry.
+Unsigned, so SmartScreen warns once (**More info → Run anyway**). Runs as a
+tray app, no console window. Or build from source
 (`cargo build --release -p qs-app`).
 
 ## Usage

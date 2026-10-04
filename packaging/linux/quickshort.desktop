@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Quickshort
+Comment=Region screenshot tool with annotations and OCR
+Exec=quickshort
+Icon=quickshort
+Type=Application
+Categories=Utility;Graphics;
+Keywords=screenshot;snip;ocr;region;
+StartupNotify=false

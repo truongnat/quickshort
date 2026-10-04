@@ -13,23 +13,11 @@ permissions:
   contents: write
 
 jobs:
-  # the release must exist before either platform job can upload assets
-  create-release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VER: ${{ github.event.inputs.version || github.ref_name }}
-        run: gh release create "v${VER#v}" --title "Quickshort v${VER#v}" --generate-notes -R truongnat/quickshort
-
   macos:
-    needs: create-release
     runs-on: macos-latest
     env:
       SIGNING_P12_B64: ${{ secrets.QS_SIGN_P12 }}
       SIGNING_P12_PASSWORD: ${{ secrets.QS_SIGN_P12_PASSWORD }}
-      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,18 +49,107 @@ jobs:
           fi
 
       - name: build + package
-        run: packaging/macos/release.sh
+        env:
+          QS_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          VER="${QS_VERSION#v}"
+          case "$VER" in master|main) VER="" ;; esac
+          packaging/macos/release.sh $VER
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: build
+        run: cargo build --release -p qs-app
+
+      - name: nsis installer
+        shell: bash
+        run: |
+          command -v makensis >/dev/null || choco install nsis -y --no-progress
+          VER="${{ github.event.inputs.version || github.ref_name }}"
+          VER="${VER#v}"
+          case "$VER" in
+            master|main) VER=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/qs-app/Cargo.toml | head -1) ;;
+          esac
+          mkdir -p dist
+          makensis "/DVERSION=$VER" "/DBIN=target\\release\\quickshort.exe" \
+            "/DOUT=dist\\Quickshort-Windows-Setup.exe" \
+            packaging/windows/installer.nsi
+          cd dist && sha256sum Quickshort-Windows-Setup.exe \
+            > Quickshort-Windows-Setup.exe.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libclang-dev pkg-config
+
+      - name: build + package
+        env:
+          QS_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          VER="${QS_VERSION#v}"
+          case "$VER" in master|main) VER="" ;; esac
+          packaging/linux/package.sh $VER
+
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum Quickshort-Linux.AppImage quickshort_amd64.deb \
+            > linux.sha256 2>/dev/null || sha256sum quickshort_amd64.deb > linux.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [macos, windows, linux]
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: publish github release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VER: ${{ github.event.inputs.version || github.ref_name }}
         run: |
-          gh release upload "v${VER#v}" --clobber \
-            dist/Quickshort-v*-macos.zip \
-            dist/Quickshort-v*-macos.zip.sha256 \
-            dist/Quickshort-v*-macos.dmg \
-            dist/Quickshort-v*-macos.dmg.sha256
+          TAG="${VER#v}"
+          case "$TAG" in
+            master|main)
+              echo "no version — push a v* tag or pass workflow_dispatch version"
+              exit 1 ;;
+          esac
+          gh release create "v$TAG" artifacts/* \
+            --title "Quickshort v$TAG" --generate-notes
 
       # optional: bump the homebrew-tap cask (needs TAP_TOKEN secret and a
       # truongnat/homebrew-tap repo containing Casks/quickshort.rb)
@@ -81,36 +158,12 @@ jobs:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           [ -n "$TAP_TOKEN" ] || { echo "no TAP_TOKEN — skipping tap bump"; exit 0; }
-          VER="$(ls dist | sed -n 's/Quickshort-v\(.*\)-macos.zip/\1/p' | head -1)"
-          SHA="$(cut -d' ' -f1 dist/Quickshort-v$VER-macos.zip.sha256)"
+          VER="$(ls artifacts | sed -n 's/Quickshort-v\(.*\)-macos.zip/\1/p' | head -1)"
+          SHA="$(cut -d' ' -f1 artifacts/Quickshort-v$VER-macos.zip.sha256)"
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/truongnat/homebrew-tap" /tmp/tap
           cd /tmp/tap
-          sed -i '' "s/version \".*\"/version \"$VER\"/; s/sha256 \".*\"/sha256 \"$SHA\"/" \
+          sed -i "s/version \".*\"/version \"$VER\"/; s/sha256 \".*\"/sha256 \"$SHA\"/" \
             Casks/quickshort.rb
           git -c user.name=devin -c user.email=devin@localhost commit \
             -am "quickshort $VER" || exit 0
           git push
-
-  # windows: compile-checked backend — ships a bare exe as an experimental
-  # artifact until it gets real QA (no installer, no signing)
-  windows:
-    needs: create-release
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: build
-        run: cargo build --release -p qs-app
-      - name: package + upload
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VER: ${{ github.event.inputs.version || github.ref_name }}
-        shell: bash
-        run: |
-          TAG="${VER#v}"
-          mkdir -p dist
-          cp target/release/quickshort.exe "dist/Quickshort-v$TAG-windows.exe"
-          (cd dist && sha256sum "Quickshort-v$TAG-windows.exe" > "Quickshort-v$TAG-windows.exe.sha256")
-          gh release upload "v$TAG" --clobber \
-            "dist/Quickshort-v$TAG-windows.exe" \
-            "dist/Quickshort-v$TAG-windows.exe.sha256"

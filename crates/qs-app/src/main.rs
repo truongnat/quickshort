@@ -3,6 +3,10 @@
 //! `quickshort`            resident tray app (menu + global hotkey)
 //! `quickshort --capture`  one-shot: capture -> overlay -> action -> exit
 
+// GUI subsystem on Windows — no console window when launched from Explorer,
+// the Start Menu, or the installer "Launch" checkbox.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod actions;
 mod config;
 mod host;
