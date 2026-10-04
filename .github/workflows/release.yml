@@ -82,9 +82,12 @@ jobs:
             master|main) VER=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/qs-app/Cargo.toml | head -1) ;;
           esac
           mkdir -p dist
-          # -D not /D: git-bash mangles /DFOO into a C:/Program Files/Git path
-          makensis "-DVERSION=$VER" "-DBIN=target\\release\\quickshort.exe" \
-            "-DOUT=dist\\Quickshort-Windows-Setup.exe" \
+          # -D not /D: git-bash mangles /DFOO into a C:/Program Files/Git path.
+          # NSIS resolves relative paths against the script dir, so pass
+          # absolute Windows paths via cygpath.
+          makensis "-DVERSION=$VER" \
+            "-DBIN=$(cygpath -w "$PWD/target/release/quickshort.exe")" \
+            "-DOUT=$(cygpath -w "$PWD/dist/Quickshort-Windows-Setup.exe")" \
             packaging/windows/installer.nsi
           cd dist && sha256sum Quickshort-Windows-Setup.exe \
             > Quickshort-Windows-Setup.exe.sha256
