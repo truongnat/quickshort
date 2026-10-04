@@ -150,38 +150,33 @@ impl Host {
         });
     }
 
-    /// Capture every monitor and spawn the overlay session — or, in
-    /// fullscreen mode, save the whole virtual screen with no overlay.
+    /// Capture every monitor and spawn the overlay session.
     fn trigger(&mut self, el: &ActiveEventLoop) {
+        eprintln!("trigger: overlay={}", self.overlay.is_some());
         if self.overlay.is_some() {
             return; // a selection is already in progress
         }
         let frames = match qs_capture::backend().and_then(|b| b.capture_all()) {
             Ok(f) if !f.is_empty() => f,
             Ok(_) => return eprintln!("no monitors captured"),
-            Err(e) => return eprintln!("capture failed: {e:#}"),
+            Err(e) => {
+                eprintln!("capture failed: {e:#}");
+                if self.toast.is_none() {
+                    if let Ok(t) = Toast::open(el, &format!("Capture failed: {e:#}")) {
+                        self.toast = Some(t);
+                    }
+                }
+                // LSUIElement apps get no TCC prompt — open the pane so the
+                // user can grant Screen Recording manually
+                if cfg!(target_os = "macos") {
+                    let _ = std::process::Command::new("open")
+                        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+                        .spawn();
+                }
+                return;
+            }
         };
         let bounds = qs_core::virtual_bounds(&frames);
-        if self.cfg.capture_fullscreen() {
-            let px = self.proxy.clone();
-            let target = SaveTarget::Dir(self.cfg.save_dir());
-            let copy = self.cfg.copy_after_save;
-            std::thread::spawn(move || {
-                let res = actions::dispatch(
-                    frames,
-                    bounds,
-                    qs_overlay::Action::Save,
-                    &[],
-                    &target,
-                    false,
-                    None,
-                    copy,
-                )
-                .map_err(|e| e.to_string());
-                let _ = px.send_event(HostEvent::Done(res));
-            });
-            return;
-        }
         let prefs = self.cfg.overlay_prefs();
         match Overlay::spawn(el, &frames, bounds, &prefs) {
             Ok(ov) => {
@@ -198,6 +193,9 @@ impl Host {
             tray::ID_CAPTURE => self.trigger(el),
             tray::ID_OPEN_DIR => actions::open_path(&self.cfg.save_dir()),
             tray::ID_QUIT => el.exit(),
+            tray::ID_DONATE => actions::open_path(std::path::Path::new(
+                "https://truongnat.github.io/quickshort/#donate",
+            )),
             tray::ID_UPDATE => {
                 if let Some(rel) = self.pending_update.take() {
                     self.install_update(el, rel);
@@ -403,25 +401,30 @@ impl ApplicationHandler<HostEvent> for Host {
                 }
                 Err(e) => self.toast_done(el, format!("Update failed: {e}"), false),
             },
-            HostEvent::Done(res) => match res {
-                Ok(Outcome::Saved(p)) => {
-                    self.rebuild_menu();
-                    let name = p
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    self.toast_done(el, format!("Saved {name}"), true);
+            HostEvent::Done(res) => {
+                eprintln!("done: {res:?}");
+                match res {
+                    Ok(Outcome::Saved(p)) => {
+                        self.rebuild_menu();
+                        let name = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        self.toast_done(el, format!("Saved {name}"), true);
+                    }
+                    Ok(Outcome::Copied) => {
+                        self.toast_done(el, "Copied to clipboard".to_string(), true)
+                    }
+                    Ok(Outcome::Shared(url)) => {
+                        self.toast_done(el, format!("Link copied — {url}"), true)
+                    }
+                    Ok(Outcome::TextCopied(n)) => {
+                        self.toast_done(el, format!("Copied {n} chars"), true)
+                    }
+                    Ok(Outcome::NoText) => self.toast_done(el, "No text found".to_string(), false),
+                    Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
                 }
-                Ok(Outcome::Copied) => self.toast_done(el, "Copied to clipboard".to_string(), true),
-                Ok(Outcome::Shared(url)) => {
-                    self.toast_done(el, format!("Link copied — {url}"), true)
-                }
-                Ok(Outcome::TextCopied(n)) => {
-                    self.toast_done(el, format!("Copied {n} chars"), true)
-                }
-                Ok(Outcome::NoText) => self.toast_done(el, "No text found".to_string(), false),
-                Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
-            },
+            }
         }
     }
 

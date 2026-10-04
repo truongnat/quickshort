@@ -10,9 +10,6 @@ use std::path::PathBuf;
 pub struct Config {
     /// Global hotkey in `global-hotkey` syntax, e.g. "CmdOrCtrl+Shift+S".
     pub hotkey: String,
-    /// "region" = overlay selection; "fullscreen" = grab every monitor and
-    /// save straight away with no overlay.
-    pub capture_mode: String,
     /// Screenshot folder override; `None` = `~/Pictures/quickshort`.
     pub save_dir: Option<PathBuf>,
     pub launch_at_login: bool,
@@ -42,7 +39,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hotkey: "CmdOrCtrl+Shift+S".into(),
-            capture_mode: "region".into(),
             save_dir: None,
             launch_at_login: false,
             auto_update: true,
@@ -102,10 +98,6 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("quickshort")
         })
-    }
-
-    pub fn capture_fullscreen(&self) -> bool {
-        self.capture_mode == "fullscreen"
     }
 
     /// Accent preset name -> 0xRRGGBB. Unknown names fall back to blue.

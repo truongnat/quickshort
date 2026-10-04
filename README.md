@@ -40,9 +40,8 @@ downloads.
 - **Resident tray app** — menu-bar icon, global hotkey, launch at login,
   recent captures, auto-update
 - **Settings window** — paged preferences (Capture, General, Shortcuts,
-  Appearance, Storage, About): fullscreen or region capture mode,
-  rebindable ⌘-action keys, accent color, retention policy for old
-  captures, one-click update install
+  Appearance, Storage, About): rebindable ⌘-action keys, accent color,
+  retention policy for old captures, one-click update install
 - **One-shot CLI** — `quickshort --capture` fits into scripts and window
   manager keybinds
 
@@ -116,7 +115,6 @@ also live in `~/.config/quickshort/config.toml`:
 
 ```toml
 hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax
-capture_mode = "region"        # or "fullscreen" — skip the overlay
 # save_dir = "~/Pictures/quickshort"
 launch_at_login = false
 auto_update = true
@@ -185,6 +183,15 @@ release build (universal when both rustup targets exist), `Quickshort.app`
 bundle, self-signed identity (`packaging/macos/gen_signing_cert.sh`), zip +
 dmg + sha256 into `dist/`. Tagging `v*` triggers the GitHub workflow, which
 does the same and publishes a GitHub Release.
+
+## Support
+
+Free and open source, built in spare time. If Quickshort saves you time:
+
+- **[GitHub Sponsors](https://github.com/sponsors/truongnat)** — international, zero fees on personal sponsorships
+- **VietQR** — MB Bank `0969069035` · ĐÀO QUANG TRƯỞNG (scan with any VN banking app)
+
+<img src="docs/donate-qr.png" width="180" alt="VietQR — MB Bank 0969069035, ĐÀO QUANG TRƯỞNG">
 
 ## Known limits
 

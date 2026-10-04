@@ -13,8 +13,11 @@
 # For CI: export QS_SIGN_P12 (base64 p12) + QS_SIGN_P12_PASSWORD secrets.
 set -e
 NAME="quickshort"
-DIR="$(mktemp -d)"
-trap 'rm -rf "$DIR"' EXIT
+# keep the p12 + password under the app config dir — losing them means the
+# cert can never be reproduced and every re-generated cert creates a new
+# TCC identity (permissions must be re-granted)
+DIR="${QS_SIGN_DIR:-$HOME/.config/quickshort/signing}"
+mkdir -p "$DIR"
 
 cat > "$DIR/openssl.cnf" <<EOF
 [ req ]
@@ -44,6 +47,5 @@ security import "$DIR/$NAME.p12" -k ~/Library/Keychains/login.keychain-db \
   -P "$PASS" -A
 
 echo "imported identity '$NAME' into login keychain"
-echo "p12 password: $PASS  (store it as QS_SIGN_P12_PASSWORD if you use CI)"
-echo "cert for CI:    base64 -i $DIR/$NAME.p12  (gone after this script exits —"
-echo "                re-run with a password arg to regenerate the p12)"
+echo "p12 + password saved to: $DIR  (back it up — CI secrets QS_SIGN_P12 /"
+echo "                              QS_SIGN_P12_PASSWORD come from these files)"

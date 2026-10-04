@@ -294,6 +294,18 @@ nav, .hero, .strip, .section, .footer { position: relative; z-index: 1; }
   font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
   color: var(--muted); white-space: pre;
 }
+
+/* donate */
+.donate-cells { grid-template-columns: 1fr 1fr; }
+.donate-qr { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.donate-qr img {
+  display: block; width: 170px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: #fff;
+}
+.donate-qr-info code {
+  display: block; font-family: var(--mono); font-size: 12.5px;
+  color: var(--muted); line-height: 1.8;
+}
 .copy-btn {
   flex-shrink: 0;
   font-family: var(--mono); font-size: 11px;

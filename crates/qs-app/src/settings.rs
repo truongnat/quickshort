@@ -25,7 +25,7 @@ const SIDE_W: f64 = 200.0;
 /// content column: x origin and width
 const CX: f64 = SIDE_W + 24.0;
 const CW: f64 = W - CX - 24.0;
-const ROW: f64 = 44.0;
+const ROW: f64 = 52.0;
 
 // macOS-consistent dark palette (matches the overlay toolbar)
 const BG_TOP: u32 = 0x212123; // window gradient, top — lifted like Tahoe chrome
@@ -102,7 +102,6 @@ const KEY_ROWS: &[(&str, Rec)] = &[
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drop {
-    Mode,
     RecentN,
     KeepDays,
 }
@@ -153,6 +152,10 @@ const LINKS: &[(&str, &str)] = &[
         "Report an issue",
         "https://github.com/truongnat/quickshort/issues",
     ),
+    (
+        "Support",
+        "https://truongnat.github.io/quickshort/#donate",
+    ),
 ];
 
 const RECENT_N: usize = 4;
@@ -179,6 +182,8 @@ pub struct Settings {
     thumbs: Vec<Option<image::RgbaImage>>,
     /// (count, bytes) of captures in the save dir
     stats: (usize, u64),
+    /// (total, free) bytes of the save dir's volume, for the usage chart
+    disk: Option<(u64, u64)>,
     /// pending release version the About page can offer to install
     update_ver: Option<String>,
     last_pos: (f64, f64),
@@ -211,8 +216,7 @@ impl Settings {
         let mut attrs = Window::default_attributes()
             .with_title("Quickshort Settings")
             .with_inner_size(winit::dpi::LogicalSize::new(W, H))
-            .with_resizable(false)
-            .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+            .with_resizable(false);
         if let Some(img) = &logo {
             if let Ok(ic) = Icon::from_rgba(img.as_raw().clone(), img.width(), img.height()) {
                 attrs = attrs.with_window_icon(Some(ic));
@@ -224,7 +228,7 @@ impl Settings {
         // recorder looks dead
         refocus(&win);
         let scale = win.scale_factor();
-        let logo_px = (56.0 * scale) as u32;
+        let logo_px = (64.0 * scale) as u32;
         let logo = logo.map(|i| {
             image::imageops::resize(&i, logo_px, logo_px, image::imageops::FilterType::Lanczos3)
         });
@@ -250,6 +254,7 @@ impl Settings {
             hits: Vec::new(),
             mods: ModifiersState::empty(),
             stats: actions::storage_stats(&cfg.save_dir()),
+            disk: actions::disk_stats(&cfg.save_dir()),
             recents,
             thumbs,
             update_ver: None,
@@ -544,7 +549,10 @@ impl Settings {
                 self.dirty = true;
             }
             Some(Hit::Link(i)) => {
-                if let Some((_, url)) = LINKS.get(i) {
+                if i == 1 {
+                    // Report an issue — bundle diagnostics into the body
+                    actions::report_issue(cfg);
+                } else if let Some((_, url)) = LINKS.get(i) {
                     actions::open_path(Path::new(url));
                 }
             }
@@ -565,6 +573,7 @@ impl Settings {
         self.recents = actions::recent_captures(&cfg.save_dir(), RECENT_N);
         self.thumbs = load_thumbs(&self.recents, self.win.scale_factor());
         self.stats = actions::storage_stats(&cfg.save_dir());
+        self.disk = actions::disk_stats(&cfg.save_dir());
     }
 
     fn hit(&self, p: (f64, f64)) -> Option<Hit> {
@@ -621,6 +630,7 @@ impl Settings {
             confirm: self.confirm,
             sw_t: self.sw_t,
             stats: self.stats,
+            disk: self.disk,
             update_ver: self.update_ver.as_deref(),
             recents: &self.recents,
             thumbs: &self.thumbs,
@@ -654,7 +664,7 @@ impl Settings {
             cv.blend((SIDE_W * scale) as i32, py as i32, 0xFFFFFF, 0.08);
         }
         if let Some(logo) = v.logo {
-            let (ox, oy) = ((20.0 * scale) as i32, (18.0 * scale) as i32);
+            let (ox, oy) = ((18.0 * scale) as i32, (22.0 * scale) as i32);
             for (px, py, c) in logo.enumerate_pixels() {
                 let a = c[3] as f64 / 255.0;
                 if a > 0.0 {
@@ -663,20 +673,20 @@ impl Settings {
                 }
             }
         } else {
-            p.icon(&mut cv, 20.0, 18.0, 56.0);
+            p.icon(&mut cv, 18.0, 22.0, 64.0);
         }
-        p.text(&mut cv, 84.0, 44.0, 16.0, "Quickshort", FG);
+        p.text(&mut cv, 18.0, 106.0, 17.0, "Quickshort", FG);
         p.text(
             &mut cv,
-            84.0,
-            62.0,
+            18.0,
+            124.0,
             11.0,
             concat!("v", env!("CARGO_PKG_VERSION")),
             FG_FAINT,
         );
-        let mut ny = 92.0;
+        let mut ny = 152.0;
         for (i, (name, g)) in PAGES.iter().enumerate() {
-            let r = (12.0, ny, SIDE_W - 24.0, 34.0);
+            let r = (10.0, ny, SIDE_W - 20.0, 36.0);
             let sel = v.page == i;
             if sel {
                 p.fill(&mut cv, r, 9.0, ACCENT, 1.0);
@@ -686,21 +696,21 @@ impl Settings {
             p.glyph(
                 &mut cv,
                 *g,
-                r.0 + 11.0,
-                r.1 + 9.0,
+                r.0 + 9.0,
+                r.1 + 10.0,
                 16.0,
                 if sel { 0xFFFFFF } else { FG_DIM },
             );
             p.text(
                 &mut cv,
-                r.0 + 38.0,
-                r.1 + 23.0,
+                r.0 + 34.0,
+                r.1 + 24.0,
                 13.0,
                 name,
                 if sel { 0xFFFFFF } else { FG },
             );
             hits.push((r, Hit::Nav(i)));
-            ny += 38.0;
+            ny += 40.0;
         }
 
         match v.page {
@@ -751,6 +761,20 @@ impl Settings {
         }
 
         self.hits = hits;
+        // debug: QS_SHOT=<png path> dumps the first rendered frame
+        if let Ok(path) = std::env::var("QS_SHOT") {
+            std::env::remove_var("QS_SHOT");
+            let mut rgba = Vec::with_capacity(sw * sh * 4);
+            for &px in buf.iter() {
+                rgba.extend_from_slice(&[
+                    ((px >> 16) & 0xFF) as u8,
+                    ((px >> 8) & 0xFF) as u8,
+                    (px & 0xFF) as u8,
+                    255,
+                ]);
+            }
+            let _ = image::save_buffer(&path, &rgba, sw as u32, sh as u32, image::ColorType::Rgba8);
+        }
         let _ = buf.present();
     }
 }
@@ -769,6 +793,7 @@ struct View<'a> {
     confirm: Option<Hit>,
     sw_t: [f64; 3],
     stats: (usize, u64),
+    disk: Option<(u64, u64)>,
     update_ver: Option<&'a str>,
     recents: &'a [PathBuf],
     thumbs: &'a [Option<image::RgbaImage>],
@@ -789,10 +814,6 @@ fn slot(y: f64, w: f64) -> LRect {
 /// dropdown option list + current index for `d`
 fn drop_state(cfg: &Config, d: Drop) -> (Vec<&'static str>, usize) {
     match d {
-        Drop::Mode => (
-            vec!["Selection area", "Full screen"],
-            cfg.capture_fullscreen() as usize,
-        ),
         Drop::RecentN => (
             vec!["4 items", "8 items", "12 items"],
             match cfg.recent_max {
@@ -813,16 +834,18 @@ fn drop_state(cfg: &Config, d: Drop) -> (Vec<&'static str>, usize) {
 }
 
 fn section_title(p: &Painter, cv: &mut Canvas, y: f64, title: &str, sub: &str) {
-    p.text(cv, CX, y, 14.0, title, FG);
-    p.text(cv, CX, y + 18.0, 11.5, sub, FG_DIM);
+    p.text(cv, CX, y, 13.5, title, FG);
+    p.text(cv, CX, y + 19.0, 11.5, sub, FG_DIM);
 }
 
-/// Card row: icon + label (+ dim description) on the left.
+/// Card row: icon tile + label (+ dim description) on the left.
 fn row_label(p: &Painter, cv: &mut Canvas, r: LRect, g: Glyph, label: &str, desc: &str) {
-    p.glyph(cv, g, r.0 + 14.0, r.1 + (r.3 - 18.0) / 2.0, 18.0, FG_DIM);
-    p.text(cv, r.0 + 44.0, r.1 + 19.0, 13.0, label, FG);
+    let tile = (r.0 + 12.0, r.1 + (r.3 - 36.0) / 2.0, 36.0, 36.0);
+    p.fill(cv, tile, 9.0, 0x3A3A40, 1.0);
+    p.glyph(cv, g, tile.0 + 9.0, tile.1 + 9.0, 18.0, FG);
+    p.text(cv, r.0 + 60.0, r.1 + 21.0, 13.0, label, FG);
     if !desc.is_empty() {
-        p.text(cv, r.0 + 44.0, r.1 + 35.0, 10.5, desc, FG_FAINT);
+        p.text(cv, r.0 + 60.0, r.1 + 39.0, 10.5, desc, FG_FAINT);
     }
 }
 
@@ -876,7 +899,7 @@ fn switch_row(
     row_label(p, cv, r, g, label, desc);
     p.switch(
         cv,
-        (r.0 + r.2 - 14.0 - 44.0, r.1 + 9.0, 44.0, 26.0),
+        (r.0 + r.2 - 14.0 - 44.0, r.1 + 13.0, 44.0, 26.0),
         v.sw_t[sw.idx()],
     );
     hits.push((r, Hit::Sw(sw)));
@@ -885,23 +908,23 @@ fn switch_row(
 // pages ---------------------------------------------------------------------
 
 fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
-    p.text(cv, CX, 54.0, 20.0, "Capture", FG);
+    p.text(cv, CX, 52.0, 24.0, "Capture", FG);
     p.text(
         cv,
         CX,
-        74.0,
-        11.5,
+        76.0,
+        12.5,
         "Configure how you capture and save screenshots.",
         FG_DIM,
     );
     section_title(
         p,
         cv,
-        104.0,
+        112.0,
         "Capture method",
         "Choose hotkey and capture behavior.",
     );
-    let c = card(CX, 134.0, 2);
+    let c = card(CX, 146.0, 1);
     p.card(cv, c);
     // row 1: global hotkey
     let r = (c.0, c.1, c.2, ROW);
@@ -918,7 +941,7 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         let a = 0.55 + 0.45 * v.pulse.sin().abs();
         p.stroke(
             cv,
-            (c.0 + 8.0, r.1 + 7.0, c.2 - 16.0, 30.0),
+            (c.0 + 8.0, r.1 + 11.0, c.2 - 16.0, 30.0),
             7.0,
             ACCENT,
             a,
@@ -932,7 +955,7 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         p.text(
             cv,
             rb.0 - p.text_w(msg, 11.5) - 12.0,
-            r.1 + 27.0,
+            r.1 + 29.0,
             11.5,
             msg,
             col,
@@ -942,45 +965,20 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
             cv,
             &v.cfg.hotkey,
             rb.0 - keycaps_w(p, &v.cfg.hotkey) - 10.0,
-            r.1 + 8.0,
+            r.1 + 12.0,
         );
     }
     p.ghost_button(cv, rb, "Record", v.hover == Some(Hit::Rec(Rec::Global)));
     hits.push((rb, Hit::Rec(Rec::Global)));
-    p.line(cv, c.0 + 14.0, c.1 + ROW, c.0 + c.2 - 14.0);
-    // row 2: capture mode
-    let r = (c.0, c.1 + ROW, c.2, ROW);
-    row_label(
-        p,
-        cv,
-        r,
-        Glyph::Crop,
-        "Capture mode",
-        "What the hotkey grabs",
-    );
-    let mb = (r.0 + r.2 - 14.0 - 170.0, r.1 + 7.0, 170.0, 30.0);
-    dropdown_btn(
-        p,
-        cv,
-        mb,
-        if v.cfg.capture_fullscreen() {
-            "Full screen"
-        } else {
-            "Selection area"
-        },
-        v.drop_open == Some(Drop::Mode),
-        v.hover == Some(Hit::Drop(Drop::Mode)),
-    );
-    hits.push((mb, Hit::Drop(Drop::Mode)));
 
     section_title(
         p,
         cv,
-        250.0,
+        228.0,
         "Save location",
         "Choose where captured images are saved.",
     );
-    let c = card(CX, 280.0, 1);
+    let c = card(CX, 262.0, 1);
     p.card(cv, c);
     row_label(
         p,
@@ -997,11 +995,11 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     section_title(
         p,
         cv,
-        350.0,
+        344.0,
         "Options",
         "Additional settings for capture and workflow.",
     );
-    let c = card(CX, 380.0, 1);
+    let c = card(CX, 378.0, 1);
     p.card(cv, c);
     switch_row(
         p,
@@ -1032,11 +1030,11 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     );
     hits.push((va, Hit::ViewAll));
     if v.recents.is_empty() {
-        p.text(cv, CX, 500.0, 12.0, "No captures yet", FG_DIM);
+        p.text(cv, CX, 518.0, 12.0, "No captures yet", FG_DIM);
     }
     for (i, path) in v.recents.iter().enumerate() {
         let x = CX + i as f64 * (THUMB_W + 14.0);
-        let tr = (x, 478.0, THUMB_W, THUMB_H);
+        let tr = (x, 482.0, THUMB_W, THUMB_H);
         if v.hover == Some(Hit::Recent(i)) {
             p.fill(
                 cv,
@@ -1061,17 +1059,17 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
 }
 
 fn draw_general(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
-    p.text(cv, CX, 54.0, 20.0, "General", FG);
+    p.text(cv, CX, 52.0, 24.0, "General", FG);
     p.text(
         cv,
         CX,
-        74.0,
-        11.5,
+        76.0,
+        12.5,
         "App behavior and system integration.",
         FG_DIM,
     );
-    section_title(p, cv, 104.0, "Updates", "Keep Quickshort current.");
-    let c = card(CX, 134.0, 1);
+    section_title(p, cv, 112.0, "Updates", "Keep Quickshort current.");
+    let c = card(CX, 146.0, 1);
     p.card(cv, c);
     switch_row(
         p,
@@ -1084,8 +1082,8 @@ fn draw_general(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         "Once a day, in the background",
         Sw::AutoUpd,
     );
-    section_title(p, cv, 208.0, "Menu", "What shows in the menu bar icon.");
-    let c = card(CX, 238.0, 1);
+    section_title(p, cv, 228.0, "Menu", "What shows in the menu bar icon.");
+    let c = card(CX, 262.0, 1);
     p.card(cv, c);
     row_label(
         p,
@@ -1095,7 +1093,7 @@ fn draw_general(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         "Recent items",
         "Captures listed in the tray menu",
     );
-    let mb = (c.0 + c.2 - 14.0 - 130.0, c.1 + 7.0, 130.0, 30.0);
+    let mb = (c.0 + c.2 - 14.0 - 130.0, c.1 + 11.0, 130.0, 30.0);
     dropdown_btn(
         p,
         cv,
@@ -1106,8 +1104,8 @@ fn draw_general(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     );
     hits.push((mb, Hit::Drop(Drop::RecentN)));
 
-    section_title(p, cv, 312.0, "Reset", "Restore every setting to defaults.");
-    let c = card(CX, 342.0, 1);
+    section_title(p, cv, 344.0, "Reset", "Restore every setting to defaults.");
+    let c = card(CX, 378.0, 1);
     p.card(cv, c);
     row_label(
         p,
@@ -1130,16 +1128,16 @@ fn draw_general(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
 }
 
 fn draw_shortcuts(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
-    p.text(cv, CX, 54.0, 20.0, "Shortcuts", FG);
+    p.text(cv, CX, 52.0, 24.0, "Shortcuts", FG);
     p.text(
         cv,
         CX,
-        74.0,
-        11.5,
+        76.0,
+        12.5,
         "Overlay action keys — held with ⌘ or ⌃ while annotating.",
         FG_DIM,
     );
-    let c = card(CX, 96.0, KEY_ROWS.len());
+    let c = card(CX, 104.0, KEY_ROWS.len());
     p.card(cv, c);
     for (i, (label, rec)) in KEY_ROWS.iter().enumerate() {
         let r = (c.0, c.1 + i as f64 * ROW, c.2, ROW);
@@ -1152,7 +1150,7 @@ fn draw_shortcuts(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect,
             let a = 0.55 + 0.45 * v.pulse.sin().abs();
             p.stroke(
                 cv,
-                (c.0 + 8.0, r.1 + 7.0, c.2 - 16.0, 30.0),
+                (c.0 + 8.0, r.1 + 11.0, c.2 - 16.0, 30.0),
                 7.0,
                 ACCENT,
                 a,
@@ -1166,14 +1164,14 @@ fn draw_shortcuts(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect,
             p.text(
                 cv,
                 rb.0 - p.text_w(msg, 11.5) - 12.0,
-                r.1 + 27.0,
+                r.1 + 29.0,
                 11.5,
                 msg,
                 col,
             );
         } else {
             let ks = format!("⌘+{}", key_str(v.cfg, *rec).to_uppercase());
-            p.keycaps(cv, &ks, rb.0 - keycaps_w(p, &ks) - 10.0, r.1 + 8.0);
+            p.keycaps(cv, &ks, rb.0 - keycaps_w(p, &ks) - 10.0, r.1 + 12.0);
         }
         p.ghost_button(cv, rb, "Record", v.hover == Some(Hit::Rec(*rec)));
         hits.push((rb, Hit::Rec(*rec)));
@@ -1199,10 +1197,10 @@ fn draw_shortcuts(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect,
 }
 
 fn draw_appearance(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
-    p.text(cv, CX, 54.0, 20.0, "Appearance", FG);
-    p.text(cv, CX, 74.0, 11.5, "Interface and behavior.", FG_DIM);
-    section_title(p, cv, 104.0, "Accent", "Selection and highlight color.");
-    let c = card(CX, 134.0, 1);
+    p.text(cv, CX, 52.0, 24.0, "Appearance", FG);
+    p.text(cv, CX, 76.0, 12.5, "Interface and behavior.", FG_DIM);
+    section_title(p, cv, 112.0, "Accent", "Selection and highlight color.");
+    let c = card(CX, 146.0, 1);
     p.card(cv, c);
     row_label(
         p,
@@ -1215,7 +1213,7 @@ fn draw_appearance(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect
     for (i, (name, rgb)) in ACCENTS.iter().enumerate() {
         let r = (
             c.0 + c.2 - 14.0 - (ACCENTS.len() - i) as f64 * 34.0,
-            c.1 + 11.0,
+            c.1 + 15.0,
             26.0,
             22.0,
         );
@@ -1228,8 +1226,8 @@ fn draw_appearance(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect
         );
         hits.push((r, Hit::Swatch(i)));
     }
-    section_title(p, cv, 208.0, "Clipboard", "What happens after a save.");
-    let c = card(CX, 238.0, 1);
+    section_title(p, cv, 228.0, "Clipboard", "What happens after a save.");
+    let c = card(CX, 262.0, 1);
     p.card(cv, c);
     switch_row(
         p,
@@ -1245,15 +1243,15 @@ fn draw_appearance(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect
 }
 
 fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
-    p.text(cv, CX, 54.0, 20.0, "Storage", FG);
-    p.text(cv, CX, 74.0, 11.5, "Manage captured files.", FG_DIM);
-    section_title(p, cv, 104.0, "Location", "Where screenshots live.");
-    let c = card(CX, 134.0, 1);
+    p.text(cv, CX, 52.0, 24.0, "Storage", FG);
+    p.text(cv, CX, 76.0, 12.5, "Manage captured files.", FG_DIM);
+    section_title(p, cv, 112.0, "Location", "Where screenshots live.");
+    let c = card(CX, 146.0, 2);
     p.card(cv, c);
     row_label(
         p,
         cv,
-        c,
+        (c.0, c.1, c.2, ROW),
         Glyph::Folder,
         &short_path(&v.cfg.save_dir().display().to_string()),
         &format!("{} captures · {}", v.stats.0, human_bytes(v.stats.1)),
@@ -1262,14 +1260,55 @@ fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     p.ghost_button(cv, bb, "Open in Finder", v.hover == Some(Hit::OpenDir));
     hits.push((bb, Hit::OpenDir));
 
+    // usage row: segmented bar — captures / other used / free
+    p.line(cv, c.0 + 14.0, c.1 + ROW, c.0 + c.2 - 14.0);
+    let r = (c.0, c.1 + ROW, c.2, ROW);
+    let bar = (r.0 + 14.0, r.1 + 8.0, r.2 - 28.0, 8.0);
+    let (cap_b, other_b, free_b) = match v.disk {
+        Some((total, free)) => {
+            let cap = v.stats.1.min(total);
+            (cap, total.saturating_sub(free + cap), free)
+        }
+        None => (v.stats.1, 0, 0),
+    };
+    let total = (cap_b + other_b + free_b).max(1) as f64;
+    // min sliver so a tiny captures segment stays visible on a big disk
+    let w_cap = if cap_b > 0 {
+        (bar.2 * cap_b as f64 / total).round().max(3.0)
+    } else {
+        0.0
+    };
+    let w_other = (bar.2 * other_b as f64 / total).round();
+    let segs = [
+        (0.0, w_cap, ACCENT),
+        (w_cap, w_other, 0x8E8E93),
+        (w_cap + w_other, bar.2 - w_cap - w_other, 0x3A3A40),
+    ];
+    for &(off, w, col) in &segs {
+        if w > 0.0 {
+            p.fill(cv, (bar.0 + off, bar.1, w, bar.3), 0.0, col, 1.0);
+        }
+    }
+    p.stroke(cv, bar, 4.0, 0xFFFFFF, 0.12, 1.0);
+    let mut lx = r.0 + 14.0;
+    for (col, txt) in [
+        (ACCENT, format!("Captures · {}", human_bytes(cap_b))),
+        (0x8E8E93, format!("Other · {}", human_bytes(other_b))),
+        (0x3A3A40, format!("Free · {}", human_bytes(free_b))),
+    ] {
+        p.fill(cv, (lx, r.1 + 32.0, 5.0, 5.0), 1.5, col, 1.0);
+        p.text(cv, lx + 9.0, r.1 + 37.0, 10.5, &txt, FG_FAINT);
+        lx += 9.0 + p.text_w(&txt, 10.5) + 16.0;
+    }
+
     section_title(
         p,
         cv,
-        208.0,
+        280.0,
         "Retention",
         "Automatically delete old captures.",
     );
-    let c = card(CX, 238.0, 2);
+    let c = card(CX, 314.0, 2);
     p.card(cv, c);
     let r = (c.0, c.1, c.2, ROW);
     row_label(
@@ -1280,7 +1319,7 @@ fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         "Keep captures",
         "Older files are removed on launch",
     );
-    let kb = (r.0 + r.2 - 14.0 - 150.0, r.1 + 7.0, 150.0, 30.0);
+    let kb = (r.0 + r.2 - 14.0 - 150.0, r.1 + 11.0, 150.0, 30.0);
     let label = match v.cfg.keep_days {
         7 => "7 days",
         30 => "30 days",
@@ -1429,7 +1468,6 @@ fn key_mut(cfg: &mut Config, r: Rec) -> &mut String {
 
 fn drop_apply(cfg: &mut Config, d: Drop, i: usize) {
     match d {
-        Drop::Mode => cfg.capture_mode = ["region", "fullscreen"][i.min(1)].into(),
         Drop::RecentN => cfg.recent_max = [4u8, 8, 12][i.min(2)],
         Drop::KeepDays => {
             cfg.keep_days = [0u32, 7, 30][i.min(2)];

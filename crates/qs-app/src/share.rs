@@ -225,7 +225,6 @@ fn spawn_ssh(key: &Path, port: u16) -> Result<Child> {
         // BatchMode keeps it from ever prompting (no tty for the user)
         .args([
             "-tt",
-            "-N",
             "-R",
             &format!("80:127.0.0.1:{port}"),
             TUNNEL_DEST,
@@ -277,7 +276,14 @@ fn serve(
     let _ = listener.set_nonblocking(true);
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((s, _)) => handle_conn(s, &files),
+            Ok((s, _)) => {
+                // accepted sockets inherit the listener's O_NONBLOCK —
+                // reads would EAGAIN before proxied bytes arrive
+                let _ = s.set_nonblocking(false);
+                // own thread — a stalled client must not block accepts
+                let files = files.clone();
+                std::thread::spawn(move || handle_conn(s, &files));
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(50))
             }
@@ -294,8 +300,12 @@ fn handle_conn(s: TcpStream, files: &Mutex<HashMap<String, PathBuf>>) {
         Err(_) => return,
     };
     let mut first = String::new();
-    if BufReader::new(s).take(8192).read_line(&mut first).is_err() {
-        return;
+    match BufReader::new(s).take(8192).read_line(&mut first) {
+        Ok(_) => eprintln!("share: request line {first:?}"),
+        Err(e) => {
+            eprintln!("share: request read failed: {e}");
+            return;
+        }
     }
     let mut parts = first.split_whitespace();
     let (method, path) = (parts.next(), parts.next());

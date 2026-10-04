@@ -6,6 +6,8 @@ use image::RgbaImage;
 use qs_overlay::{Action, Annotation};
 use std::path::{Path, PathBuf};
 
+use crate::config::Config;
+
 /// Where a `Save` lands: an explicit output file (`--out`) or the default
 /// screenshots dir with an auto-generated timestamped name.
 pub enum SaveTarget {
@@ -14,6 +16,7 @@ pub enum SaveTarget {
 }
 
 /// What an action produced — the resident app mirrors this into its toast.
+#[derive(Debug)]
 pub enum Outcome {
     Saved(PathBuf),
     Copied,
@@ -38,6 +41,7 @@ pub fn dispatch(
     share: Option<std::sync::Arc<crate::share::ShareManager>>,
     copy_after_save: bool,
 ) -> Result<Outcome> {
+    eprintln!("dispatch {action:?}");
     let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
         .join()
         .expect("stitch worker panicked");
@@ -148,6 +152,22 @@ pub fn storage_stats(dir: &Path) -> (usize, u64) {
     (n, bytes)
 }
 
+/// (total, available) bytes of the volume holding `dir` — `df -Pk` is
+/// POSIX and saves a libc/Foundation dep just for statfs.
+pub fn disk_stats(dir: &Path) -> Option<(u64, u64)> {
+    let out = std::process::Command::new("df")
+        .arg("-Pk")
+        .arg(dir)
+        .output()
+        .ok()?;
+    let line = String::from_utf8_lossy(&out.stdout);
+    let f: Vec<&str> = line.lines().nth(1)?.split_whitespace().collect();
+    Some((
+        f.get(1)?.parse::<u64>().ok()? * 1024,
+        f.get(3)?.parse::<u64>().ok()? * 1024,
+    ))
+}
+
 /// Delete captures older than `keep_days`; 0 disables the sweep. Returns
 /// how many files were removed. Runs on startup and when the retention
 /// setting changes.
@@ -178,6 +198,95 @@ pub fn cleanup_captures(dir: &Path, keep_days: u32) -> usize {
         }
     }
     n
+}
+
+/// Collect diagnostics and open a pre-filled GitHub issue in the browser.
+/// GitHub has no unauthenticated create-issue endpoint, so `issues/new`
+/// query params do the prefilling — the user reviews and submits there.
+pub fn report_issue(cfg: &Config) {
+    let url = format!(
+        "https://github.com/truongnat/quickshort/issues/new?labels=bug&body={}",
+        url_encode(&diagnostics(cfg))
+    );
+    open_path(Path::new(&url));
+}
+
+/// Version + environment + config snapshot + tail of the app log —
+/// enough context that a bug report doesn't start at zero.
+fn diagnostics(cfg: &Config) -> String {
+    let macos = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "?".into());
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let log = Config::path()
+        .parent()
+        .map(|d| d.join("quickshort.log"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .rev()
+                .take(30)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "(no log)".into());
+    format!(
+        "## What happened\n\n\
+         <!-- describe the bug, what you expected, and steps to reproduce -->\n\n\
+         ## Diagnostics\n\n\
+         - Version: v{ver}\n\
+         - macOS: {macos} ({arch})\n\
+         - Binary: `{exe}`{bundled}\n\
+         - Hotkey: `{hotkey}`\n\
+         - Save dir: `{save_dir}`\n\
+         - Config: accent={accent} keep_days={keep} recent_max={recent} \
+         launch_at_login={login} auto_update={auto} copy_after_save={copy}\n\
+         - Keys: save={ks} copy={kc} ocr={ko} share={kh} undo={ku}\n\n\
+         <details><summary>Recent log</summary>\n\n```\n{log}\n```\n</details>\n",
+        ver = env!("CARGO_PKG_VERSION"),
+        arch = std::env::consts::ARCH,
+        bundled = if exe.contains(".app/") {
+            " (app bundle)"
+        } else {
+            " (raw binary)"
+        },
+        hotkey = cfg.hotkey,
+        save_dir = cfg.save_dir().display(),
+        accent = cfg.accent,
+        keep = cfg.keep_days,
+        recent = cfg.recent_max,
+        login = cfg.launch_at_login,
+        auto = cfg.auto_update,
+        copy = cfg.copy_after_save,
+        ks = cfg.key_save,
+        kc = cfg.key_copy,
+        ko = cfg.key_ocr,
+        kh = cfg.key_share,
+        ku = cfg.key_undo,
+    )
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Reveal `p` in the OS file manager / image viewer.

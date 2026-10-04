@@ -16,6 +16,7 @@ pub const ID_QUIT: &str = "quit";
 /// Recent-capture items carry `recent:<abs path>` as their id.
 pub const ID_RECENT_PREFIX: &str = "recent:";
 pub const ID_UPDATE: &str = "update";
+pub const ID_DONATE: &str = "donate";
 
 /// Rebuild the tray menu. `recents` = newest-first saved PNGs;
 /// `pending_update` = version waiting to be installed (changes the
@@ -55,6 +56,7 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf], pending_update: Option<&str
         true,
         None,
     );
+    let donate = MenuItem::with_id(ID_DONATE, "Support Quickshort", true, None);
     let quit = MenuItem::with_id(ID_QUIT, "Quit Quickshort", true, None);
     let _ = menu.append_items(&[
         &capture,
@@ -65,6 +67,7 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf], pending_update: Option<&str
         &login,
         &PredefinedMenuItem::separator(),
         &update,
+        &donate,
         &quit,
     ]);
     menu

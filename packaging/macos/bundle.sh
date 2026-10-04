@@ -18,8 +18,12 @@ cp "$ROOT/packaging/macos/Quickshort.icns" "$APP/Contents/Resources/Quickshort.i
 # ad-hoc fallback — auto-detect the `quickshort` cert when the env var
 # isn't set so a bare `./bundle.sh` still gets the stable identity
 IDENT="${SIGNING_IDENTITY:-}"
-if [ -z "$IDENT" ] && security find-identity -v -p codesigning | grep -q '"quickshort"'; then
-    IDENT=quickshort
+if [ -z "$IDENT" ]; then
+    # find-identity -v misses self-signed certs lacking trust settings even
+    # though codesign can use them — resolve by cert SHA-1 instead
+    IDENT=$(security find-certificate -c quickshort -Z \
+        ~/Library/Keychains/login.keychain-db 2>/dev/null \
+        | awk '/SHA-1/ {print $3; exit}')
 fi
 codesign --force --sign "${IDENT:--}" "$APP" 2>/dev/null \
   || codesign --force --sign - "$APP" 2>/dev/null || true
