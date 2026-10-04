@@ -75,6 +75,7 @@ jobs:
         shell: bash
         run: |
           command -v makensis >/dev/null || choco install nsis -y --no-progress
+          export PATH="$PATH:/c/Program Files (x86)/NSIS:/c/Program Files/NSIS"
           VER="${{ github.event.inputs.version || github.ref_name }}"
           VER="${VER#v}"
           case "$VER" in

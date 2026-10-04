@@ -38,9 +38,12 @@ dpkg-deb --build "$PKGDIR" "$DIST/quickshort_amd64.deb"
 TOOLS="$(mktemp -d)"
 curl -sL -o "$TOOLS/linuxdeploy.AppImage" \
   "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-curl -sL -o "$TOOLS/gtk.AppImage" \
+# linuxdeploy discovers plugins as executables named linuxdeploy-plugin-<name>
+# on PATH — the file must keep this exact name, not a .sh suffix.
+curl -sL -o "$TOOLS/linuxdeploy-plugin-gtk" \
   "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
-chmod +x "$TOOLS/linuxdeploy.AppImage" "$TOOLS/gtk.AppImage"
+chmod +x "$TOOLS/linuxdeploy.AppImage" "$TOOLS/linuxdeploy-plugin-gtk"
+export PATH="$TOOLS:$PATH"
 
 APPDIR="$(mktemp -d)/AppDir"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" \
@@ -60,5 +63,5 @@ export OUTPUT="$DIST/Quickshort-Linux.AppImage"
   --appdir "$APPDIR" --plugin gtk --output appimage 2>/dev/null || {
     echo "linuxdeploy failed; shipping .deb only"
 }
-ls -lh "$DIST"/Quickshort-Linux.AppImage "$DIST/quickshort_amd64.deb" 2>/dev/null
+ls -lh "$DIST"/* 2>/dev/null || true
 echo "linux artifacts ready in $DIST"
