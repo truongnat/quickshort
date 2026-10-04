@@ -101,8 +101,8 @@ nav, .hero, .strip, .section, .footer { position: relative; z-index: 1; }
 /* ---------- hero ---------- */
 .hero {
   min-height: 100dvh;
-  display: flex; flex-direction: column; align-items: center;
-  padding: 150px 24px 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 150px 24px 80px;
   text-align: center;
   position: relative;
   overflow: hidden;
@@ -168,21 +168,17 @@ nav, .hero, .strip, .section, .footer { position: relative; z-index: 1; }
   display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
 }
 
-/* hero frame: hairline-bordered screenshot with + corners */
-.hero-frame {
+/* showcase frame: hairline-bordered screenshot with + corners */
+.showcase-frame {
   position: relative;
-  z-index: 1;
-  width: min(960px, 100%);
-  margin-top: 72px;
   border: 1px solid var(--line);
-  border-bottom: 0;
-  border-radius: var(--radius) var(--radius) 0 0;
+  border-radius: var(--radius);
   background: var(--bg-raised);
-  padding: 10px 10px 0;
+  padding: 10px;
 }
-.hero-frame img {
+.showcase-frame img {
   display: block; width: 100%; height: auto;
-  border-radius: 4px 4px 0 0;
+  border-radius: 4px;
 }
 
 /* ---------- strip: static hairline row ---------- */
