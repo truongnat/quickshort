@@ -168,6 +168,35 @@ nav, .hero, .strip, .section, .footer { position: relative; z-index: 1; }
   display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
 }
 
+/* showcase: css-only tab switcher over the framed media */
+.sh-r { position: absolute; opacity: 0; pointer-events: none; }
+.sh-tabs {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.sh-tabs label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em;
+  color: var(--muted); cursor: pointer; user-select: none;
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 14px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.sh-tabs label:hover { color: var(--ink); border-color: #4d4d4d; }
+#sh-demo:checked ~ .sh-tabs label[for="sh-demo"],
+#sh-overlay:checked ~ .sh-tabs label[for="sh-overlay"],
+#sh-annotate:checked ~ .sh-tabs label[for="sh-annotate"],
+#sh-tray:checked ~ .sh-tabs label[for="sh-tray"],
+#sh-settings:checked ~ .sh-tabs label[for="sh-settings"] {
+  color: var(--accent); border-color: rgba(82,199,234,.5);
+  background: rgba(82,199,234,.1);
+}
+.sh-panel { display: none; }
+#sh-demo:checked ~ .showcase-frame .sh-p-demo,
+#sh-overlay:checked ~ .showcase-frame .sh-p-overlay,
+#sh-annotate:checked ~ .showcase-frame .sh-p-annotate,
+#sh-tray:checked ~ .showcase-frame .sh-p-tray,
+#sh-settings:checked ~ .showcase-frame .sh-p-settings { display: block; }
+
 /* showcase frame: hairline-bordered screenshot with + corners */
 .showcase-frame {
   position: relative;

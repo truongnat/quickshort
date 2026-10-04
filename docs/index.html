@@ -76,13 +76,31 @@
     <p class="eyebrow">SHOWCASE</p>
     <h2 class="reveal">The whole loop, on screen.</h2>
   </div>
+  <input class="sh-r" type="radio" name="showcase" id="sh-demo" checked>
+  <input class="sh-r" type="radio" name="showcase" id="sh-overlay">
+  <input class="sh-r" type="radio" name="showcase" id="sh-annotate">
+  <input class="sh-r" type="radio" name="showcase" id="sh-tray">
+  <input class="sh-r" type="radio" name="showcase" id="sh-settings">
+  <div class="sh-tabs">
+    <label for="sh-demo">DEMO</label>
+    <label for="sh-overlay">OVERLAY</label>
+    <label for="sh-annotate">ANNOTATE</label>
+    <label for="sh-tray">TRAY</label>
+    <label for="sh-settings">SETTINGS</label>
+  </div>
   <div class="showcase-frame reveal">
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <span class="cross bl">+</span><span class="cross br">+</span>
-    <video autoplay muted loop playsinline preload="metadata" poster="assets/screenshot.png" aria-label="Quickshort demo: hotkey opens a dimmed overlay, drag selects a region, annotations draw, save and share toasts confirm">
-      <source src="assets/demo.webm" type="video/webm">
-      <source src="assets/demo.mp4" type="video/mp4">
-    </video>
+    <div class="sh-panel sh-p-demo">
+      <video autoplay muted loop playsinline preload="metadata" poster="assets/screenshot.png" aria-label="Quickshort demo: hotkey opens a dimmed overlay, drag selects a region, annotations draw, save and share toasts confirm">
+        <source src="assets/demo.webm" type="video/webm">
+        <source src="assets/demo.mp4" type="video/mp4">
+      </video>
+    </div>
+    <div class="sh-panel sh-p-overlay"><img src="assets/feat-overlay.png" alt="Quickshort dimmed overlay covering an editor window with the selection rect and annotation toolbar" loading="lazy"></div>
+    <div class="sh-panel sh-p-annotate"><img src="assets/feat-annotate.png" alt="Saved capture with pixelate, rectangle and highlight annotations" loading="lazy"></div>
+    <div class="sh-panel sh-p-tray"><img src="assets/feat-tray.png" alt="Quickshort tray menu with Capture Region, recents, settings and update check" loading="lazy"></div>
+    <div class="sh-panel sh-p-settings"><img src="assets/feat-settings.png" alt="Quickshort Settings window: hotkey recorder, save folder, launch at login, recent captures" loading="lazy"></div>
   </div>
 </section>
 
@@ -92,13 +110,13 @@
   </div>
   <div class="grid-cells">
     <span class="cross tl">+</span><span class="cross tr">+</span>
-    <article class="cell cell-media reveal">
-      <div class="cell-media-inner"><img src="assets/feat-annotate.png" alt="Saved capture with pixelate, rectangle and highlight annotations" loading="lazy"></div>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">✎</div>
       <h3>Annotate in place</h3>
       <p>Draw directly on the dimmed overlay — pen, arrow, rectangle, ellipse, highlighter, text, pixelate — everything confined to the captured region. The text tool is a real editing box: font sizes (12–48), bold toggle, caret, selection and ⌘A, with IME input for Vietnamese. Every shape and text block stays editable — the Select tool picks it up, drags it somewhere better, or deletes it. Strokes live on a physical-resolution layer, so they stay as sharp as the capture itself. Undo and redo are one click.</p>
     </article>
-    <article class="cell cell-media reveal">
-      <div class="cell-media-inner"><img src="assets/feat-tray.png" alt="Quickshort tray menu with Capture Region, recents, settings and update check" loading="lazy"></div>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">⌘</div>
       <h3>Global hotkey, resident tray</h3>
       <p>Quickshort sits in the menu bar. Press ⌘⇧S from anywhere and a dimmed overlay covers every monitor at once. Esc cancels, and the shortcut is re-recordable in Settings.</p>
     </article>
@@ -122,8 +140,8 @@
       <h3>Links you actually own</h3>
       <p>⌘L publishes the capture straight from your machine: a tiny local server plus an ssh -R tunnel through tunnl.gg — no backend storage, no account, nothing uploaded. The URL is stable across restarts and dies when you quit.</p>
     </article>
-    <article class="cell cell-media reveal">
-      <div class="cell-media-inner"><img src="assets/feat-settings.png" alt="Quickshort Settings window: hotkey recorder, save folder, launch at login, recent captures" loading="lazy"></div>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">↻</div>
       <h3>Self-updating</h3>
       <p>The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact.</p>
     </article>
