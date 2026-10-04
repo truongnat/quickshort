@@ -21,7 +21,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VER: ${{ github.event.inputs.version || github.ref_name }}
-        run: gh release create "v${VER#v}" --title "Quickshort v${VER#v}" --generate-notes
+        run: gh release create "v${VER#v}" --title "Quickshort v${VER#v}" --generate-notes -R truongnat/quickshort
 
   macos:
     needs: create-release
