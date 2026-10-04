@@ -141,6 +141,16 @@
       <p>⌘L publishes the capture straight from your machine: a tiny local server plus an ssh -R tunnel through tunnl.gg — no backend storage, no account, nothing uploaded. The URL is stable across restarts and dies when you quit.</p>
     </article>
     <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">∅</div>
+      <h3>Local-first, no account</h3>
+      <p>No sign-up, no telemetry, nothing leaves your machine. Captures land in your folder, settings live in a plain config file, and sharing runs through a tunnel you own — not our storage.</p>
+    </article>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">❯</div>
+      <h3>Scriptable one-shot</h3>
+      <p><code>quickshort --capture --out shot.png</code> skips the tray lifecycle — select, act, exit. <code>--delay</code> waits for menus and tooltips, so it composes with launchd, CI jobs, or a shell alias.</p>
+    </article>
+    <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">↻</div>
       <h3>Self-updating</h3>
       <p>The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact.</p>
