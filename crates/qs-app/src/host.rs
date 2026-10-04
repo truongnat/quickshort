@@ -135,6 +135,7 @@ impl Host {
     }
 
     /// Download + swap the pending release on a worker.
+    #[cfg(target_os = "macos")]
     fn install_update(&mut self, el: &ActiveEventLoop, rel: Release) {
         if self.toast.is_none() {
             let msg = format!("Updating to v{}…", rel.version);
@@ -149,6 +150,10 @@ impl Host {
             ));
         });
     }
+
+    /// In-place update is macOS-only for now.
+    #[cfg(not(target_os = "macos"))]
+    fn install_update(&mut self, _el: &ActiveEventLoop, _rel: Release) {}
 
     /// Capture every monitor and spawn the overlay session.
     fn trigger(&mut self, el: &ActiveEventLoop) {
@@ -396,7 +401,10 @@ impl ApplicationHandler<HostEvent> for Host {
             },
             HostEvent::UpdateInstall(res) => match res {
                 Ok(app) => {
+                    #[cfg(target_os = "macos")]
                     let _ = update::relaunch(&app);
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = app;
                     el.exit();
                 }
                 Err(e) => self.toast_done(el, format!("Update failed: {e}"), false),
