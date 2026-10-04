@@ -87,8 +87,10 @@ desktops it installs the binary only — bind it yourself.
 
 ### Windows
 
-Build from source (`cargo build --release -p qs-app`); installer packaging
-is not wired up yet.
+Each release ships a bare `Quickshort-v*-windows.exe` under
+[Releases](https://github.com/truongnat/quickshort/releases) — unsigned, no
+installer, no auto-update. Or build from source
+(`cargo build --release -p qs-app`).
 
 ## Usage
 
