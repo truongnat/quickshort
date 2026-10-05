@@ -802,6 +802,9 @@ impl Settings {
                 ]);
             }
             let _ = image::save_buffer(&path, &rgba, sw as u32, sh as u32, image::ColorType::Rgba8);
+            if std::env::var("QS_EXIT").is_ok() {
+                std::process::exit(0);
+            }
         }
         let _ = buf.present();
     }
@@ -1788,8 +1791,13 @@ pub fn standalone() -> Result<()> {
         }
     }
     let el = winit::event_loop::EventLoop::new()?;
+    let mut cfg = Config::load();
+    // QS_ACCENT=name recolors the snapshot without touching saved prefs
+    if let Ok(a) = std::env::var("QS_ACCENT") {
+        cfg.accent = a;
+    }
     let mut run = Run {
-        cfg: Config::load(),
+        cfg,
         s: None,
     };
     el.run_app(&mut run)?;
