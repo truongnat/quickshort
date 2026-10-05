@@ -10,13 +10,12 @@ mod windows;
 
 /// Extract text from an image using the platform-native OCR engine.
 /// Returns recognized text with lines separated by '\n'.
-/// `lang` is a hint for engines that take a language list (tesseract's
-/// `eng+jpn` syntax); native engines auto-detect and ignore it.
+/// `lang` uses tesseract's `eng+vie` syntax; "auto"/"" lets the engine
+/// detect. Windows.Media.Ocr always auto-detects and ignores the hint.
 pub fn extract_text(img: &RgbaImage, lang: &str) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
-        let _ = lang;
-        macos::extract(img)
+        macos::extract(img, lang)
     }
     #[cfg(target_os = "windows")]
     {

@@ -104,7 +104,22 @@ const KEY_ROWS: &[(&str, Rec)] = &[
 enum Drop {
     RecentN,
     KeepDays,
+    OcrLang,
 }
+
+/// OCR language options — labels shown in the dropdown, values stored
+/// in `ocr_lang` using tesseract's `eng+vie` syntax (Vision and
+/// Windows.Media.Ocr map the codes to their own identifiers).
+const OCR_LANGS: &[(&str, &str)] = &[
+    ("Auto-detect", "auto"),
+    ("English", "eng"),
+    ("Vietnamese", "vie"),
+    ("English + Vietnamese", "eng+vie"),
+    ("Japanese", "jpn"),
+    ("Korean", "kor"),
+    ("Chinese (Simplified)", "chi_sim"),
+    ("Chinese (Traditional)", "chi_tra"),
+];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Sw {
@@ -827,6 +842,13 @@ fn drop_state(cfg: &Config, d: Drop) -> (Vec<&'static str>, usize) {
                 _ => 0,
             },
         ),
+        Drop::OcrLang => {
+            let cur = OCR_LANGS
+                .iter()
+                .position(|(_, v)| *v == cfg.ocr_lang)
+                .unwrap_or(0);
+            (OCR_LANGS.iter().map(|(l, _)| *l).collect(), cur)
+        }
     }
 }
 
@@ -1101,8 +1123,31 @@ fn draw_general(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     );
     hits.push((mb, Hit::Drop(Drop::RecentN)));
 
-    section_title(p, cv, 344.0, "Reset", "Restore every setting to defaults.");
+    section_title(p, cv, 344.0, "OCR", "Language used for text extraction.");
     let c = card(CX, 378.0, 1);
+    p.card(cv, c);
+    row_label(
+        p,
+        cv,
+        c,
+        Glyph::Info,
+        "OCR language",
+        "Auto-detect picks the script for you",
+    );
+    let ob = (c.0 + c.2 - 14.0 - 160.0, c.1 + 11.0, 160.0, 30.0);
+    let (_, cur) = drop_state(v.cfg, Drop::OcrLang);
+    dropdown_btn(
+        p,
+        cv,
+        ob,
+        OCR_LANGS[cur].0,
+        v.drop_open == Some(Drop::OcrLang),
+        v.hover == Some(Hit::Drop(Drop::OcrLang)),
+    );
+    hits.push((ob, Hit::Drop(Drop::OcrLang)));
+
+    section_title(p, cv, 460.0, "Reset", "Restore every setting to defaults.");
+    let c = card(CX, 494.0, 1);
     p.card(cv, c);
     row_label(
         p,
@@ -1470,6 +1515,11 @@ fn drop_apply(cfg: &mut Config, d: Drop, i: usize) {
             cfg.keep_days = [0u32, 7, 30][i.min(2)];
             // apply the new policy immediately, not just on next launch
             actions::cleanup_captures(&cfg.save_dir(), cfg.keep_days);
+        }
+        Drop::OcrLang => {
+            if let Some((_, v)) = OCR_LANGS.get(i) {
+                cfg.ocr_lang = v.to_string();
+            }
         }
     }
 }
