@@ -376,12 +376,10 @@ fn copy_image_to_clipboard(img: &RgbaImage, wait: bool) {
     #[cfg(target_os = "linux")]
     if wait {
         let mut png = std::io::Cursor::new(Vec::new());
-        if img
-            .write_to(&mut png, image::ImageFormat::Png)
-            .is_ok()
+        if img.write_to(&mut png, image::ImageFormat::Png).is_ok()
             && wl_copy("image/png", &png.into_inner())
         {
-            eprintln!("copied to clipboard");
+            eprintln!("copied to clipboard via wl-copy");
             return;
         }
     }
@@ -411,7 +409,7 @@ fn copy_image_to_clipboard(img: &RgbaImage, wait: bool) {
 fn copy_text_to_clipboard(text: &str, wait: bool) {
     #[cfg(target_os = "linux")]
     if wait && wl_copy("text/plain;charset=utf-8", text.as_bytes()) {
-        eprintln!("copied to clipboard");
+        eprintln!("copied to clipboard via wl-copy");
         return;
     }
     #[cfg(target_os = "linux")]

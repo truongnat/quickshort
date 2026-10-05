@@ -100,10 +100,17 @@ fn capture_lock() -> Result<Option<std::fs::File>> {
 
 /// One-shot mode has no toast — action outcomes would die silently in
 /// the journal. `notify-send` is the only user-visible channel we have.
+#[cfg(target_os = "linux")]
 fn notify(msg: &str) {
     let _ = std::process::Command::new("notify-send")
         .args(["-a", "quickshort", "quickshort", msg])
         .status();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn notify(msg: &str) {
+    // no libnotify elsewhere — macOS/Windows still get the journal line
+    eprintln!("{msg}");
 }
 
 /// One-shot pipeline: capture all monitors to RAM -> overlay selection ->

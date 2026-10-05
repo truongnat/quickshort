@@ -139,9 +139,29 @@ impl ShareManager {
                 }
             };
             self.child_pid.store(child.id(), Ordering::SeqCst);
+            // the remote PTY waits for a line before printing the URL
+            // banner, but can tcflush an early byte — kick every 500ms
+            // until the URL arrives (kicker stops on `stop`, stdin stays
+            // held by forgetting it: EOF would drop the tunnel)
+            let kick_stop = std::sync::Arc::new(AtomicBool::new(false));
+            if let Some(mut s) = child.stdin.take() {
+                let ks = kick_stop.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..40 {
+                        if ks.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let _ = s.write_all(b"\n");
+                        let _ = s.flush();
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                    std::mem::forget(s);
+                });
+            }
             if let Some(out) = child.stdout.take() {
                 for line in BufReader::new(out).lines().map_while(|l| l.ok()) {
                     if let Some(b) = extract_url(&line) {
+                        kick_stop.store(true, Ordering::Relaxed);
                         let mut st = self.state.0.lock().unwrap();
                         if st.base.as_deref() != Some(b.as_str()) {
                             st.base = Some(b);
@@ -270,16 +290,11 @@ fn spawn_ssh(key: &Path, port: u16) -> Result<Child> {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // inherit: ssh errors land in the journal — last_err can't
+        // capture a failure that happens after spawn
+        .stderr(Stdio::inherit())
         .spawn()
         .context("spawn ssh tunnel")?;
-
-    // the remote PTY waits for one line before printing the URL banner —
-    // an open-but-idle stdin stalls the tunnel forever
-    if let Some(s) = child.stdin.as_mut() {
-        let _ = s.write_all(b"\n");
-        let _ = s.flush();
-    }
     Ok(child)
 }
 

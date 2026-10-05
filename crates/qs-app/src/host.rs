@@ -521,7 +521,7 @@ impl ApplicationHandler<HostEvent> for Host {
                 let res = actions::dispatch(
                     frames, sel, action, &annots, &target, false, share, copy, &lang,
                 )
-                        .map_err(|e| e.to_string());
+                .map_err(|e| e.to_string());
                 let _ = px.send_event(HostEvent::Done(res));
             });
         }

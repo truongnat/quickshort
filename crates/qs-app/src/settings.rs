@@ -152,10 +152,7 @@ const LINKS: &[(&str, &str)] = &[
         "Report an issue",
         "https://github.com/truongnat/quickshort/issues",
     ),
-    (
-        "Support",
-        "https://truongnat.github.io/quickshort/#donate",
-    ),
+    ("Support", "https://truongnat.github.io/quickshort/#donate"),
 ];
 
 const RECENT_N: usize = 4;
