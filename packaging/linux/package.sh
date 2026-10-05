@@ -67,9 +67,9 @@ export UPDATE_INFORMATION="gh-releases-zsync|truongnat|quickshort|latest|Quicksh
 # alone is what appimagetool reads for the embedded update info
 if ! "$TOOLS/linuxdeploy.AppImage" \
   --appdir "$APPDIR" --plugin gtk \
-  --output appimage > "$DIST/linuxdeploy.log" 2>&1; then
+  --output appimage > "$TOOLS/linuxdeploy.log" 2>&1; then
     echo "linuxdeploy failed; shipping .deb only"
-    tail -60 "$DIST/linuxdeploy.log" >&2 || true
+    tail -60 "$TOOLS/linuxdeploy.log" >&2 || true
 fi
 ls -lh "$DIST"/* 2>/dev/null || true
 echo "linux artifacts ready in $DIST"
