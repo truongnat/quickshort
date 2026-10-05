@@ -8,7 +8,7 @@ use fontdue::{Font, FontSettings};
 use qs_overlay::sdf::{ellipse_sdf, fill_cov, glass_card, rrect_sdf, seg_sdf, stroke_cov, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -553,7 +553,7 @@ impl Settings {
                     // Report an issue — bundle diagnostics into the body
                     actions::report_issue(cfg);
                 } else if let Some((_, url)) = LINKS.get(i) {
-                    actions::open_path(Path::new(url));
+                    actions::open_url(url);
                 }
             }
             None => {

@@ -208,7 +208,7 @@ pub fn report_issue(cfg: &Config) {
         "https://github.com/truongnat/quickshort/issues/new?labels=bug&body={}",
         url_encode(&diagnostics(cfg))
     );
-    open_path(Path::new(&url));
+    open_url(&url);
 }
 
 /// Version + environment + config snapshot + tail of the app log —
@@ -287,6 +287,36 @@ fn url_encode(s: &str) -> String {
         }
     }
     out
+}
+
+/// Open `url` in the default browser. Kept separate from `open_path`:
+/// explorer.exe treats URLs containing ? or & as file paths and opens
+/// File Explorer instead of the browser.
+pub fn open_url(url: &str) {
+    let r = {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open").arg(url).spawn()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("rundll32")
+                .args(["url.dll,FileProtocolHandler", url])
+                .spawn()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            std::process::Command::new("xdg-open").arg(url).spawn()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = url;
+            Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "open"))
+        }
+    };
+    if let Err(e) = r {
+        eprintln!("open {url}: {e}");
+    }
 }
 
 /// Reveal `p` in the OS file manager / image viewer.
