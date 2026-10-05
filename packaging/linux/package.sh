@@ -27,7 +27,8 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: truongnat <noreply@github.com>
-Depends: libgtk-3-0, libayatana-appindicator3-1, libpipewire-0.3-0
+Depends: libgtk-3-0, libayatana-appindicator3-1, libpipewire-0.3-0, tesseract-ocr, tesseract-ocr-eng, wl-clipboard, libnotify-bin, openssh-client
+Recommends: tesseract-ocr-jpn, tesseract-ocr-vie
 Description: Region screenshot tool with annotations and native OCR
  A pure-Rust desktop utility: multi-monitor region capture, annotation
  layer, OS-native OCR, tray resident.
