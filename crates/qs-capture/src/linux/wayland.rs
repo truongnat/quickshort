@@ -124,7 +124,14 @@ fn run_session(
     let _poke = DamagePoke::start(
         streams
             .iter()
-            .map(|(m, _)| (m.logical.x as i16, m.logical.y as i16))
+            .map(|(m, _)| {
+                // monitor center: an origin-corner poke sits under the
+                // GNOME top bar and gets occluded → no damage reported
+                (
+                    m.logical.x + m.logical.w as i32 / 2,
+                    m.logical.y + m.logical.h as i32 / 2,
+                )
+            })
             .collect(),
     );
     let imgs = grab_frames(
@@ -143,21 +150,24 @@ fn run_session(
 /// Mutter's screencast only emits a frame when that output has damage;
 /// an idle desktop starves a fresh consumer indefinitely (cursor moves
 /// live on a separate plane and don't count). A 1x1 override-redirect
-/// XWayland window toggled map/unmap at each monitor's origin is a real
-/// scene change — tiny, invisible, and damages every output. Optional:
-/// if XWayland is absent we just rely on the watchdog/retry path.
+/// XWayland window wiggling a few px at each monitor's CENTER is a real
+/// visible scene change — a corner poke can end up occluded under the
+/// GNOME top bar and produce no damage at all. Optional: if XWayland is
+/// absent we just rely on the watchdog/retry path.
 struct DamagePoke {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DamagePoke {
-    fn start(origins: Vec<(i16, i16)>) -> Self {
+    fn start(origins: Vec<(i32, i32)>) -> Self {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop2 = stop.clone();
         let handle = std::thread::spawn(move || {
             use x11rb::connection::Connection as XConn;
-            use x11rb::protocol::xproto::{ConnectionExt, CreateWindowAux, WindowClass};
+            use x11rb::protocol::xproto::{
+                ConfigureWindowAux, ConnectionExt, CreateWindowAux, WindowClass,
+            };
             let run = || -> Result<()> {
                 let (conn, sn) = x11rb::connect(None)?;
                 let root = conn.setup().roots[sn].root;
@@ -168,8 +178,8 @@ impl DamagePoke {
                         x11rb::COPY_DEPTH_FROM_PARENT,
                         w,
                         root,
-                        x,
-                        y,
+                        x as i16,
+                        y as i16,
                         1,
                         1,
                         0,
@@ -177,21 +187,27 @@ impl DamagePoke {
                         0,
                         &CreateWindowAux::new().override_redirect(1),
                     )?;
-                    wins.push(w);
+                    wins.push((w, x, y));
                 }
+                for &(w, _, _) in &wins {
+                    let _ = conn.map_window(w);
+                }
+                let _ = conn.flush();
+                // wiggle ±6px: each move damages both the vacated and the
+                // covered rect — continuous real damage on every output
+                let mut dx = 0i32;
                 while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-                    for &w in &wins {
-                        let _ = conn.map_window(w);
+                    dx = if dx == 0 { 6 } else { 0 };
+                    for &(w, x, y) in &wins {
+                        let _ = conn.configure_window(
+                            w,
+                            &ConfigureWindowAux::new().x(x + dx).y(y),
+                        );
                     }
                     let _ = conn.flush();
-                    std::thread::sleep(std::time::Duration::from_millis(120));
-                    for &w in &wins {
-                        let _ = conn.unmap_window(w);
-                    }
-                    let _ = conn.flush();
-                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    std::thread::sleep(std::time::Duration::from_millis(90));
                 }
-                for &w in &wins {
+                for &(w, _, _) in &wins {
                     let _ = conn.destroy_window(w);
                 }
                 let _ = conn.flush();
@@ -573,14 +589,23 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
     mainloop.run();
     drop(poke);
     drop(timer);
+    // read frames BEFORE disconnect: disconnect transitions every stream
+    // back to unconnected and would erase the state we want to report
+    let out = collect_frames(&chans);
     for (stream, _) in keepalive.iter() {
         stream.disconnect().ok();
     }
     drop(keepalive);
+    out
+}
 
-    // Convert collected raw frames to RGBA images.
+/// Convert collected raw frames to RGBA images.
+fn collect_frames(
+    chans: &[Rc<RefCell<ChanState>>],
+) -> Result<Vec<image::RgbaImage>> {
+    use spa::param::video::VideoFormat;
     let mut out = Vec::with_capacity(chans.len());
-    for st in &chans {
+    for st in chans {
         let st = st.borrow_mut();
         let (w, h) = st.size;
         let mut px = match (&st.frame, &st.err) {

@@ -346,9 +346,45 @@ pub fn open_path(p: &Path) {
     }
 }
 
+/// One-shot mode exits right after dispatch; on Wayland that kills the
+/// clipboard we just set. `wl-copy` forks a helper that keeps serving it
+/// — use it when present instead of parking this process on `wait()`.
+#[cfg(target_os = "linux")]
+fn wl_copy(mime: &str, data: &[u8]) -> bool {
+    use std::io::Write;
+    let mut c = match std::process::Command::new("wl-copy")
+        .args(["-t", mime])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let ok = c
+        .stdin
+        .take()
+        .map(|mut s| s.write_all(data).is_ok())
+        .unwrap_or(false);
+    ok && c.wait().map(|s| s.success()).unwrap_or(false)
+}
+
 /// On Wayland the clipboard dies with the owning process — `set().wait()`
 /// keeps us alive serving paste requests until another app takes over.
 fn copy_image_to_clipboard(img: &RgbaImage, wait: bool) {
+    #[cfg(target_os = "linux")]
+    if wait {
+        let mut png = std::io::Cursor::new(Vec::new());
+        if img
+            .write_to(&mut png, image::ImageFormat::Png)
+            .is_ok()
+            && wl_copy("image/png", &png.into_inner())
+        {
+            eprintln!("copied to clipboard");
+            return;
+        }
+    }
     let data = arboard::ImageData {
         width: img.width() as usize,
         height: img.height() as usize,
@@ -373,6 +409,11 @@ fn copy_image_to_clipboard(img: &RgbaImage, wait: bool) {
 }
 
 fn copy_text_to_clipboard(text: &str, wait: bool) {
+    #[cfg(target_os = "linux")]
+    if wait && wl_copy("text/plain;charset=utf-8", text.as_bytes()) {
+        eprintln!("copied to clipboard");
+        return;
+    }
     #[cfg(target_os = "linux")]
     let r = arboard::Clipboard::new().map(|mut c| {
         use arboard::SetExtLinux;

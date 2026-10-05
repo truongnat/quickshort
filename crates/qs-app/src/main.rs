@@ -145,18 +145,25 @@ fn run_one_shot(args: Args) -> Result<()> {
         Some(p) => SaveTarget::File(p),
         None => SaveTarget::Dir(cfg.save_dir()),
     };
-    actions::dispatch(
+    let outcome = actions::dispatch(
         frames,
         sel,
         action,
         &annots,
         &target,
         true,
-        // a ShareManager is cheap until share() spawns its server/tunnel;
-        // the clipboard wait below keeps this process alive serving both
+        // a ShareManager is cheap until share() spawns its server/tunnel
         Some(share::ShareManager::new()),
         cfg.copy_after_save,
         &cfg.ocr_lang,
     )?;
+    // the share link only lives while the tunnel does — park so this
+    // one-shot process keeps serving it (pkill quickshort to stop)
+    if let actions::Outcome::Shared(url) = &outcome {
+        eprintln!("sharing {url} — stays up while this process runs");
+        loop {
+            std::thread::park();
+        }
+    }
     Ok(())
 }
