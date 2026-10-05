@@ -40,6 +40,7 @@ pub fn dispatch(
     wait_clipboard: bool,
     share: Option<std::sync::Arc<crate::share::ShareManager>>,
     copy_after_save: bool,
+    ocr_lang: &str,
 ) -> Result<Outcome> {
     eprintln!("dispatch {action:?}");
     let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
@@ -77,7 +78,7 @@ pub fn dispatch(
             Ok(Outcome::Copied)
         }
         Action::Ocr => {
-            let t = qs_ocr::extract_text(&img)?;
+            let t = qs_ocr::extract_text(&img, ocr_lang)?;
             if t.is_empty() {
                 return Ok(Outcome::NoText);
             }

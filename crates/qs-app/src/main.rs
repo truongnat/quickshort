@@ -154,6 +154,7 @@ fn run_one_shot(args: Args) -> Result<()> {
         true,
         None,
         cfg.copy_after_save,
+        &cfg.ocr_lang,
     )?;
     Ok(())
 }

@@ -30,6 +30,8 @@ pub struct Config {
     pub key_share: String,
     /// ⌘+key = undo, ⌘⇧+key = redo — one field drives both.
     pub key_undo: String,
+    /// tesseract language list, e.g. "eng", "eng+jpn", "eng+vie".
+    pub ocr_lang: String,
     /// Unix ts of the last update check (auto-checks once a day).
     #[serde(default)]
     pub last_update_check: u64,
@@ -51,6 +53,7 @@ impl Default for Config {
             key_ocr: "t".into(),
             key_share: "l".into(),
             key_undo: "z".into(),
+            ocr_lang: "eng".into(),
             last_update_check: 0,
         }
     }

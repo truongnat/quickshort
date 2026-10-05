@@ -516,9 +516,11 @@ impl ApplicationHandler<HostEvent> for Host {
                     .clone()
             });
             let copy = self.cfg.copy_after_save;
+            let lang = self.cfg.ocr_lang.clone();
             std::thread::spawn(move || {
-                let res =
-                    actions::dispatch(frames, sel, action, &annots, &target, false, share, copy)
+                let res = actions::dispatch(
+                    frames, sel, action, &annots, &target, false, share, copy, &lang,
+                )
                         .map_err(|e| e.to_string());
                 let _ = px.send_event(HostEvent::Done(res));
             });
