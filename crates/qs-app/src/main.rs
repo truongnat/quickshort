@@ -98,9 +98,9 @@ fn capture_lock() -> Result<Option<std::fs::File>> {
     Ok(Some(f))
 }
 
-/// One-shot mode has no toast — a failed action would die silently in
+/// One-shot mode has no toast — action outcomes would die silently in
 /// the journal. `notify-send` is the only user-visible channel we have.
-fn notify_error(msg: &str) {
+fn notify(msg: &str) {
     let _ = std::process::Command::new("notify-send")
         .args(["-a", "quickshort", "quickshort", msg])
         .status();
@@ -165,8 +165,11 @@ fn run_one_shot(args: Args) -> Result<()> {
         cfg.copy_after_save,
         &cfg.ocr_lang,
     );
-    if let Err(e) = &outcome {
-        notify_error(&format!("{e:#}"));
+    match &outcome {
+        Err(e) => notify(&format!("{e:#}")),
+        Ok(actions::Outcome::Shared(url)) => notify(&format!("shared — link copied\n{url}")),
+        Ok(actions::Outcome::TextCopied(n)) => notify(&format!("copied {n} chars")),
+        _ => {}
     }
     let outcome = outcome?;
     // the share link only lives while the tunnel does — park so this
