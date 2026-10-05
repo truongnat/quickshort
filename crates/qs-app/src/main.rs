@@ -98,6 +98,14 @@ fn capture_lock() -> Result<Option<std::fs::File>> {
     Ok(Some(f))
 }
 
+/// One-shot mode has no toast — a failed action would die silently in
+/// the journal. `notify-send` is the only user-visible channel we have.
+fn notify_error(msg: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args(["-a", "quickshort", "quickshort", msg])
+        .status();
+}
+
 /// One-shot pipeline: capture all monitors to RAM -> overlay selection ->
 /// worker-thread stitch -> action.
 fn run_one_shot(args: Args) -> Result<()> {
@@ -156,7 +164,11 @@ fn run_one_shot(args: Args) -> Result<()> {
         Some(share::ShareManager::new()),
         cfg.copy_after_save,
         &cfg.ocr_lang,
-    )?;
+    );
+    if let Err(e) = &outcome {
+        notify_error(&format!("{e:#}"));
+    }
+    let outcome = outcome?;
     // the share link only lives while the tunnel does — park so this
     // one-shot process keeps serving it (pkill quickshort to stop)
     if let actions::Outcome::Shared(url) = &outcome {
