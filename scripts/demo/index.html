@@ -1,0 +1,356 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1920px; height:1200px; overflow:hidden; }
+  body {
+    font-family:"Geist",system-ui,sans-serif;
+    background:#000;
+    position:relative;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* backdrop: site-matched glow + grid */
+  #bg { position:absolute; inset:0;
+    background:
+      radial-gradient(ellipse 55% 40% at 50% -8%, rgba(82,199,234,.09), transparent 70%),
+      radial-gradient(ellipse 90% 55% at 50% 0%, rgba(255,255,255,.04), transparent 60%),
+      #000;
+  }
+  #grid { position:absolute; inset:0; opacity:.5;
+    background-image:
+      linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+    background-size:64px 64px;
+    mask-image:radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 75%);
+  }
+  /* stylized editor window */
+  #win { position:absolute; left:360px; top:220px; width:1200px; height:760px;
+    background:#0d0d0f; border:1px solid #1f1f23; border-radius:14px;
+    box-shadow:0 40px 120px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.03) inset;
+    overflow:hidden; }
+  #winbar { height:44px; display:flex; align-items:center; gap:8px; padding:0 18px;
+    border-bottom:1px solid #1a1a1e; }
+  .dot { width:12px; height:12px; border-radius:50%; }
+  #wintitle { margin-left:14px; font-family:"Geist Mono",monospace; font-size:12px; color:#4d4d55; }
+  #side { position:absolute; left:0; top:44px; bottom:0; width:52px;
+    border-right:1px solid #1a1a1e; }
+  .sicon { width:20px; height:20px; margin:16px; border-radius:6px; background:#1d1d22; }
+  .sicon.on { background:rgba(82,199,234,.25); box-shadow:0 0 0 1px rgba(82,199,234,.4) inset; }
+  #code { position:absolute; left:52px; right:0; top:44px; bottom:0; padding:26px 34px; }
+  .ln { height:11px; border-radius:5.5px; margin-bottom:17px; }
+  /* dim veil */
+  #veil { position:absolute; inset:0; background:rgba(0,0,0,.55); opacity:0; }
+  /* selection */
+  #sel { position:absolute; border:2px solid #52c7ea; border-radius:3px;
+    box-shadow:0 0 0 4000px rgba(0,0,0,.45), 0 0 32px rgba(82,199,234,.25);
+    opacity:0; }
+  .hd { position:absolute; width:10px; height:10px; background:#fff; border-radius:2.5px;
+    box-shadow:0 1px 4px rgba(0,0,0,.5); }
+  #seldims { position:absolute; top:-30px; right:-2px; font-family:"Geist Mono",monospace;
+    font-size:13px; color:#fff; background:#52c7ea; color:#001318; font-weight:600;
+    padding:3px 8px; border-radius:6px; }
+  /* toolbar */
+  #tb { position:absolute; display:flex; gap:8px; padding:8px;
+    background:rgba(16,16,19,.92); border:1px solid #2a2a30; border-radius:16px;
+    backdrop-filter:blur(8px); box-shadow:0 18px 50px rgba(0,0,0,.6);
+    opacity:0; }
+  .chip { width:44px; height:44px; border-radius:11px; display:flex;
+    align-items:center; justify-content:center; }
+  .chip svg { width:21px; height:21px; }
+  .chip.on { background:#52c7ea; }
+  .chip.on svg * { stroke:#00222e !important; }
+  .chip.divider { width:1px; background:#2a2a30; margin:4px 2px; }
+  /* annotations svg layer */
+  #ann { position:absolute; inset:0; pointer-events:none; }
+  #ann path, #ann rect { fill:none; stroke:#ff6159; stroke-width:5;
+    stroke-linecap:round; stroke-linejoin:round; }
+  /* hotkey chip */
+  #kbd { position:absolute; font-family:"Geist Mono",monospace; font-size:17px;
+    color:#ededed; background:rgba(20,20,24,.92); border:1px solid #33333a;
+    padding:10px 18px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.55);
+    display:flex; gap:10px; align-items:center; opacity:0; }
+  .kkey { background:#26262c; border:1px solid #3d3d45; border-bottom-width:3px;
+    border-radius:7px; padding:3px 10px; font-weight:600; }
+  /* thumbnail flying out */
+  #thumb { position:absolute; width:860px; height:460px; border-radius:10px;
+    background:#101013; border:1px solid #2c2c33; overflow:hidden; opacity:0;
+    box-shadow:0 24px 70px rgba(0,0,0,.65); }
+  #thumb .ln { height:8px; margin-bottom:13px; }
+  #thumbpad { padding:34px 44px; }
+  /* toast — light card matching the app's toast */
+  #toast { position:absolute; width:360px; height:66px; border-radius:13px;
+    background:#fff; border:1px solid #cbd0d8;
+    box-shadow:0 18px 50px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.3);
+    display:flex; align-items:center; gap:14px; padding:0 20px; opacity:0; }
+  #tok { width:26px; height:26px; border-radius:50%; background:#28a745;
+    display:flex; align-items:center; justify-content:center; flex:none; }
+  #tok svg { width:14px; height:14px; }
+  #tmsg { font-size:14.5px; font-weight:500; color:#24272d; }
+  #tbar { position:absolute; left:18px; bottom:6px; height:3px; width:0;
+    background:#28a745; border-radius:2px; }
+  /* cursor */
+  #cursor { position:absolute; width:30px; height:30px; opacity:0;
+    filter:drop-shadow(0 3px 8px rgba(0,0,0,.6)); }
+  #ripple { position:absolute; border-radius:50%; border:2.5px solid #52c7ea; opacity:0; }
+</style>
+</head>
+<body>
+<div id="bg"></div><div id="grid"></div>
+
+<div id="win">
+  <div id="winbar">
+    <div class="dot" style="background:#ff5f57"></div>
+    <div class="dot" style="background:#febc2e"></div>
+    <div class="dot" style="background:#28c840"></div>
+    <div id="wintitle">main.rs — quickshort</div>
+  </div>
+  <div id="side">
+    <div class="sicon on"></div><div class="sicon"></div><div class="sicon"></div><div class="sicon"></div>
+  </div>
+  <div id="code"></div>
+</div>
+
+<div id="veil"></div>
+<div id="sel">
+  <div class="hd" style="left:-6px;top:-6px"></div>
+  <div class="hd" style="right:-6px;top:-6px"></div>
+  <div class="hd" style="left:-6px;bottom:-6px"></div>
+  <div class="hd" style="right:-6px;bottom:-6px"></div>
+  <div id="seldims">860 × 460</div>
+</div>
+<div id="tb"></div>
+<svg id="ann" width="1920" height="1200" viewBox="0 0 1920 1200">
+  <path id="penPath" d="M640,470 L760,415 L715,545 L900,492"/>
+  <rect id="rectAnn" x="1020" y="420" width="230" height="140" rx="6"/>
+</svg>
+<div id="thumb"><div id="thumbpad"></div></div>
+<div id="kbd"><span class="kkey">⌘</span><span class="kkey">⇧</span><span class="kkey">S</span></div>
+<div id="toast">
+  <div id="tok"><svg viewBox="0 0 14 14"><path d="M2.5 7.5 L5.5 10.5 L11.5 3.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+  <div id="tmsg">Saved quickshort-2330.png</div>
+  <div id="tbar"></div>
+</div>
+<div id="ripple"></div>
+<div id="cursor">
+  <svg viewBox="0 0 24 24" width="30" height="30">
+    <path d="M5 3 L19 12.5 L12.8 13.6 L15.6 20.5 L12.4 21.8 L9.7 14.9 L5 19 Z"
+          fill="#fff" stroke="#111" stroke-width="1.4"/>
+  </svg>
+</div>
+
+<script>
+// ---------- helpers ----------
+const S = id => document.getElementById(id);
+const clamp01 = v => Math.min(1, Math.max(0, v));
+const seg = (t, a, b) => clamp01((t - a) / (b - a));
+const lerp = (a, b, t) => a + (b - a) * t;
+const eo = t => 1 - Math.pow(1 - t, 3);                    // ease-out cubic
+const eio = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; // ease-in-out cubic
+const back = t => { const c = 1.70158; return 1 + (c+1)*Math.pow(t-1,3) + c*Math.pow(t-1,2); };
+
+// fake code lines
+const PAL = ['#3a3a42','#3a3a42','#2f6f52','#7a5a34','#3a3a42','#30506b','#3a3a42'];
+(function genCode() {
+  const rows = [[90,14,38,60,42],[16,52,30],[40,20,70],[55,12,30,48],[22,44],[70,18,35,26],
+                [34,58],[18,26,62,40],[48,30],[80,15,28,52],[26,42,36],[60,22],[38,34,50],[20,56],
+                [44,18,66],[30,40],[58,24,32],[16,48],[72,28],[36,44,20],[50,60],[24,38,46]];
+  let html = '';
+  rows.forEach((r, i) => {
+    let x = 0;
+    r.forEach((w, j) => {
+      const c = PAL[(i * 3 + j * 5) % PAL.length];
+      const ind = (i % 5 === 2) ? 30 : 0;
+      html += `<div class="ln" style="position:absolute;left:${x + ind}px;top:${i * 28 + 26}px;width:${w * 3.2}px;background:${c}"></div>`;
+      x += w * 3.2 + 14;
+    });
+  });
+  S('code').innerHTML = html;
+  S('thumbpad').innerHTML = html;
+})();
+
+// toolbar chips: [id, svg-paths]
+const CHIPS = [
+  ['pen',   '<path d="M4 20 L5.5 14.5 L15 5 a2.1 2.1 0 0 1 3 3 L8.5 17.5 Z"/><path d="M13.5 6.5 L16.5 9.5"/>'],
+  ['rect',  '<rect x="4" y="6" width="15" height="12" rx="1.5"/>'],
+  ['ell',   '<ellipse cx="11.5" cy="12" rx="8" ry="6"/>'],
+  ['mark',  '<path d="M4 16 L16 4 M6 18 L18 6" stroke-width="6" opacity=".45"/><path d="M4 16 L16 4 M6 18 L18 6" stroke-width="1.4"/>'],
+  ['div',   ''],
+  ['undo',  '<path d="M7 8 L3.5 11.5 L7 15"/><path d="M3.5 11.5 H14 a5 5 0 0 1 0 10 h-3"/>'],
+  ['save',  '<path d="M6 3.5 h9 l3.5 3.5 v12.5 h-12.5 Z"/><path d="M8 3.5 V9 h7 V3.5"/><rect x="8" y="13" width="7" height="6.5"/>'],
+  ['copy',  '<rect x="8.5" y="8.5" width="11" height="12" rx="1.5"/><path d="M15 8.5 V6 a1.5 1.5 0 0 0 -1.5 -1.5 H6 A1.5 1.5 0 0 0 4.5 6 v9 A1.5 1.5 0 0 0 6 16.5 h2"/>'],
+  ['share', '<path d="M12 15 V3.5 M7.5 8 L12 3.5 L16.5 8"/><path d="M5 13 v6.5 h14 V13"/>'],
+];
+S('tb').innerHTML = CHIPS.map(([id, p]) =>
+  id === 'div' ? '<div class="chip divider"></div>'
+  : `<div class="chip" id="chip-${id}"><svg viewBox="0 0 23 24" fill="none" stroke="#c9c9d0" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${p}</svg></div>`
+).join('');
+
+const penLen = S('penPath').getTotalLength();
+const rectLen = S('rectAnn').getTotalLength() + 24; // rx corners add a bit
+
+// ---------- choreography ----------
+// geometry (1920x1200 stage)
+const SEL = { x0: 560, y0: 340, x1: 1420, y1: 820 };
+const TBW = 8 * 44 + 7 * 8 + 16 + 12;       // chips+gaps+pad+divider extra
+const TBX = (SEL.x0 + SEL.x1) / 2 - TBW / 2, TBY = SEL.y1 + 18;
+const CHIP = i => { // centers; divider chips are 5px wide, tools are 52px
+  let x = TBX + 8;
+  for (let j = 0; j < i; j++) x += CHIPS[j][0] === 'div' ? 5 + 8 : 52;
+  return { x: x + 22, y: TBY + 8 + 22 };
+};
+const TOAST = { x: 780, y: 1090 };
+const KBD = { x: 876, y: 1000 };
+const THUMB_END = { x: 1330, y: 850, s: 0.32 };
+
+// cursor waypoints
+const CUR = {
+  idle: [960, 780],
+  start: [SEL.x0, SEL.y0],
+  pen: CHIP(0), drawA: [640, 470],
+  rect: CHIP(1), drawB: [1020, 420],
+  save: CHIP(6),
+};
+
+window.__setTime = function (T) {
+  const el = {};
+  ['win','veil','sel','tb','thumb','kbd','toast','cursor','ripple','seldims'].forEach(i => el[i] = S(i));
+
+  // --- editor window: float in, idle sway ---
+  const winIn = back(seg(T, 0.05, 0.75));
+  const sway = Math.sin(T * 0.8) * 3;
+  el.win.style.opacity = clamp01(seg(T, 0.05, 0.5));
+  el.win.style.transform = `translateY(${lerp(26, 0, eo(seg(T,0.05,0.8))) + sway}px) scale(${lerp(0.96, 1, Math.max(0, winIn))})`;
+
+  // --- hotkey chip ---
+  const kb = seg(T, 2.3, 2.75);
+  const kbOut = seg(T, 3.15, 3.5);
+  el.kbd.style.left = KBD.x + 'px'; el.kbd.style.top = KBD.y + 'px';
+  el.kbd.style.opacity = kb * (1 - kbOut);
+  el.kbd.style.transform = `scale(${lerp(0.6, 1, Math.max(0, back(kb)))})`;
+
+  // --- veil ---
+  el.veil.style.opacity = 0.55 * seg(T, 3.0, 3.5) * (1 - seg(T, 9.6, 10.4));
+
+  // --- cursor path ---
+  const cur = { x: CUR.idle[0], y: CUR.idle[1], s: 1, o: 0 };
+  cur.o = seg(T, 2.9, 3.4) * (1 - seg(T, 11.6, 12.1));
+  // move to drag start
+  const mv0 = eio(seg(T, 3.3, 4.0));
+  cur.x = lerp(CUR.idle[0], CUR.start[0], mv0);
+  cur.y = lerp(CUR.idle[1], CUR.start[1], mv0);
+  // drag
+  const dr = eio(seg(T, 4.15, 5.35));
+  cur.x = lerp(cur.x, SEL.x1, dr);
+  cur.y = lerp(cur.y, SEL.y1, dr);
+  // to pen chip
+  const mvP = eio(seg(T, 6.0, 6.55));
+  cur.x = lerp(cur.x, CUR.pen.x, mvP); cur.y = lerp(cur.y, CUR.pen.y, mvP);
+  // to stroke start + follow stroke
+  const mvS = eio(seg(T, 6.7, 7.0));
+  cur.x = lerp(cur.x, CUR.drawA[0], mvS); cur.y = lerp(cur.y, CUR.drawA[1], mvS);
+  const stroke = seg(T, 7.0, 8.0);   // follows path
+  if (stroke > 0) {
+    const p = S('penPath').getPointAtLength(penLen * stroke);
+    cur.x = lerp(cur.x, p.x, eio(stroke)); cur.y = lerp(cur.y, p.y, eio(stroke));
+  }
+  // to rect chip
+  const mvR = eio(seg(T, 8.3, 8.7));
+  cur.x = lerp(cur.x, CUR.rect.x, mvR); cur.y = lerp(cur.y, CUR.rect.y, mvR);
+  const mvB = eio(seg(T, 8.8, 9.05));
+  cur.x = lerp(cur.x, CUR.drawB[0], mvB); cur.y = lerp(cur.y, CUR.drawB[1], mvB);
+  const rstroke = seg(T, 9.05, 9.7);
+  if (rstroke > 0) { // perimeter: top-left -> around
+    const p = rectPoint(rstroke);
+    cur.x = lerp(cur.x, p[0], eio(rstroke)); cur.y = lerp(cur.y, p[1], eio(rstroke));
+  }
+  // to save chip + click
+  const mvV = eio(seg(T, 10.0, 10.4));
+  cur.x = lerp(cur.x, CUR.save.x, mvV); cur.y = lerp(cur.y, CUR.save.y, mvV);
+  const press = seg(T, 10.4, 10.55) * (1 - seg(T, 10.6, 10.8));
+  cur.s = 1 - 0.18 * press;
+  el.cursor.style.transform = `translate(${cur.x - 5}px,${cur.y - 3}px) scale(${cur.s})`;
+  el.cursor.style.opacity = cur.o;
+
+  // --- selection rect springs open while dragging ---
+  const so = seg(T, 4.15, 5.35);
+  if (so > 0) {
+    const e = eio(so);
+    const w = lerp(40, SEL.x1 - SEL.x0, e), h = lerp(30, SEL.y1 - SEL.y0, e);
+    el.sel.style.left = SEL.x0 + 'px'; el.sel.style.top = SEL.y0 + 'px';
+    el.sel.style.width = w + 'px'; el.sel.style.height = h + 'px';
+    el.sel.style.opacity = seg(T, 4.15, 4.35) * (1 - seg(T, 12.4, 13.2));
+    el.seldims.textContent = `${Math.round(w)} × ${Math.round(h)}`;
+  } else {
+    el.sel.style.opacity = 0;
+  }
+  // slight pulse after settle
+  if (T > 5.6 && T < 12.4) {
+    el.sel.style.boxShadow = `0 0 0 4000px rgba(0,0,0,${0.45 + Math.sin(T * 2.2) * 0.02}), 0 0 ${28 + Math.sin(T * 2.2) * 6}px rgba(82,199,234,.25)`;
+  }
+
+  // --- toolbar ---
+  const tb = back(seg(T, 5.5, 6.1));
+  el.tb.style.left = TBX + 'px'; el.tb.style.top = TBY + 'px';
+  el.tb.style.opacity = clamp01(seg(T, 5.5, 5.9)) * (1 - seg(T, 12.4, 13.0));
+  el.tb.style.transform = `translateY(${lerp(18, 0, eo(seg(T, 5.5, 6.1)))}px) scale(${Math.max(0.5, tb)})`;
+
+  // chip highlights
+  S('chip-pen').classList.toggle('on', T >= 6.55 && T < 8.3);
+  S('chip-rect').classList.toggle('on', T >= 8.7 && T < 10.0);
+
+  // click ripple on save
+  const rp = seg(T, 10.45, 11.0);
+  el.ripple.style.left = (CUR.save.x - 30) + 'px'; el.ripple.style.top = (CUR.save.y - 30) + 'px';
+  el.ripple.style.width = el.ripple.style.height = (60 * eo(rp)) + 'px';
+  el.ripple.style.opacity = (1 - rp) * 0.8 * seg(T, 10.45, 10.5);
+
+  // --- annotation strokes draw on ---
+  const pp = S('penPath');
+  pp.style.strokeDasharray = penLen;
+  pp.style.strokeDashoffset = penLen * (1 - seg(T, 7.0, 8.0));
+  pp.style.opacity = seg(T, 7.0, 7.1) * (1 - seg(T, 12.4, 13.0));
+  const ra = S('rectAnn');
+  ra.style.strokeDasharray = rectLen;
+  ra.style.strokeDashoffset = rectLen * (1 - seg(T, 9.05, 9.7));
+  ra.style.opacity = seg(T, 9.05, 9.15) * (1 - seg(T, 12.4, 13.0));
+
+  // --- thumbnail flies out ---
+  const th = seg(T, 10.7, 11.5);
+  if (th > 0) {
+    const e = eio(th), sc = lerp(1, THUMB_END.s, backOut(th));
+    el.thumb.style.opacity = seg(T, 10.7, 10.85) * (1 - seg(T, 12.0, 12.6));
+    el.thumb.style.left = lerp(SEL.x0, THUMB_END.x, e) + 'px';
+    el.thumb.style.top = lerp(SEL.y0, THUMB_END.y, e) + 'px';
+    el.thumb.style.transform = `scale(${Math.max(0.05, sc)}) rotate(${lerp(0, -4, e)}deg)`;
+    el.thumb.style.transformOrigin = 'top left';
+  } else el.thumb.style.opacity = 0;
+
+  // --- toast ---
+  const tt = back(seg(T, 10.9, 11.5));
+  el.toast.style.left = TOAST.x + 'px'; el.toast.style.top = TOAST.y + 'px';
+  el.toast.style.opacity = clamp01(seg(T, 10.9, 11.2)) * (1 - seg(T, 13.0, 13.6));
+  el.toast.style.transform = `translateY(${lerp(30, 0, eo(seg(T, 10.9, 11.5)))}px) scale(${Math.max(0.6, tt)})`;
+  S('tbar').style.width = (324 * (1 - seg(T, 11.6, 13.4))) + 'px';
+};
+
+function rectPoint(t) { // perimeter of #rectAnn, clockwise from top-left
+  const x = 1020, y = 420, w = 230, h = 140;
+  const P = 2 * (w + h), d = t * P;
+  if (d < w) return [x + d, y];
+  if (d < w + h) return [x + w, y + (d - w)];
+  if (d < 2 * w + h) return [x + w - (d - w - h), y + h];
+  return [x, y + h - (d - 2 * w - h)];
+}
+function backOut(t) { const c = 1.4; t = clamp01(t); return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); }
+
+// live preview if not driven externally
+if (!location.hash.includes('still')) {
+  let t0 = performance.now();
+  (function loop() { window.__setTime(((performance.now() - t0) / 1000) % 14.5); requestAnimationFrame(loop); })();
+}
+</script>
+</body>
+</html>
