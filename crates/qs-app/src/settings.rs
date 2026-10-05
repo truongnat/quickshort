@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use fontdue::{Font, FontSettings};
-use qs_overlay::sdf::{ellipse_sdf, fill_cov, glass_card, rrect_sdf, seg_sdf, stroke_cov, Canvas};
+use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, seg_sdf, stroke_cov, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -27,20 +27,24 @@ const CX: f64 = SIDE_W + 24.0;
 const CW: f64 = W - CX - 24.0;
 const ROW: f64 = 52.0;
 
-// macOS-consistent dark palette (matches the overlay toolbar)
-const BG_TOP: u32 = 0x212123; // window gradient, top — lifted like Tahoe chrome
-const BG_BOT: u32 = 0x17171A;
-const SIDE_BG: u32 = 0x1C1C20; // sidebar, a step darker than the content side
-const CARD_TOP: u32 = 0x303035; // glass card — light hits the top edge
-const CARD_BOT: u32 = 0x26262B;
-const ROW_HOV: u32 = 0x343438;
-const KEYCAP: u32 = 0x3A3A3D; // raised key top
-const KEYCAP_EDGE: u32 = 0x545456; // key bottom edge
-const ACCENT: u32 = 0x0A84FF;
-const FG: u32 = 0xF2F2F7;
-const FG_DIM: u32 = 0x98989D;
-const FG_FAINT: u32 = 0x636366;
-const SWITCH_OFF: u32 = 0x39393D;
+// light palette — matches the settings mockup (white surface, #f8f9fb
+// sidebar, hairline borders, configurable accent)
+const BG_TOP: u32 = 0xFFFFFF;
+const BG_BOT: u32 = 0xFAFBFC;
+const SIDE_BG: u32 = 0xF8F9FB;
+const CARD_TOP: u32 = 0xFFFFFF;
+const BORDER: u32 = 0xE1E4E9;
+const BORDER_STRONG: u32 = 0xCBD0D8;
+const ROW_HOV: u32 = 0xECEEF2;
+const TILE: u32 = 0xF0F2F5; // row-icon tile background
+const TILE_GLYPH: u32 = 0x555D68;
+const KEYCAP: u32 = 0xF3F4F6; // raised key top
+const KEYCAP_EDGE: u32 = 0xD4D8DF; // key bottom edge
+const FG: u32 = 0x24272D;
+const FG_DIM: u32 = 0x535A66;
+const FG_FAINT: u32 = 0x8A919C;
+const SWITCH_OFF: u32 = 0xE1E4E9;
+const DANGER: u32 = 0xB4232D;
 
 /// What the host needs to know after a settings event.
 pub enum SettingsEvent {
@@ -235,6 +239,7 @@ impl Settings {
             }
         }
         let win = Rc::new(el.create_window(attrs).context("settings window")?);
+        force_light_appearance(&win);
         // an accessory app opened from the tray stays deactivated — without
         // activation the window never gets KeyboardInput, so the hotkey
         // recorder looks dead
@@ -666,6 +671,7 @@ impl Settings {
         let p = Painter {
             font: &self.font,
             scale,
+            accent: cfg.accent_rgb(),
         };
         let mut hits = std::mem::take(&mut self.hits);
         hits.clear();
@@ -673,7 +679,7 @@ impl Settings {
         // sidebar: darker panel + nav, separator hairline
         p.fill(&mut cv, (0.0, 0.0, SIDE_W, H), 0.0, SIDE_BG, 1.0);
         for py in 0..sh {
-            cv.blend((SIDE_W * scale) as i32, py as i32, 0xFFFFFF, 0.08);
+            cv.blend((SIDE_W * scale) as i32, py as i32, BORDER, 1.0);
         }
         if let Some(logo) = v.logo {
             let (ox, oy) = ((18.0 * scale) as i32, (22.0 * scale) as i32);
@@ -701,7 +707,7 @@ impl Settings {
             let r = (10.0, ny, SIDE_W - 20.0, 36.0);
             let sel = v.page == i;
             if sel {
-                p.fill(&mut cv, r, 9.0, ACCENT, 1.0);
+                p.fill(&mut cv, r, 9.0, v.cfg.accent_rgb(), 1.0);
             } else if v.hover == Some(Hit::Nav(i)) {
                 p.fill(&mut cv, r, 9.0, ROW_HOV, 1.0);
             }
@@ -724,6 +730,14 @@ impl Settings {
             hits.push((r, Hit::Nav(i)));
             ny += 40.0;
         }
+        p.text(
+            &mut cv,
+            18.0,
+            H - 18.0,
+            10.5,
+            "Preferences save automatically",
+            FG_FAINT,
+        );
 
         match v.page {
             0 => draw_capture(&p, &mut cv, &v, &mut hits),
@@ -764,7 +778,7 @@ impl Settings {
                         p.fill(&mut cv, ir, 6.0, ROW_HOV, 1.0);
                     }
                     if i == cur {
-                        p.text(&mut cv, ir.0 + 10.0, ir.1 + 20.0, 12.0, "✓", ACCENT);
+                        p.text(&mut cv, ir.0 + 10.0, ir.1 + 20.0, 12.0, "✓", v.cfg.accent_rgb());
                         p.text(&mut cv, ir.0 + 26.0, ir.1 + 20.0, 12.0, o, FG);
                     } else {
                         p.text(&mut cv, ir.0 + 26.0, ir.1 + 20.0, 12.0, o, FG);
@@ -862,8 +876,8 @@ fn section_title(p: &Painter, cv: &mut Canvas, y: f64, title: &str, sub: &str) {
 /// Card row: icon tile + label (+ dim description) on the left.
 fn row_label(p: &Painter, cv: &mut Canvas, r: LRect, g: Glyph, label: &str, desc: &str) {
     let tile = (r.0 + 12.0, r.1 + (r.3 - 36.0) / 2.0, 36.0, 36.0);
-    p.fill(cv, tile, 9.0, 0x3A3A40, 1.0);
-    p.glyph(cv, g, tile.0 + 9.0, tile.1 + 9.0, 18.0, FG);
+    p.fill(cv, tile, 9.0, TILE, 1.0);
+    p.glyph(cv, g, tile.0 + 9.0, tile.1 + 9.0, 18.0, TILE_GLYPH);
     p.text(cv, r.0 + 60.0, r.1 + 21.0, 13.0, label, FG);
     if !desc.is_empty() {
         p.text(cv, r.0 + 60.0, r.1 + 39.0, 10.5, desc, FG_FAINT);
@@ -875,10 +889,10 @@ fn dropdown_btn(p: &Painter, cv: &mut Canvas, r: LRect, label: &str, open: bool,
         cv,
         r,
         7.0,
-        if open || hover { ROW_HOV } else { 0x2C2C31 },
+        if open || hover { ROW_HOV } else { 0xFFFFFF },
         1.0,
     );
-    p.stroke(cv, r, 7.0, 0xFFFFFF, 0.10, 0.75);
+    p.stroke(cv, r, 7.0, BORDER_STRONG, 1.0, 0.75);
     p.text(cv, r.0 + 10.0, r.1 + 20.0, 12.0, label, FG);
     // chevron ⌄
     let (mx, my) = (r.0 + r.2 - 16.0, r.1 + r.3 / 2.0 - 2.0);
@@ -888,7 +902,7 @@ fn dropdown_btn(p: &Painter, cv: &mut Canvas, r: LRect, label: &str, open: bool,
 
 fn ghost(p: &Painter, cv: &mut Canvas, r: LRect, label: &str, hover: bool, confirm: bool) -> LRect {
     if confirm {
-        p.fill(cv, r, r.3 / 2.0, 0xFF453A, 1.0);
+        p.fill(cv, r, r.3 / 2.0, DANGER, 1.0);
         p.text(
             cv,
             r.0 + (r.2 - p.text_w("Confirm?", 11.5)) / 2.0,
@@ -964,14 +978,14 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
             cv,
             (c.0 + 8.0, r.1 + 11.0, c.2 - 16.0, 30.0),
             7.0,
-            ACCENT,
+            v.cfg.accent_rgb(),
             a,
             1.0,
         );
         let (msg, col) = if v.want_mod {
             ("Needs a modifier, e.g. ⌘ ⌥ ⌃", FG_DIM)
         } else {
-            ("Press shortcut", ACCENT)
+            ("Press shortcut", v.cfg.accent_rgb())
         };
         p.text(
             cv,
@@ -1046,7 +1060,7 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         if v.hover == Some(Hit::ViewAll) {
             FG
         } else {
-            ACCENT
+            v.cfg.accent_rgb()
         },
     );
     hits.push((va, Hit::ViewAll));
@@ -1196,14 +1210,14 @@ fn draw_shortcuts(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect,
                 cv,
                 (c.0 + 8.0, r.1 + 11.0, c.2 - 16.0, 30.0),
                 7.0,
-                ACCENT,
+                v.cfg.accent_rgb(),
                 a,
                 1.0,
             );
             let (msg, col) = if v.want_mod {
                 ("Hold ⌘ or ⌃ plus a key", FG_DIM)
             } else {
-                ("Press ⌘ + key", ACCENT)
+                ("Press ⌘ + key", v.cfg.accent_rgb())
             };
             p.text(
                 cv,
@@ -1324,21 +1338,21 @@ fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     };
     let w_other = (bar.2 * other_b as f64 / total).round();
     let segs = [
-        (0.0, w_cap, ACCENT),
-        (w_cap, w_other, 0x8E8E93),
-        (w_cap + w_other, bar.2 - w_cap - w_other, 0x3A3A40),
+        (0.0, w_cap, v.cfg.accent_rgb()),
+        (w_cap, w_other, 0xAEB6C0),
+        (w_cap + w_other, bar.2 - w_cap - w_other, 0xE9ECF0),
     ];
     for &(off, w, col) in &segs {
         if w > 0.0 {
             p.fill(cv, (bar.0 + off, bar.1, w, bar.3), 0.0, col, 1.0);
         }
     }
-    p.stroke(cv, bar, 4.0, 0xFFFFFF, 0.12, 1.0);
+    p.stroke(cv, bar, 4.0, BORDER, 1.0, 1.0);
     let mut lx = r.0 + 14.0;
     for (col, txt) in [
-        (ACCENT, format!("Captures · {}", human_bytes(cap_b))),
-        (0x8E8E93, format!("Other · {}", human_bytes(other_b))),
-        (0x3A3A40, format!("Free · {}", human_bytes(free_b))),
+        (v.cfg.accent_rgb(), format!("Captures · {}", human_bytes(cap_b))),
+        (0xAEB6C0, format!("Other · {}", human_bytes(other_b))),
+        (0xE9ECF0, format!("Free · {}", human_bytes(free_b))),
     ] {
         p.fill(cv, (lx, r.1 + 32.0, 5.0, 5.0), 1.5, col, 1.0);
         p.text(cv, lx + 9.0, r.1 + 37.0, 10.5, &txt, FG_FAINT);
@@ -1454,7 +1468,7 @@ fn draw_about(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit
             if v.hover == Some(Hit::Link(i)) {
                 FG
             } else {
-                ACCENT
+                v.cfg.accent_rgb()
             },
         );
         if v.hover == Some(Hit::Link(i)) {
@@ -1555,6 +1569,31 @@ fn refocus(win: &Window) {
     win.focus_window();
     win.request_redraw();
 }
+
+/// Pin the window to the light Aqua appearance — the settings UI is
+/// light-themed, so a dark titlebar looks out of place when macOS is in
+/// dark mode.
+#[cfg(target_os = "macos")]
+fn force_light_appearance(win: &Window) {
+    use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSView};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = win.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+        return;
+    };
+    let ns_view: &NSView = unsafe { &*(h.ns_view.as_ptr() as *const NSView) };
+    let Some(ns_win) = ns_view.window() else {
+        return;
+    };
+    unsafe {
+        ns_win.setAppearance(NSAppearance::appearanceNamed(NSAppearanceNameAqua).as_deref());
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn force_light_appearance(_win: &Window) {}
 
 /// right-trimmed tail for display
 fn tail(s: &str, n: usize) -> String {
@@ -1761,6 +1800,8 @@ pub fn standalone() -> Result<()> {
 struct Painter<'a> {
     font: &'a Font,
     scale: f64,
+    /// current accent preset — mirrors the mockup's `--accent` variable
+    accent: u32,
 }
 
 impl Painter<'_> {
@@ -1824,18 +1865,20 @@ impl Painter<'_> {
         }
     }
 
-    /// Grouped inset card: glass gradient + soft shadow + lit top edge.
+    /// Grouped inset card: flat white panel + hairline border.
     fn card(&self, cv: &mut Canvas, r: LRect) {
-        glass_card(cv, r, 14.0, CARD_TOP, CARD_BOT);
+        self.fill(cv, r, 10.0, CARD_TOP, 1.0);
+        self.stroke(cv, r, 10.0, BORDER, 1.0, 0.75);
     }
 
     /// Text button — hairline border, fills accent on hover.
     fn ghost_button(&self, cv: &mut Canvas, r: LRect, label: &str, hover: bool) {
         if hover {
-            self.fill(cv, r, r.3 / 2.0, ACCENT, 1.0);
+            self.fill(cv, r, r.3 / 2.0, ROW_HOV, 1.0);
         } else {
-            self.stroke(cv, r, r.3 / 2.0, 0xFFFFFF, 0.25, 0.75);
+            self.fill(cv, r, r.3 / 2.0, 0xFFFFFF, 1.0);
         }
+        self.stroke(cv, r, r.3 / 2.0, BORDER_STRONG, 1.0, 0.75);
         let tw = self.text_w(label, 11.5);
         self.text(
             cv,
@@ -1871,7 +1914,7 @@ impl Painter<'_> {
 
     /// macOS-style sliding switch. `t` = knob position 0..1.
     fn switch(&self, cv: &mut Canvas, r: LRect, t: f64) {
-        let track = mix(SWITCH_OFF, ACCENT, t);
+        let track = mix(SWITCH_OFF, self.accent, t);
         self.fill(cv, r, r.3 / 2.0, track, 1.0);
         let kr = r.3 / 2.0 - 1.5; // knob radius
         let kx = r.0 + r.3 / 2.0 + t * (r.2 - r.3);
@@ -1914,8 +1957,8 @@ impl Painter<'_> {
                 cv,
                 (r.0 - 3.0, r.1 - 3.0, r.2 + 6.0, r.3 + 6.0),
                 r.3,
-                if selected { rgb } else { 0xFFFFFF },
-                if selected { 1.0 } else { 0.3 },
+                if selected { rgb } else { FG_DIM },
+                if selected { 1.0 } else { 0.5 },
                 1.2,
             );
         }
@@ -1951,9 +1994,9 @@ impl Painter<'_> {
                     }
                 }
             }
-            None => self.fill(cv, r, 8.0, CARD_TOP, 1.0),
+            None => self.fill(cv, r, 8.0, TILE, 1.0),
         }
-        self.stroke(cv, r, 8.0, 0xFFFFFF, 0.12, 0.75);
+        self.stroke(cv, r, 8.0, BORDER, 1.0, 0.75);
     }
 
     /// Nav / row glyphs — 18×18 logical, SDF strokes.
@@ -2115,7 +2158,7 @@ impl Painter<'_> {
 
     /// App glyph — the tray's crop-corners mark in an accent squircle.
     fn icon(&self, cv: &mut Canvas, x: f64, y: f64, size: f64) {
-        self.fill(cv, (x, y, size, size), 9.0, ACCENT, 1.0);
+        self.fill(cv, (x, y, size, size), 9.0, self.accent, 1.0);
         let st = size * 0.10;
         let ins = size * 0.24;
         let len = size * 0.17;
@@ -2152,7 +2195,7 @@ impl Painter<'_> {
     fn line(&self, cv: &mut Canvas, x0: f64, y: f64, x1: f64) {
         let s = self.scale;
         for px in (x0 * s) as i32..(x1 * s) as i32 {
-            cv.blend(px, (y * s) as i32, 0xFFFFFF, 0.09);
+            cv.blend(px, (y * s) as i32, BORDER, 1.0);
         }
     }
 

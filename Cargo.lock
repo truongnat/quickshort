@@ -3192,6 +3192,7 @@ dependencies = [
  "qs-core",
  "qs-ocr",
  "qs-overlay",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
