@@ -3206,6 +3206,8 @@ name = "qs-capture"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-io",
+ "futures-lite",
  "image",
  "pipewire",
  "qs-core",

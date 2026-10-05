@@ -85,25 +85,35 @@ fn run_session(
 
     // The PipeWire node id is emitted per stream object as
     // PipeWireStreamAdded(u node_id), unicast to us, right after Start().
-    // Subscribe on each stream path before starting the session.
+    // Subscribe via the async half of this same connection — the blocking
+    // SignalIterator has no timeout and a mute compositor would hang the
+    // capture forever.
     let mut receivers = Vec::with_capacity(streams.len());
     for (_, spath) in &streams {
-        let sp = Proxy::new(
-            conn,
-            BUS,
-            spath.as_str(),
-            "org.gnome.Mutter.ScreenCast.Stream",
-        )?;
-        receivers.push(sp.receive_signal("PipeWireStreamAdded")?);
+        receivers.push(async_io::block_on(async {
+            let sp = zbus::Proxy::new(
+                conn.inner(),
+                BUS,
+                spath.as_str(),
+                "org.gnome.Mutter.ScreenCast.Stream",
+            )
+            .await?;
+            sp.receive_signal("PipeWireStreamAdded").await
+        })?);
     }
     sess.call::<_, _, ()>("Start", &())?;
 
     let mut nodes = Vec::with_capacity(streams.len());
-    for ((m, _), rx) in streams.iter().zip(receivers) {
-        let msg = rx
-            .into_iter()
-            .next()
-            .with_context(|| format!("no PipeWireStreamAdded for {}", m.connector))?;
+    for ((m, _), mut rx) in streams.iter().zip(receivers) {
+        use futures_lite::StreamExt;
+        let msg = async_io::block_on(futures_lite::future::or(
+            async move { rx.next().await },
+            async {
+                async_io::Timer::after(std::time::Duration::from_secs(10)).await;
+                None
+            },
+        ))
+        .with_context(|| format!("no PipeWireStreamAdded for {} (timeout)", m.connector))?;
         let (node,): (u32,) = msg.body().deserialize()?;
         nodes.push(node);
     }
@@ -138,8 +148,11 @@ fn grab_frames(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::RgbaI
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(pw::init);
 
+    // Mutter often doesn't push a frame to a first-time consumer until the
+    // watchdog kills the attempt; the retry's reconnect lands on the warm
+    // node and delivers immediately — so keep each attempt short and retry.
     let mut err = None;
-    for attempt in 1..=3u32 {
+    for attempt in 1..=5u32 {
         match grab_frames_once(nodes, expects) {
             Ok(v) => return Ok(v),
             Err(e) => {
@@ -357,7 +370,7 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
             ml.quit();
         }
     });
-    timer.update_timer(Some(Duration::from_secs(8)), None);
+    timer.update_timer(Some(Duration::from_secs(3)), None);
 
     mainloop.run();
     for (stream, _) in &keepalive {
@@ -517,6 +530,17 @@ mod tests {
                 f.pixels.width(),
                 f.pixels.height()
             );
+        }
+    }
+
+    // Dump each monitor's frame to /tmp/qs-dump-<i>.png — visual debugging.
+    #[test]
+    #[ignore]
+    fn dump_screen_png() {
+        for (i, f) in MutterCapture.capture_all().unwrap().iter().enumerate() {
+            let p = format!("/tmp/qs-dump-{i}.png");
+            f.pixels.save(&p).unwrap();
+            eprintln!("saved {p}");
         }
     }
 }
