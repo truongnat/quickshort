@@ -33,10 +33,13 @@ downloads.
 - **Self-hosted link sharing** — one click saves the PNG on your own
   machine and publishes it through `ssh -R` to
   [tunnl.gg](https://tunnl.gg), no backend storage, no account. The URL is
-  stable per app (tied to an app-owned SSH key) and stays live while the
-  app runs
-- **Native OCR** — Vision `VNRecognizeTextRequest` on macOS,
-  `Windows.Media.Ocr` on Windows; nothing ships in the binary
+  stable per app (tied to an app-owned SSH key), serves files statelessly
+  by name so concurrent shares share one tunnel, and stays live while
+  the app runs
+- **OCR with per-OS engines** — Vision `VNRecognizeTextRequest` on macOS,
+  `Windows.Media.Ocr` on Windows, Tesseract on Linux with script
+  auto-detection (`ocr_lang = "auto"`, OSD pass picks eng/jpn/vie/…);
+  nothing ships in the binary
 - **Resident tray app** — menu-bar icon, global hotkey, launch at login,
   recent captures, auto-update
 - **Settings window** — paged preferences (Capture, General, Shortcuts,
@@ -87,9 +90,13 @@ run. Bundles the tray dependencies (gtk plugin).
 sudo dpkg -i quickshort_amd64.deb
 ```
 
-Or from source — `./install.sh` builds release → `~/.local/bin` and
-registers a GNOME custom shortcut via `gsettings` (default `Ctrl+Alt+Q`).
-On non-GNOME desktops it installs the binary only — bind it yourself.
+Or from source — `./install.sh` installs missing system deps on
+Debian/Ubuntu (pipewire/spa/clang dev packages for the build, plus
+`tesseract-ocr` + language packs, `wl-clipboard`, `libnotify-bin` at
+runtime; extra OCR languages via `QS_OCR_LANGS`), builds release →
+`~/.local/bin` and registers a GNOME custom shortcut via `gsettings`
+(default `Ctrl+Alt+Q`). On non-GNOME desktops it installs the binary
+only — bind it yourself.
 
 ### Windows
 
@@ -131,6 +138,8 @@ auto_update = true
 recent_max = 8                 # entries in the tray menu
 accent = "blue"                # blue/purple/pink/orange/green/gray
 copy_after_save = false        # also put the PNG on the clipboard
+ocr_lang = "auto"              # Linux tesseract: "auto" detects the
+                               # script, or pin e.g. "eng+jpn"
 keep_days = 0                  # auto-delete captures older than N days
 key_save = "s"                 # overlay ⌘+key actions
 key_copy = "c"
@@ -176,8 +185,12 @@ internally), then reads shared-memory buffers from PipeWire, one connection
 multiplexing all monitor streams. KDE Plasma / wlroots need an
 xdg-desktop-portal fallback (not built yet).
 
-OCR on Linux has no native API; the plan is an opt-in `paddle-ocr-rs`
-backend behind a cargo feature — until then it fails loud.
+OCR on Linux runs the system `tesseract` binary: in `auto` mode an OSD
+pass detects the script and maps it to the installed language packs
+(missing packs fail loud with the exact `apt` package to install), and
+CJK output gets its artificial word spacing collapsed. Wayland capture
+pokes a 1x1 XWayland window mid-screen because mutter only produces
+frames on damage, and MemFd/DmaBuf buffers are mmap'ed directly.
 
 ## Development
 
