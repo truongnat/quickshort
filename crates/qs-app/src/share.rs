@@ -359,7 +359,7 @@ fn ensure_key(key: &Path) -> Result<()> {
 }
 
 fn spawn_ssh(key: &Path, port: u16) -> Result<Child> {
-    let mut child = Command::new("ssh")
+    let child = Command::new("ssh")
         // -tt: tunnl.gg needs the session channel + pty to print the URL
         // (ssh -N gets the connection killed). stdin stays piped-and-held
         // inside the Child — EOF on it would end the remote session and
