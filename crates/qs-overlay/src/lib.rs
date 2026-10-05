@@ -1439,7 +1439,9 @@ impl Session {
                     if sel.w >= MIN_SELECT && sel.h >= MIN_SELECT {
                         let mr = self.sel_monitor(sel);
                         self.sel = Some(sel);
-                        self.toolbar = Some(toolbar::Toolbar::new(sel, mr, false));
+                        let mut tb = toolbar::Toolbar::new(sel, mr, false);
+                        tb.accent = self.prefs.accent;
+                        self.toolbar = Some(tb);
                         self.dirty = true;
                     } else {
                         self.finish(None);

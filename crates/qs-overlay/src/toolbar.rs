@@ -86,7 +86,6 @@ const STROKE: f64 = 1.8; // icon stroke width, logical px
 
 const BG: u32 = 0x2C2C2E;
 const BG_HOVER: u32 = 0x48484D;
-const BG_ACTIVE: u32 = 0x0A84FF;
 const FG: u32 = 0xFFFFFF;
 const SHADOW: u32 = 0x000000;
 
@@ -108,6 +107,8 @@ pub struct Toolbar {
     /// whether Undo/Redo have something to pop (dims the buttons otherwise)
     pub can_undo: bool,
     pub has_redo: bool,
+    /// active-chip color — the configured accent
+    pub accent: u32,
 }
 
 impl Toolbar {
@@ -125,6 +126,7 @@ impl Toolbar {
             font_size: crate::annotate::TEXT_SIZE_DEFAULT as u8,
             can_undo: false,
             has_redo: false,
+            accent: crate::ACCENT,
         };
         tb.layout(sel, mr, opts);
         tb
@@ -276,6 +278,7 @@ impl Toolbar {
                 active,
                 enabled,
                 *item,
+                self.accent,
             );
         }
     }
@@ -291,13 +294,14 @@ fn paint_button(
     active: bool,
     enabled: bool,
     item: Item,
+    accent: u32,
 ) {
     let scale = cv.scale;
     // bbox covers button + soft shadow falloff
     let pad = (STROKE * scale).ceil() as i32 + (4.0 * scale).ceil() as i32 + 2;
     let r = rad.ceil() as i32 + pad;
     let bg = if active {
-        BG_ACTIVE
+        accent
     } else if hovered {
         BG_HOVER
     } else {
@@ -445,24 +449,22 @@ fn draw_icon(
             }
         }
         Item::Undo | Item::Redo => {
-            // ↩/↪ arc swept through the top + arrowhead; mirrored for redo
+            // ↩/↪ hook: chevron tip + shaft + U-turn arc returning left,
+            // mirrored for redo
             let m = if item == Item::Undo { 1.0 } else { -1.0 };
-            let (ccx, ccy, rr) = (-0.6 * m, 0.9, 4.1);
-            let mut d = f64::INFINITY;
-            let mut prev = (
-                ccx + m * rr * 185f64.to_radians().cos(),
-                ccy + rr * 185f64.to_radians().sin(),
-            );
-            for i in 1..=9 {
-                let t = (185.0 + 170.0 * i as f64 / 9.0).to_radians();
-                let p = (ccx + m * rr * t.cos(), ccy + rr * t.sin());
+            let tip = (-4.6 * m, -0.6);
+            let mut d = seg_sdf(lx, ly, tip.0, tip.1, tip.0 + 3.0 * m, tip.1 - 3.0)
+                .min(seg_sdf(lx, ly, tip.0, tip.1, tip.0 + 3.0 * m, tip.1 + 3.0))
+                .min(seg_sdf(lx, ly, tip.0, tip.1, 1.8 * m, tip.1));
+            let (ccx, ccy, rr) = (1.8, 2.6, 3.2);
+            let mut prev = (m * ccx, ccy - rr);
+            for i in 1..=12 {
+                let a = (-90.0 + 180.0 * i as f64 / 12.0).to_radians();
+                let p = (m * (ccx + rr * a.cos()), ccy + rr * a.sin());
                 d = d.min(seg_sdf(lx, ly, prev.0, prev.1, p.0, p.1));
                 prev = p;
             }
-            let tip = (-4.4 * m, -0.1);
-            d = d
-                .min(seg_sdf(lx, ly, tip.0, tip.1, tip.0 + 3.1 * m, tip.1 - 1.0))
-                .min(seg_sdf(lx, ly, tip.0, tip.1, tip.0 + 2.5 * m, tip.1 + 2.5));
+            d = d.min(seg_sdf(lx, ly, prev.0, prev.1, prev.0 - 2.0 * m, prev.1));
             let a = stroke(d, STROKE) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
