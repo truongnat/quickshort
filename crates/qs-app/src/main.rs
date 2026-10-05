@@ -79,9 +79,36 @@ fn main() -> Result<()> {
     run_one_shot(args)
 }
 
+/// flock-held for the whole capture: dropped (released) when the process
+/// exits, even on SIGKILL.
+#[cfg(target_os = "linux")]
+fn capture_lock() -> Result<Option<std::fs::File>> {
+    use std::os::unix::io::AsRawFd;
+    let dir = dirs::runtime_dir()
+        .or_else(dirs::cache_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("quickshort");
+    std::fs::create_dir_all(&dir)?;
+    let f = std::fs::File::create(dir.join("capture.lock"))?;
+    // flock fails EWOULDBLOCK iff another quickshort holds it
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        eprintln!("a capture is already in progress");
+        return Ok(None);
+    }
+    Ok(Some(f))
+}
+
 /// One-shot pipeline: capture all monitors to RAM -> overlay selection ->
 /// worker-thread stitch -> action.
 fn run_one_shot(args: Args) -> Result<()> {
+    // one capture at a time — a second --capture while an overlay is up
+    // exits quietly instead of stacking another fullscreen layer
+    #[cfg(target_os = "linux")]
+    let _lock = match capture_lock() {
+        Ok(Some(l)) => l,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(e),
+    };
     if args.delay_secs > 0.0 {
         std::thread::sleep(std::time::Duration::from_secs_f64(args.delay_secs));
     }
@@ -107,6 +134,12 @@ fn run_one_shot(args: Args) -> Result<()> {
         eprintln!("cancelled");
         return Ok(());
     };
+
+    // selection done — release before dispatch: the Copy action may keep
+    // this process alive serving the clipboard, and that must not block
+    // the next hotkey press
+    #[cfg(target_os = "linux")]
+    drop(_lock);
 
     let target = match args.out {
         Some(p) => SaveTarget::File(p),
