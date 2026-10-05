@@ -152,7 +152,9 @@ fn run_one_shot(args: Args) -> Result<()> {
         &annots,
         &target,
         true,
-        None,
+        // a ShareManager is cheap until share() spawns its server/tunnel;
+        // the clipboard wait below keeps this process alive serving both
+        Some(share::ShareManager::new()),
         cfg.copy_after_save,
         &cfg.ocr_lang,
     )?;

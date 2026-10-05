@@ -115,6 +115,7 @@ fn run_session(
         ))
         .with_context(|| format!("no PipeWireStreamAdded for {} (timeout)", m.connector))?;
         let (node,): (u32,) = msg.body().deserialize()?;
+        eprintln!("PipeWireStreamAdded: {} -> node {node}", m.connector);
         nodes.push(node);
     }
 
@@ -196,7 +197,9 @@ impl DamagePoke {
                 let _ = conn.flush();
                 Ok(())
             };
-            let _ = run();
+            if let Err(e) = run() {
+                eprintln!("damage poke died: {e}");
+            }
         });
         Self {
             stop,
@@ -221,6 +224,14 @@ struct ChanState {
     size: (u32, u32),
     frame: Option<Vec<u8>>,
     err: Option<String>,
+    /// how many times process() ran / how many buffers were rejected —
+    /// distinguishes "mutter never sent anything" from "frames arrived
+    /// but were unusable" in the journal
+    procs: u32,
+    rejects: u32,
+    /// last stream state — "Streaming" + 0 procs means mutter isn't
+    /// producing (damage), "Connecting" means the node never came up
+    state: &'static str,
 }
 
 /// One frame per PipeWire node, in-process via the `pipewire` crate.
@@ -238,6 +249,7 @@ fn grab_frames(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::RgbaI
         match grab_frames_once(nodes, expects) {
             Ok(v) => return Ok(v),
             Err(e) => {
+                eprintln!("pw grab attempt {attempt}/5 failed: {e}");
                 err = Some(e);
                 std::thread::sleep(std::time::Duration::from_millis(150 * attempt as u64));
             }
@@ -266,6 +278,39 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
     let context = pw::context::Context::new(&mainloop).context("pw context")?;
     let core = context.connect(None).context("pw connect")?;
 
+    // PipeWireStreamAdded reports the node id mutter will create, but our
+    // registry only learns about it asynchronously — connect() on a
+    // not-yet-visible target leaves the stream parked in `unconnected`
+    // forever. Warm the registry first: globals are enumerated on the
+    // first run, so quit as soon as every wanted node has been seen.
+    {
+        let registry = core.get_registry().context("pw registry")?;
+        let pending = Rc::new(RefCell::new(
+            nodes.iter().copied().collect::<std::collections::HashSet<u32>>(),
+        ));
+        let weak = mainloop.downgrade();
+        let _warm_listener = registry
+            .add_listener_local()
+            .global(move |g| {
+                if !pending.borrow_mut().remove(&g.id) || !pending.borrow().is_empty() {
+                    return;
+                }
+                if let Some(ml) = weak.upgrade() {
+                    ml.quit();
+                }
+            })
+            .register();
+        let weak = mainloop.downgrade();
+        let warm = mainloop.loop_().add_timer(move |_| {
+            if let Some(ml) = weak.upgrade() {
+                ml.quit();
+            }
+        });
+        warm.update_timer(Some(Duration::from_secs(2)), None);
+        mainloop.run();
+        drop(warm);
+    }
+
     let remaining = Rc::new(Cell::new(nodes.len()));
     let mut chans = Vec::with_capacity(nodes.len());
     let mut keepalive = Vec::new();
@@ -287,6 +332,9 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
             size: expect,
             frame: None,
             err: None,
+            procs: 0,
+            rejects: 0,
+            state: "none",
         }));
 
         let listener = stream
@@ -295,12 +343,19 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                 let weak = mainloop.downgrade();
                 let st = st.clone();
                 move |_, _, _, new| {
-                    if let pw::stream::StreamState::Error(e) = new {
-                        st.borrow_mut().err = Some(e.to_string());
-                        if let Some(ml) = weak.upgrade() {
-                            ml.quit();
+                    st.borrow_mut().state = match new {
+                        pw::stream::StreamState::Error(e) => {
+                            st.borrow_mut().err = Some(e.to_string());
+                            if let Some(ml) = weak.upgrade() {
+                                ml.quit();
+                            }
+                            "error"
                         }
-                    }
+                        pw::stream::StreamState::Streaming => "streaming",
+                        pw::stream::StreamState::Paused => "paused",
+                        pw::stream::StreamState::Connecting => "connecting",
+                        pw::stream::StreamState::Unconnected => "unconnected",
+                    };
                 }
             })
             .param_changed({
@@ -330,6 +385,7 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                 let remaining = remaining.clone();
                 let st = st.clone();
                 move |stream, _| {
+                    st.borrow_mut().procs += 1;
                     if st.borrow().frame.is_some() {
                         return;
                     }
@@ -405,6 +461,9 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                         }
                     }
                     drop(buf); // Buffer::drop returns it to the stream
+                    if !got {
+                        st.borrow_mut().rejects += 1;
+                    }
                     if got {
                         let left = remaining.get().saturating_sub(1);
                         remaining.set(left);
@@ -527,7 +586,13 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
         let mut px = match (&st.frame, &st.err) {
             (Some(px), _) => px.clone(),
             (None, Some(e)) => bail!("pw stream error: {e}"),
-            (None, None) => bail!("no frame received from PipeWire node (timeout)"),
+            (None, None) => {
+                eprintln!(
+                    "pw node starved: state={} {} process() calls, {} rejected buffers",
+                    st.state, st.procs, st.rejects
+                );
+                bail!("no frame received from PipeWire node (timeout)");
+            }
         };
         let mut fmt = st.format;
         if fmt == VideoFormat::Unknown && px.len() == (w * h * 4) as usize {
