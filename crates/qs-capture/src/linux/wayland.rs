@@ -154,13 +154,13 @@ fn run_session(
 /// visible scene change — a corner poke can end up occluded under the
 /// GNOME top bar and produce no damage at all. Optional: if XWayland is
 /// absent we just rely on the watchdog/retry path.
-struct DamagePoke {
+pub(super) struct DamagePoke {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DamagePoke {
-    fn start(origins: Vec<(i32, i32)>) -> Self {
+    pub(super) fn start(origins: Vec<(i32, i32)>) -> Self {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop2 = stop.clone();
         let handle = std::thread::spawn(move || {
@@ -253,7 +253,7 @@ struct ChanState {
 /// One frame per PipeWire node, in-process via the `pipewire` crate.
 /// Nodes are announced by mutter's PipeWireStreamAdded signal but may lag a
 /// beat before they exist in the registry — retry the whole batch a few times.
-fn grab_frames(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::RgbaImage>> {
+pub(super) fn grab_frames(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::RgbaImage>> {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(pw::init);
 
@@ -717,7 +717,7 @@ fn display_config(conn: &Connection) -> Result<Vec<Mon>> {
     Ok(out)
 }
 
-fn mk_frame(img: image::RgbaImage, logical: Rect) -> CapturedFrame {
+pub(super) fn mk_frame(img: image::RgbaImage, logical: Rect) -> CapturedFrame {
     let scale = if logical.w > 0 {
         img.width() as f64 / logical.w as f64
     } else {

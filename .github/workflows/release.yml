@@ -122,7 +122,7 @@ jobs:
       - name: checksums
         run: |
           cd dist
-          sha256sum Quickshort-Linux.AppImage quickshort_amd64.deb \
+          sha256sum Quickshort-Linux.AppImage* quickshort_amd64.deb \
             > linux.sha256 2>/dev/null || sha256sum quickshort_amd64.deb > linux.sha256
 
       - uses: actions/upload-artifact@v4

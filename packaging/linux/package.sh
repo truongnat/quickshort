@@ -60,8 +60,12 @@ cp docs/assets/icon.png "$APPDIR/quickshort.png"
 export APPIMAGE_EXTRACT_AND_RUN=1
 export LDAI_OUTPUT="$DIST/Quickshort-Linux.AppImage"
 export OUTPUT="$DIST/Quickshort-Linux.AppImage"
+# embed gh-releases-zsync update info — AppImageUpdate can then self-update
+# from GitHub Releases (the .zsync it generates lands in dist/ alongside)
+export UPDATE_INFORMATION="gh-releases-zsync|truongnat|quickshort|latest|Quickshort-Linux.AppImage.zsync"
 "$TOOLS/linuxdeploy.AppImage" \
-  --appdir "$APPDIR" --plugin gtk --output appimage 2>/dev/null || {
+  --appdir "$APPDIR" --plugin gtk -u "$UPDATE_INFORMATION" \
+  --output appimage 2>/dev/null || {
     echo "linuxdeploy failed; shipping .deb only"
 }
 ls -lh "$DIST"/* 2>/dev/null || true

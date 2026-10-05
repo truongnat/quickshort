@@ -69,6 +69,10 @@ struct Host {
     overlay: Option<Overlay>,
     /// Frames captured for the active overlay session — kept for stitching.
     frames: Option<Vec<qs_core::CapturedFrame>>,
+    /// Linux: gtk pins the tray to its own thread — the handle is a channel
+    #[cfg(target_os = "linux")]
+    tray: Option<tray::TrayHandle>,
+    #[cfg(not(target_os = "linux"))]
     tray: Option<tray_icon::TrayIcon>,
     hotkeys: Option<GlobalHotKeyManager>,
     hotkey: Option<HotKey>,
@@ -101,13 +105,18 @@ impl Host {
     }
 
     fn rebuild_menu(&self) {
+        let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
+        let update = self.pending_update.as_ref().map(|r| r.version.clone());
+        #[cfg(target_os = "linux")]
         if let Some(t) = &self.tray {
-            let recents =
-                actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
+            t.set_menu(self.cfg.clone(), recents, update);
+        }
+        #[cfg(not(target_os = "linux"))]
+        if let Some(t) = &self.tray {
             t.set_menu(Some(Box::new(tray::build_menu(
                 &self.cfg,
                 &recents,
-                self.pending_update.as_ref().map(|r| r.version.as_str()),
+                update.as_deref(),
             ))));
         }
     }
@@ -329,27 +338,35 @@ impl ApplicationHandler<HostEvent> for Host {
 
         #[cfg(target_os = "linux")]
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            // GNOME Wayland: tray needs the AppIndicator extension, and
-            // global-hotkey's X11 grabs never reach us. The supported path
-            // is a GNOME custom shortcut running `quickshort --capture`.
+            // the tray works through the AppIndicator extension, but
+            // global-hotkey's X11 grabs never reach Wayland — the supported
+            // path is a GNOME custom shortcut running `quickshort --capture`
             eprintln!(
-                "note: on Wayland, tray/hotkey may not work — bind \
-                 `quickshort --capture` in Settings > Keyboard instead"
+                "note: on Wayland the global hotkey won't fire — bind \
+                 `quickshort --capture` in Settings > Keyboard"
             );
         }
 
         let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
-        let builder = tray_icon::TrayIcon::builder()
-            .with_tooltip("Quickshort — region screenshot")
-            .with_menu(Box::new(tray::build_menu(&self.cfg, &recents, None)));
-        // template icon = auto dark/light menu-bar tinting (macOS only)
-        #[cfg(target_os = "macos")]
-        let builder = builder.with_icon_templated(tray::tray_icon(44));
-        #[cfg(not(target_os = "macos"))]
-        let builder = builder.with_icon(tray::tray_icon(44));
-        match builder.build() {
+        #[cfg(target_os = "linux")]
+        match tray::linux_tray::spawn(&self.cfg, &recents) {
             Ok(t) => self.tray = Some(t),
             Err(e) => eprintln!("tray icon failed: {e:#}"),
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let builder = tray_icon::TrayIcon::builder()
+                .with_tooltip("Quickshort — region screenshot")
+                .with_menu(Box::new(tray::build_menu(&self.cfg, &recents, None)));
+            // template icon = auto dark/light menu-bar tinting (macOS only)
+            #[cfg(target_os = "macos")]
+            let builder = builder.with_icon_templated(tray::tray_icon(44));
+            #[cfg(not(target_os = "macos"))]
+            let builder = builder.with_icon(tray::tray_icon(44));
+            match builder.build() {
+                Ok(t) => self.tray = Some(t),
+                Err(e) => eprintln!("tray icon failed: {e:#}"),
+            }
         }
 
         match self.cfg.hotkey.parse::<HotKey>() {

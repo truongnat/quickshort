@@ -124,6 +124,130 @@ pub fn tray_icon(size: u32) -> Icon {
     Icon::from_rgba(rgba, size, size).expect("tray icon rgba")
 }
 
+// ---------- Linux: the tray lives on a dedicated gtk thread ----------
+//
+// tray-icon/muda call gtk, which is single-threaded but not bound to
+// "the" main thread — so a dedicated thread runs gtk::init() +
+// gtk::main() and owns the TrayIcon, while the winit thread talks to it
+// through a channel. `MainContext::invoke` wakes gtk::main() exactly
+// when a message arrives, so no polling is needed.
+#[cfg(target_os = "linux")]
+pub mod linux_tray {
+    use super::*;
+    use gtk::glib;
+    use std::cell::RefCell;
+    use std::sync::{mpsc, OnceLock};
+
+    pub enum TrayMsg {
+        Menu {
+            cfg: Config,
+            recents: Vec<PathBuf>,
+            update: Option<String>,
+        },
+        Quit,
+    }
+
+    thread_local! {
+        static TRAY: RefCell<Option<tray_icon::TrayIcon>> = const { RefCell::new(None) };
+        static RX: RefCell<Option<mpsc::Receiver<TrayMsg>>> = const { RefCell::new(None) };
+    }
+    static CTX: OnceLock<glib::MainContext> = OnceLock::new();
+
+    /// Handle held by the host thread — the TrayIcon itself is pinned
+    /// inside the tray thread's thread-local.
+    pub struct TrayHandle {
+        tx: mpsc::Sender<TrayMsg>,
+    }
+
+    pub fn spawn(cfg: &Config, recents: &[PathBuf]) -> Result<TrayHandle> {
+        let (tx, rx) = mpsc::channel::<TrayMsg>();
+        let (init_tx, init_rx) = mpsc::channel::<Result<()>>();
+        let (cfg, recents) = (cfg.clone(), recents.to_vec());
+        std::thread::spawn(move || {
+            if let Err(e) = gtk::init() {
+                let _ = init_tx.send(Err(anyhow::anyhow!("gtk::init: {e}")));
+                return;
+            }
+            let built = tray_icon::TrayIcon::builder()
+                .with_tooltip("Quickshort — region screenshot")
+                .with_menu(Box::new(build_menu(&cfg, &recents, None)))
+                .with_icon(tray_icon(44))
+                .build();
+            match built {
+                Ok(t) => TRAY.with(|s| *s.borrow_mut() = Some(t)),
+                Err(e) => {
+                    let _ = init_tx.send(Err(anyhow::anyhow!("tray icon: {e}")));
+                    return;
+                }
+            }
+            RX.with(|s| *s.borrow_mut() = Some(rx));
+            // gtk::main iterates the default context — publish it so other
+            // threads can wake the loop via invoke()
+            let _ = CTX.set(glib::MainContext::default());
+            let _ = init_tx.send(Ok(()));
+            gtk::main();
+        });
+        init_rx.recv().context("tray thread died")??;
+        Ok(TrayHandle { tx })
+    }
+
+    /// Runs on the tray thread via MainContext::invoke.
+    fn drain() {
+        RX.with(|rx| {
+            let rx = rx.borrow();
+            let Some(rx) = rx.as_ref() else { return };
+            while let Ok(m) = rx.try_recv() {
+                match m {
+                    TrayMsg::Menu {
+                        cfg,
+                        recents,
+                        update,
+                    } => TRAY.with(|t| {
+                        if let Some(t) = t.borrow().as_ref() {
+                            t.set_menu(Some(Box::new(build_menu(
+                                &cfg,
+                                &recents,
+                                update.as_deref(),
+                            ))));
+                        }
+                    }),
+                    TrayMsg::Quit => {
+                        TRAY.with(|t| *t.borrow_mut() = None);
+                        gtk::main_quit();
+                    }
+                }
+            }
+        });
+    }
+
+    fn wake() {
+        if let Some(ctx) = CTX.get() {
+            ctx.invoke(drain);
+        }
+    }
+
+    impl TrayHandle {
+        pub fn set_menu(&self, cfg: Config, recents: Vec<PathBuf>, update: Option<String>) {
+            let _ = self.tx.send(TrayMsg::Menu {
+                cfg,
+                recents,
+                update,
+            });
+            wake();
+        }
+    }
+
+    impl Drop for TrayHandle {
+        fn drop(&mut self) {
+            let _ = self.tx.send(TrayMsg::Quit);
+            wake();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux_tray::TrayHandle;
+
 /// Toggle "launch at login" for the current executable.
 pub fn set_launch_at_login(enable: bool) -> Result<()> {
     let exe = std::env::current_exe().context("current_exe")?;

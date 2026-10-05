@@ -177,13 +177,16 @@ Capture backends:
 | macOS 14+ | `SCScreenshotManager` per-display one-shot at framebuffer pixels |
 | Windows | GDI BitBlt per monitor, `PER_MONITOR_AWARE_V2` |
 | GNOME Wayland | `org.gnome.Mutter.ScreenCast` → PipeWire shm frames, in-process |
+| Other Wayland (KDE, wlroots) | `org.freedesktop.portal.ScreenCast` → PipeWire |
 | X11 | RandR layout + `GetImage` |
 
-On Wayland there is no portal dialog and no subprocess — the backend talks
-to mutter's private ScreenCast API (the same one the GNOME portal uses
-internally), then reads shared-memory buffers from PipeWire, one connection
-multiplexing all monitor streams. KDE Plasma / wlroots need an
-xdg-desktop-portal fallback (not built yet).
+On GNOME Wayland there is no portal dialog and no subprocess — the backend
+talks to mutter's private ScreenCast API (the same one the GNOME portal
+uses internally), then reads shared-memory buffers from PipeWire, one
+connection multiplexing all monitor streams. Other compositors go through
+`xdg-desktop-portal`: the compositor shows a consent dialog once, and on
+portals supporting `persist_mode` (KDE 5.24+) a stored restore token makes
+later captures dialog-free. `QS_CAPTURE=portal|mutter|x11` forces a backend.
 
 OCR on Linux runs the system `tesseract` binary: in `auto` mode an OSD
 pass detects the script and maps it to the installed language packs
@@ -221,6 +224,9 @@ Free and open source, built in spare time. If Quickshort saves you time:
 - Mutter inhibits screencast while the screen is locked
 - Wayland needs one overlay window per monitor (no global window
   positioning); pointer grab carries the selection across monitors
+- Wayland has no global hotkey API — run the resident app for the tray
+  (needs an AppIndicator extension on GNOME) and bind
+  `quickshort --capture` as a desktop custom shortcut
 - Unsigned macOS builds: first launch needs one right-click → Open; the
   self-signed identity keeps TCC grants across updates but is not a
   Developer ID
