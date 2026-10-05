@@ -16,6 +16,35 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# --- system deps (Debian/Ubuntu) ----------------------------------------
+# build:  pkg-config libpipewire-0.3-dev libspa-0.2-dev clang libdbus-1-dev
+# run:    pipewire x11-utils tesseract-ocr wl-clipboard libnotify-bin
+# ocr:    tesseract-ocr-<lang> for each in QS_OCR_LANGS
+if command -v apt-get >/dev/null 2>&1; then
+    PKGS=()
+    need() { command -v "$1" >/dev/null 2>&1 || PKGS+=("$2"); }
+    pc()   { pkg-config --exists "$1" 2>/dev/null || PKGS+=("$2"); }
+    if [ "$SKIP_BUILD" = 0 ]; then
+        pc libpipewire-0.3 libpipewire-0.3-dev
+        pc libspa-0.2 libspa-0.2-dev
+        need clang clang
+        pc dbus-1 libdbus-1-dev
+        need pkg-config pkg-config
+    fi
+    need tesseract tesseract-ocr
+    need wl-copy wl-clipboard
+    need notify-send libnotify-bin
+    for l in ${QS_OCR_LANGS:-eng jpn vie}; do
+        tesseract --list-langs 2>/dev/null | grep -qx "$l" || PKGS+=("tesseract-ocr-$l")
+    done
+    if [ ${#PKGS[@]} -gt 0 ]; then
+        echo "installing: ${PKGS[*]}"
+        sudo apt-get update -qq && sudo apt-get install -y "${PKGS[@]}"
+    fi
+else
+    echo "note: ensure pipewire dev headers, tesseract-ocr, wl-clipboard, libnotify are installed" >&2
+fi
+
 if [ "$SKIP_BUILD" = 0 ]; then
     cargo build --release -p qs-app
 fi
