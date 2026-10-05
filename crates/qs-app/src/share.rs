@@ -242,7 +242,7 @@ fn ensure_key(key: &Path) -> Result<()> {
 }
 
 fn spawn_ssh(key: &Path, port: u16) -> Result<Child> {
-    Command::new("ssh")
+    let mut child = Command::new("ssh")
         // -tt: tunnl.gg needs the session channel + pty to print the URL
         // (ssh -N gets the connection killed). stdin stays piped-and-held
         // inside the Child — EOF on it would end the remote session and
@@ -272,7 +272,15 @@ fn spawn_ssh(key: &Path, port: u16) -> Result<Child> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .context("spawn ssh tunnel")
+        .context("spawn ssh tunnel")?;
+
+    // the remote PTY waits for one line before printing the URL banner —
+    // an open-but-idle stdin stalls the tunnel forever
+    if let Some(s) = child.stdin.as_mut() {
+        let _ = s.write_all(b"\n");
+        let _ = s.flush();
+    }
+    Ok(child)
 }
 
 /// First `https://…tunnl.gg` run in a line — the banner prints it next
