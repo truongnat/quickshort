@@ -49,7 +49,7 @@ if path not in lst:
 EOF
 
 gsettings set "$BIND_SCHEMA:$BIND_PATH" name    "quickshort"
-gsettings set "$BIND_SCHEMA:$BIND_PATH" command "$BIN"
+gsettings set "$BIND_SCHEMA:$BIND_PATH" command "$BIN --capture"
 gsettings set "$BIND_SCHEMA:$BIND_PATH" binding "$HOTKEY"
 
 echo "hotkey $HOTKEY -> quickshort (takes effect immediately)"

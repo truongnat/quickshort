@@ -1,6 +1,8 @@
 use anyhow::Result;
 use image::RgbaImage;
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
@@ -17,7 +19,11 @@ pub fn extract_text(img: &RgbaImage) -> Result<String> {
     {
         windows::extract(img)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::extract(img)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = img;
         anyhow::bail!("ocr not implemented for this platform")

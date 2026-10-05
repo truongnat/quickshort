@@ -1,5 +1,7 @@
 /target
 quickshort-*.png
+*.deb
+*.rpm
 quickshort.app/
 Quickshort.app/
 dist/

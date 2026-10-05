@@ -327,6 +327,17 @@ impl ApplicationHandler<HostEvent> for Host {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            // GNOME Wayland: tray needs the AppIndicator extension, and
+            // global-hotkey's X11 grabs never reach us. The supported path
+            // is a GNOME custom shortcut running `quickshort --capture`.
+            eprintln!(
+                "note: on Wayland, tray/hotkey may not work — bind \
+                 `quickshort --capture` in Settings > Keyboard instead"
+            );
+        }
+
         let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
         let builder = tray_icon::TrayIcon::builder()
             .with_tooltip("Quickshort — region screenshot")
