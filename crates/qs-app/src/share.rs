@@ -51,6 +51,8 @@ pub struct ShareManager {
     child_pid: AtomicU32,
     monitor_started: AtomicBool,
     keepalive_started: AtomicBool,
+    /// this process spawned the monitor — it must stay alive to serve
+    owns_tunnel: AtomicBool,
     /// ed25519 key = the stable URL's identity
     key: PathBuf,
 }
@@ -68,6 +70,7 @@ impl ShareManager {
             child_pid: AtomicU32::new(0),
             monitor_started: AtomicBool::new(false),
             keepalive_started: AtomicBool::new(false),
+            owns_tunnel: AtomicBool::new(false),
             key,
         })
     }
@@ -87,10 +90,24 @@ impl ShareManager {
                 dirs.push(d.to_path_buf());
             }
         }
+        // another quickshort process already owns a live tunnel — serving
+        // is stateless so it can serve our file; spawning a second tunnel
+        // under the same subdomain just fights it for the request stream
+        if let Some(base) = live_sibling_base(&self.key) {
+            return Ok(format!("{base}/s/{name}"));
+        }
         self.ensure_server()?;
         self.ensure_tunnel()?;
         let base = self.wait_base()?;
+        self.owns_tunnel.store(true, Ordering::SeqCst);
+        publish_base(&self.key, &base);
         Ok(format!("{base}/s/{name}"))
+    }
+
+    /// whether this process must stay alive for shared links to work —
+    /// a share that reused a sibling's tunnel can exit immediately
+    pub fn owns_tunnel(&self) -> bool {
+        self.owns_tunnel.load(Ordering::SeqCst)
     }
 
     fn ensure_server(&self) -> Result<u16> {
@@ -142,16 +159,21 @@ impl ShareManager {
     /// same subdomain.
     fn monitor(self: &Arc<Self>) {
         let port = self.state.0.lock().unwrap().port.unwrap_or(0);
+        // fast-failing respawns (TCP reset, ExitOnForwardFailure) would
+        // hammer tunnl.gg into rate-limiting us — back off exponentially
+        let mut backoff = Duration::from_secs(2);
         while !self.stop.load(Ordering::SeqCst) {
             let mut child = match spawn_ssh(&self.key, port) {
                 Ok(c) => c,
                 Err(e) => {
                     self.state.0.lock().unwrap().last_err = Some(e.to_string());
-                    std::thread::sleep(Duration::from_secs(5));
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(Duration::from_secs(120));
                     continue;
                 }
             };
             self.child_pid.store(child.id(), Ordering::SeqCst);
+            let spawned_at = std::time::Instant::now();
             // the remote PTY waits for a line before printing the URL
             // banner, but can tcflush an early byte — kick every 500ms
             // until the URL arrives (kicker stops on `stop`, stdin stays
@@ -187,9 +209,15 @@ impl ShareManager {
             }
             let _ = child.wait();
             self.child_pid.store(0, Ordering::SeqCst);
+            // a child that lived long means the tunnel was healthy —
+            // the next drop is a fresh problem, not a hammer loop
+            if spawned_at.elapsed() > Duration::from_secs(60) {
+                backoff = Duration::from_secs(2);
+            }
             // the URL is gone until the next spawn prints it again
             self.state.0.lock().unwrap().base = None;
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(Duration::from_secs(120));
         }
     }
 
@@ -237,9 +265,65 @@ impl ShareManager {
     }
 }
 
+/// `share.pid`/`share.url` next to the key — the tunnel owner publishes
+/// its pid + base URL so later one-shot shares reuse it instead of
+/// opening competing tunnels on the same subdomain.
+fn share_sidecar(key: &Path) -> (PathBuf, PathBuf) {
+    let d = key.parent().unwrap_or_else(|| Path::new("."));
+    (d.join("share.pid"), d.join("share.url"))
+}
+
+fn publish_base(key: &Path, base: &str) {
+    let (pidf, urlf) = share_sidecar(key);
+    let _ = std::fs::write(pidf, std::process::id().to_string());
+    let _ = std::fs::write(urlf, base);
+}
+
+/// Base URL of a live tunnel owned by another quickshort process.
+fn live_sibling_base(key: &Path) -> Option<String> {
+    let (pidf, urlf) = share_sidecar(key);
+    let pid: u32 = std::fs::read_to_string(pidf).ok()?.trim().parse().ok()?;
+    if pid == std::process::id() || !pid_alive(pid) {
+        return None;
+    }
+    let base = std::fs::read_to_string(urlf).ok()?;
+    let base = base.trim();
+    base.starts_with("https://").then(|| base.to_owned())
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // /proc/comm is the cheapest "is it really quickshort" check —
+    // a reused pid of an unrelated process must not count
+    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        return comm.trim() == "quickshort";
+    }
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn pid_alive(_pid: u32) -> bool {
+    // no cheap name check — conservatively always take the tunnel path
+    false
+}
+
 impl Drop for ShareManager {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if self.owns_tunnel.load(Ordering::SeqCst) {
+            let (pidf, _urlf) = share_sidecar(&self.key);
+            if std::fs::read_to_string(&pidf)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                == Some(std::process::id())
+            {
+                let _ = std::fs::remove_file(pidf);
+            }
+        }
         let pid = self.child_pid.load(Ordering::SeqCst);
         if pid != 0 {
             #[cfg(target_os = "windows")]

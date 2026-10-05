@@ -160,6 +160,8 @@ fn run_one_shot(args: Args) -> Result<()> {
         Some(p) => SaveTarget::File(p),
         None => SaveTarget::Dir(cfg.save_dir()),
     };
+    // a ShareManager is cheap until share() spawns its server/tunnel
+    let sm = share::ShareManager::new();
     let outcome = actions::dispatch(
         frames,
         sel,
@@ -167,8 +169,7 @@ fn run_one_shot(args: Args) -> Result<()> {
         &annots,
         &target,
         true,
-        // a ShareManager is cheap until share() spawns its server/tunnel
-        Some(share::ShareManager::new()),
+        Some(sm.clone()),
         cfg.copy_after_save,
         &cfg.ocr_lang,
     );
@@ -180,11 +181,14 @@ fn run_one_shot(args: Args) -> Result<()> {
     }
     let outcome = outcome?;
     // the share link only lives while the tunnel does — park so this
-    // one-shot process keeps serving it (pkill quickshort to stop)
+    // one-shot process keeps serving it (pkill quickshort to stop).
+    // a share that reused a sibling's tunnel needs nothing from us.
     if let actions::Outcome::Shared(url) = &outcome {
-        eprintln!("sharing {url} — stays up while this process runs");
-        loop {
-            std::thread::park();
+        if sm.owns_tunnel() {
+            eprintln!("sharing {url} — stays up while this process runs");
+            loop {
+                std::thread::park();
+            }
         }
     }
     Ok(())
