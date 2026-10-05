@@ -3210,6 +3210,7 @@ dependencies = [
  "async-io",
  "futures-lite",
  "image",
+ "libc",
  "pipewire",
  "qs-core",
  "screencapturekit",

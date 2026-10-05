@@ -120,16 +120,98 @@ fn run_session(
 
     // Grab all monitor frames on ONE PipeWire connection + mainloop —
     // streams multiplex naturally, frames arrive concurrently.
+    let _poke = DamagePoke::start(
+        streams
+            .iter()
+            .map(|(m, _)| (m.logical.x as i16, m.logical.y as i16))
+            .collect(),
+    );
     let imgs = grab_frames(
         &nodes,
         &streams.iter().map(|(m, _)| m.phys).collect::<Vec<_>>(),
-    )?;
+    );
+    let imgs = imgs?;
 
     let mut frames = Vec::with_capacity(streams.len());
     for ((m, _), img) in streams.iter().zip(imgs) {
         frames.push(mk_frame(img, m.logical));
     }
     Ok(frames)
+}
+
+/// Mutter's screencast only emits a frame when that output has damage;
+/// an idle desktop starves a fresh consumer indefinitely (cursor moves
+/// live on a separate plane and don't count). A 1x1 override-redirect
+/// XWayland window toggled map/unmap at each monitor's origin is a real
+/// scene change — tiny, invisible, and damages every output. Optional:
+/// if XWayland is absent we just rely on the watchdog/retry path.
+struct DamagePoke {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DamagePoke {
+    fn start(origins: Vec<(i16, i16)>) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let handle = std::thread::spawn(move || {
+            use x11rb::connection::Connection as XConn;
+            use x11rb::protocol::xproto::{ConnectionExt, CreateWindowAux, WindowClass};
+            let run = || -> Result<()> {
+                let (conn, sn) = x11rb::connect(None)?;
+                let root = conn.setup().roots[sn].root;
+                let mut wins = Vec::with_capacity(origins.len());
+                for (x, y) in origins {
+                    let w = conn.generate_id()?;
+                    conn.create_window(
+                        x11rb::COPY_DEPTH_FROM_PARENT,
+                        w,
+                        root,
+                        x,
+                        y,
+                        1,
+                        1,
+                        0,
+                        WindowClass::INPUT_OUTPUT,
+                        0,
+                        &CreateWindowAux::new().override_redirect(1),
+                    )?;
+                    wins.push(w);
+                }
+                while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                    for &w in &wins {
+                        let _ = conn.map_window(w);
+                    }
+                    let _ = conn.flush();
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                    for &w in &wins {
+                        let _ = conn.unmap_window(w);
+                    }
+                    let _ = conn.flush();
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                }
+                for &w in &wins {
+                    let _ = conn.destroy_window(w);
+                }
+                let _ = conn.flush();
+                Ok(())
+            };
+            let _ = run();
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for DamagePoke {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 // ------------------------------------------------------------- pipewire grab
@@ -266,22 +348,61 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                             chunk.size() as usize,
                             (chunk.stride().unsigned_abs() as usize).max(w * 4),
                         );
-                        let Some(raw) = data.data() else { continue };
-                        if len == 0 || raw.len() < off + len {
-                            continue;
-                        }
-                        let s = &raw[off..off + len];
-                        let mut out = vec![0u8; w * h * 4];
-                        for y in 0..h {
-                            let si = y * stride;
-                            if si + w * 4 > s.len() {
-                                break;
+                        // MemFd/DmaBuf frames arrive with a null data
+                        // pointer — mmap the fd ourselves instead of
+                        // dropping a perfectly good frame.
+                        let mut mapped: Option<(*mut libc::c_void, usize)> = None;
+                        let raw = match data.data() {
+                            Some(d) => d,
+                            None => {
+                                let r = data.as_raw();
+                                let total = (r.maxsize + r.mapoffset) as usize;
+                                if r.fd < 0 || total == 0 {
+                                    continue;
+                                }
+                                let p = unsafe {
+                                    libc::mmap(
+                                        std::ptr::null_mut(),
+                                        total,
+                                        libc::PROT_READ,
+                                        libc::MAP_PRIVATE,
+                                        r.fd as i32,
+                                        0,
+                                    )
+                                };
+                                if p == libc::MAP_FAILED {
+                                    continue;
+                                }
+                                mapped = Some((p, total));
+                                unsafe {
+                                    std::slice::from_raw_parts(
+                                        (p as *const u8).add(r.mapoffset as usize),
+                                        r.maxsize as usize,
+                                    )
+                                }
                             }
-                            out[y * w * 4..(y + 1) * w * 4].copy_from_slice(&s[si..si + w * 4]);
+                        };
+                        let ok = len > 0 && raw.len() >= off + len;
+                        if ok {
+                            let s = &raw[off..off + len];
+                            let mut out = vec![0u8; w * h * 4];
+                            for y in 0..h {
+                                let si = y * stride;
+                                if si + w * 4 > s.len() {
+                                    break;
+                                }
+                                out[y * w * 4..(y + 1) * w * 4]
+                                    .copy_from_slice(&s[si..si + w * 4]);
+                            }
+                            st.borrow_mut().frame = Some(out);
+                            got = true;
                         }
-                        st.borrow_mut().frame = Some(out);
-                        got = true;
-                        break;
+                        if let Some((p, total)) = mapped {
+                            unsafe { libc::munmap(p, total) };
+                        }
+                        if got {
+                            break;
+                        }
                     }
                     drop(buf); // Buffer::drop returns it to the stream
                     if got {
@@ -358,6 +479,8 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                 &mut params,
             )
             .context("pw stream connect")?;
+
+
 
         keepalive.push((stream, listener));
         chans.push(st);
