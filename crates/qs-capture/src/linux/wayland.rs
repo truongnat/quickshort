@@ -363,6 +363,22 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
         chans.push(st);
     }
 
+    let keepalive = Rc::new(keepalive);
+
+    // Mutter only produces a frame on damage — an idle screen can stall a
+    // fresh consumer for seconds. Poke each stream so it asks for a frame
+    // instead of waiting for the next screen update.
+    let ka = Rc::clone(&keepalive);
+    let poke = mainloop.loop_().add_timer(move |_| {
+        for (s, _) in ka.iter() {
+            let _ = s.trigger_process();
+        }
+    });
+    poke.update_timer(
+        Some(Duration::from_millis(250)),
+        Some(Duration::from_millis(250)),
+    );
+
     // Watchdog: quit the loop if frames never arrive.
     let weak = mainloop.downgrade();
     let timer = mainloop.loop_().add_timer(move |_| {
@@ -370,10 +386,12 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
             ml.quit();
         }
     });
-    timer.update_timer(Some(Duration::from_secs(3)), None);
+    timer.update_timer(Some(Duration::from_secs(2)), None);
 
     mainloop.run();
-    for (stream, _) in &keepalive {
+    drop(poke);
+    drop(timer);
+    for (stream, _) in keepalive.iter() {
         stream.disconnect().ok();
     }
     drop(keepalive);
