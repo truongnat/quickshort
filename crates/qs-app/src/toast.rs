@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use qs_overlay::sdf::{ellipse_sdf, fill_cov, glass_card, seg_sdf, stroke_cov, Canvas};
+use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, seg_sdf, stroke_cov, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -19,13 +19,13 @@ const W: f64 = 272.0;
 const H: f64 = 58.0;
 const DONE_TTL: Duration = Duration::from_millis(1800);
 
-const CARD_TOP: u32 = 0x3A3A41;
-const CARD_BOT: u32 = 0x26262C;
-const FG: u32 = 0xF2F2F7;
-const FG_DIM: u32 = 0xA9A9B1;
-const ACCENT: u32 = 0x0A84FF;
-const OK: u32 = 0x30D158;
-const ERR: u32 = 0xFF453A;
+const CARD: u32 = 0xFFFFFF;
+const BORDER: u32 = 0xCBD0D8;
+const FRINGE: u32 = 0x1A1A1F;
+const FG: u32 = 0x24272D;
+const FG_DIM: u32 = 0x535A66;
+const OK: u32 = 0x28A745;
+const ERR: u32 = 0xD92D20;
 
 #[derive(Clone, Copy, PartialEq)]
 enum State {
@@ -40,6 +40,7 @@ pub struct Toast {
     surf: Surface<Rc<Window>, Rc<Window>>,
     font: Font,
     msg: String,
+    accent: u32,
     state: State,
     pulse: f64,
     deadline: Option<Instant>,
@@ -48,7 +49,7 @@ pub struct Toast {
 
 impl Toast {
     /// Floating card, bottom-center of the focused monitor.
-    pub fn open(el: &ActiveEventLoop, msg: &str) -> Result<Self> {
+    pub fn open(el: &ActiveEventLoop, msg: &str, accent: u32) -> Result<Self> {
         let attrs = Window::default_attributes()
             .with_decorations(false)
             .with_transparent(true)
@@ -76,6 +77,7 @@ impl Toast {
             surf,
             font: system_font()?,
             msg: msg.to_string(),
+            accent,
             state: State::Working,
             pulse: 0.0,
             deadline: None,
@@ -155,15 +157,34 @@ impl Toast {
 
         // softbuffer ignores per-pixel alpha — the card must fill the whole
         // window or the uncovered corners render as an opaque black frame.
-        glass_card(&mut cv, (0.0, 0.0, W, H), 2.0, CARD_TOP, CARD_BOT);
+        // Outside the rounded corners we paint a soft fringe standing in for
+        // the drop shadow the transparent window cannot show.
+        let card_rad = 11.0;
+        for py in 0..sh as i32 {
+            for px in 0..sw as i32 {
+                let lx = px as f64 / scale;
+                let ly = py as f64 / scale;
+                let d = rrect_sdf(lx, ly, W / 2.0, H / 2.0, W / 2.0, H / 2.0, card_rad);
+                if d > 0.0 {
+                    let a = 0.35 * (1.0 - d / 2.5).clamp(0.0, 1.0);
+                    cv.blend(px, py, FRINGE, a);
+                    continue;
+                }
+                cv.blend(px, py, CARD, fill_cov(d, scale));
+                let rim = stroke_cov(d, 0.7, scale);
+                if rim > 0.0 {
+                    cv.blend(px, py, BORDER, rim);
+                }
+            }
+        }
 
         // state icon: filled circle, glyph inside
         let (cx, cy, rad) = (28.0, H / 2.0 - 1.5, 11.0);
         match self.state {
             State::Working => {
                 let a = 0.45 + 0.55 * self.pulse.sin().abs();
-                fill_circle(&mut cv, cx, cy, rad, ACCENT, a, scale);
-                ring(&mut cv, cx, cy, rad + 3.5, ACCENT, a * 0.35, scale);
+                fill_circle(&mut cv, cx, cy, rad, self.accent, a, scale);
+                ring(&mut cv, cx, cy, rad + 3.5, self.accent, a * 0.35, scale);
             }
             State::Ok => {
                 fill_circle(&mut cv, cx, cy, rad, OK, 1.0, scale);
@@ -218,7 +239,7 @@ pub fn standalone() -> Result<()> {
     }
     impl ApplicationHandler for Run {
         fn resumed(&mut self, el: &ActiveEventLoop) {
-            match Toast::open(el, "Extracting text…") {
+            match Toast::open(el, "Extracting text…", 0x1677DF) {
                 Ok(t) => self.t = Some(t),
                 Err(e) => {
                     eprintln!("toast: {e:#}");

@@ -130,7 +130,7 @@ impl Host {
             .unwrap_or(0);
         self.cfg.save();
         if manual && self.toast.is_none() {
-            if let Ok(t) = Toast::open(el, "Checking for updates…") {
+            if let Ok(t) = Toast::open(el, "Checking for updates…", self.cfg.accent_rgb()) {
                 self.toast = Some(t);
             }
         }
@@ -148,7 +148,7 @@ impl Host {
     fn install_update(&mut self, el: &ActiveEventLoop, rel: Release) {
         if self.toast.is_none() {
             let msg = format!("Updating to v{}…", rel.version);
-            if let Ok(t) = Toast::open(el, &msg) {
+            if let Ok(t) = Toast::open(el, &msg, self.cfg.accent_rgb()) {
                 self.toast = Some(t);
             }
         }
@@ -176,7 +176,7 @@ impl Host {
             Err(e) => {
                 eprintln!("capture failed: {e:#}");
                 if self.toast.is_none() {
-                    if let Ok(t) = Toast::open(el, &format!("Capture failed: {e:#}")) {
+                    if let Ok(t) = Toast::open(el, &format!("Capture failed: {e:#}"), self.cfg.accent_rgb()) {
                         self.toast = Some(t);
                     }
                 }
@@ -312,7 +312,7 @@ impl Host {
     fn toast_done(&mut self, el: &ActiveEventLoop, msg: String, ok: bool) {
         match &mut self.toast {
             Some(t) => t.done(msg, ok),
-            None => match Toast::open(el, &msg) {
+            None => match Toast::open(el, &msg, self.cfg.accent_rgb()) {
                 Ok(mut t) => {
                     t.done(msg, ok);
                     self.toast = Some(t);
@@ -518,7 +518,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     _ => None,
                 };
                 if let Some(m) = wait_msg {
-                    match Toast::open(el, m) {
+                    match Toast::open(el, m, self.cfg.accent_rgb()) {
                         Ok(t) => self.toast = Some(t),
                         Err(e) => eprintln!("toast: {e:#}"),
                     }
