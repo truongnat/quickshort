@@ -214,15 +214,43 @@ pub fn cleanup_captures(dir: &Path, keep_days: u32) -> usize {
     n
 }
 
-/// Collect diagnostics and open a pre-filled GitHub issue in the browser.
-/// GitHub has no unauthenticated create-issue endpoint, so `issues/new`
-/// query params do the prefilling — the user reviews and submits there.
+/// Bug-report relay (Cloudflare Worker, see `relay/report/`) — files the
+/// issue under the maintainer's account so users don't need a GitHub
+/// login. QS_REPORT_URL overrides it for testing a fresh deploy.
+const REPORT_ENDPOINT: &str = "https://quickshort-report.truongdq.workers.dev";
+
+/// Collect diagnostics and file a GitHub issue via the relay worker —
+/// no GitHub login required on the user's side. Runs off-thread so the
+/// settings UI doesn't stall on the network call; on success the new
+/// issue opens in the browser, on failure we fall back to the prefilled
+/// `issues/new` page.
 pub fn report_issue(cfg: &Config) {
-    let url = format!(
-        "https://github.com/truongnat/quickshort/issues/new?labels=bug&body={}",
-        url_encode(&diagnostics(cfg))
-    );
-    open_url(&url);
+    let diagnostics = diagnostics(cfg);
+    let endpoint = std::env::var("QS_REPORT_URL")
+        .unwrap_or_else(|_| REPORT_ENDPOINT.into());
+    std::thread::spawn(move || {
+        let payload = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "os": format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+            "diagnostics": diagnostics,
+        });
+        let issue_url = ureq::post(&endpoint)
+            .send_json(&payload)
+            .ok()
+            .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
+            .and_then(|v| v["url"].as_str().map(str::to_owned));
+        match issue_url {
+            Some(url) => open_url(&url),
+            None => {
+                let diag = payload["diagnostics"].as_str().unwrap_or_default();
+                let url = format!(
+                    "https://github.com/truongnat/quickshort/issues/new?labels=bug&body={}",
+                    url_encode(diag)
+                );
+                open_url(&url);
+            }
+        }
+    });
 }
 
 /// Version + environment + config snapshot + tail of the app log —
