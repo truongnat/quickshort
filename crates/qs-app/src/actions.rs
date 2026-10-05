@@ -217,7 +217,7 @@ pub fn cleanup_captures(dir: &Path, keep_days: u32) -> usize {
 /// Bug-report relay (Cloudflare Worker, see `relay/report/`) — files the
 /// issue under the maintainer's account so users don't need a GitHub
 /// login. QS_REPORT_URL overrides it for testing a fresh deploy.
-const REPORT_ENDPOINT: &str = "https://quickshort-report.truongdq.workers.dev";
+const REPORT_ENDPOINT: &str = "https://quickshort-report.truongnat.workers.dev";
 
 /// Collect diagnostics and file a GitHub issue via the relay worker —
 /// no GitHub login required on the user's side. Runs off-thread so the
