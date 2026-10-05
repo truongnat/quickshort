@@ -53,7 +53,7 @@ impl Default for Config {
             key_ocr: "t".into(),
             key_share: "l".into(),
             key_undo: "z".into(),
-            ocr_lang: "eng".into(),
+            ocr_lang: "auto".into(),
             last_update_check: 0,
         }
     }
