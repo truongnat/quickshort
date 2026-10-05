@@ -118,7 +118,7 @@ quickshort --capture --out ~/shots/a.png
 
 | Context | Shortcut | Action |
 |---|---|---|
-| Anywhere | `⌘⇧S` (configurable) | Start a selection |
+| Anywhere | `⌘⇧S` macOS/Linux, `PrintScreen` Windows (configurable) | Start a selection |
 | Selection made | `⌘S` / `⌘C` / `⌘T` / `⌘L` (rebindable) | Save / copy / OCR / share link → clipboard |
 | Selection made | `⌘Z` / `⌘⇧Z` (rebindable key) | Undo / redo an edit |
 | Block selected | `Delete` / `⌫` / `Esc` | Remove block / deselect |
@@ -131,7 +131,9 @@ Folder, Check for Updates, Launch at Login, Settings and Quit. Settings
 also live in `~/.config/quickshort/config.toml`:
 
 ```toml
-hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax
+hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax; "PrintScreen" is
+                               # the Windows default — falls back to
+                               # Ctrl+Shift+S if the shell owns it
 # save_dir = "~/Pictures/quickshort"
 launch_at_login = false
 auto_update = true

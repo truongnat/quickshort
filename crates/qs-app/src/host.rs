@@ -370,16 +370,39 @@ impl ApplicationHandler<HostEvent> for Host {
         }
 
         match self.cfg.hotkey.parse::<HotKey>() {
-            Ok(hk) => match GlobalHotKeyManager::new().and_then(|m| {
-                m.register(hk)?;
-                Ok(m)
-            }) {
-                Ok(m) => {
-                    self.hotkey = Some(hk);
-                    self.hotkeys = Some(m);
+            Ok(hk) => {
+                match GlobalHotKeyManager::new().and_then(|m| {
+                    m.register(hk)?;
+                    Ok(m)
+                }) {
+                    Ok(m) => {
+                        self.hotkey = Some(hk);
+                        self.hotkeys = Some(m);
+                    }
+                    Err(e) => {
+                        eprintln!("hotkey register failed: {e:#}");
+                        // the configured chord may be shell-owned (Windows
+                        // claims PrintScreen for Snipping on fresh installs)
+                        // — fall back to a chord that is always free
+                        const FALLBACK: &str = "Ctrl+Shift+S";
+                        if self.cfg.hotkey != FALLBACK {
+                            if let Ok(fbk) = FALLBACK.parse::<HotKey>() {
+                                match GlobalHotKeyManager::new().and_then(|m| {
+                                    m.register(fbk)?;
+                                    Ok(m)
+                                }) {
+                                    Ok(m) => {
+                                        eprintln!("hotkey fell back to {FALLBACK}");
+                                        self.hotkey = Some(fbk);
+                                        self.hotkeys = Some(m);
+                                    }
+                                    Err(e) => eprintln!("fallback register failed: {e:#}"),
+                                }
+                            }
+                        }
+                    }
                 }
-                Err(e) => eprintln!("hotkey register failed: {e:#}"),
-            },
+            }
             Err(e) => eprintln!("bad hotkey {:?}: {e}", self.cfg.hotkey),
         }
 

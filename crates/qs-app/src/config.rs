@@ -40,7 +40,15 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            hotkey: "CmdOrCtrl+Shift+S".into(),
+            // Windows reserves Win+Shift+S for Snipping Tool — the dedicated
+            // PrintScreen key is the next best thing (registration still
+            // falls back to Ctrl+Shift+S if the shell owns it)
+            hotkey: if cfg!(windows) {
+                "PrintScreen"
+            } else {
+                "CmdOrCtrl+Shift+S"
+            }
+            .into(),
             save_dir: None,
             launch_at_login: false,
             auto_update: true,

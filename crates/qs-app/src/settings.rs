@@ -429,7 +429,9 @@ impl Settings {
             s.push_str("Shift+");
         }
         if s.is_empty() {
-            return None; // a bare key is a bad global hotkey — keep waiting
+            // a bare key is a bad global hotkey — except PrintScreen, the
+            // de-facto screenshot key, which carries no text meaning
+            return (token == "PrintScreen").then_some(token);
         }
         Some(format!("{s}{token}"))
     }
