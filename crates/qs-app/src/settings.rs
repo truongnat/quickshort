@@ -744,12 +744,14 @@ impl Settings {
                 .find(|(_, h)| *h == Hit::Drop(d))
                 .map(|(r, _)| r)
             {
-                let pop = (
-                    btn.0,
-                    btn.1 + btn.3 + 4.0,
-                    btn.2.max(160.0),
-                    opts.len() as f64 * 30.0 + 8.0,
-                );
+                let ph = opts.len() as f64 * 30.0 + 8.0;
+                // flip upward when the list would spill past the window edge
+                let py = if btn.1 + btn.3 + 4.0 + ph > H - 8.0 {
+                    (btn.1 - 4.0 - ph).max(8.0)
+                } else {
+                    btn.1 + btn.3 + 4.0
+                };
+                let pop = (btn.0, py, btn.2.max(160.0), ph);
                 p.card(&mut cv, pop);
                 for (i, o) in opts.iter().enumerate() {
                     let ir = (
