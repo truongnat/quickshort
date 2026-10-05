@@ -63,8 +63,10 @@ export OUTPUT="$DIST/Quickshort-Linux.AppImage"
 # embed gh-releases-zsync update info — AppImageUpdate can then self-update
 # from GitHub Releases (the .zsync it generates lands in dist/ alongside)
 export UPDATE_INFORMATION="gh-releases-zsync|truongnat|quickshort|latest|Quickshort-Linux.AppImage.zsync"
+# newer linuxdeploy builds dropped the -u flag — UPDATE_INFORMATION env var
+# alone is what appimagetool reads for the embedded update info
 if ! "$TOOLS/linuxdeploy.AppImage" \
-  --appdir "$APPDIR" --plugin gtk -u "$UPDATE_INFORMATION" \
+  --appdir "$APPDIR" --plugin gtk \
   --output appimage > "$DIST/linuxdeploy.log" 2>&1; then
     echo "linuxdeploy failed; shipping .deb only"
     tail -60 "$DIST/linuxdeploy.log" >&2 || true
