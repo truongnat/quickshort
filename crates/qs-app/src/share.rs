@@ -96,6 +96,22 @@ impl ShareManager {
     }
 
     fn ensure_tunnel(self: &Arc<Self>) -> Result<()> {
+        // share needs an OpenSSH client; Windows 10+ ships one as an
+        // optional feature, older/minimal installs may not have it
+        for bin in ["ssh", "ssh-keygen"] {
+            if Command::new(bin)
+                .arg("-V")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_err()
+            {
+                anyhow::bail!(
+                    "{bin} not found — link sharing needs an OpenSSH client \
+                     (Windows: Settings > Optional features > OpenSSH Client)"
+                );
+            }
+        }
         ensure_key(&self.key)?;
         if self
             .monitor_started
@@ -193,7 +209,16 @@ impl Drop for ShareManager {
         self.stop.store(true, Ordering::SeqCst);
         let pid = self.child_pid.load(Ordering::SeqCst);
         if pid != 0 {
-            let _ = Command::new("kill").arg(pid.to_string()).status();
+            #[cfg(target_os = "windows")]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F", "/T"])
+                    .status();
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = Command::new("kill").arg(pid.to_string()).status();
+            }
         }
     }
 }
@@ -262,9 +287,11 @@ fn extract_url(line: &str) -> Option<String> {
 }
 
 /// 128-bit hex token — the URL path is the only auth a share link has.
+/// getrandom picks the OS entropy source (BCryptGenRandom on Windows);
+/// /dev/urandom does not exist there and every share died at this call.
 fn new_token() -> Result<String> {
     let mut b = [0u8; 16];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("os entropy: {e}"))?;
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
