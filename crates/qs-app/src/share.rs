@@ -9,7 +9,6 @@
 //! restarts while the key persists.
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -35,9 +34,17 @@ struct State {
 
 /// One listener + one tunnel shared by every shared file. `Arc`-held by
 /// the host; dropping kills the ssh child and the accept loop.
+///
+/// Serving is stateless: the URL path is the shared file's real name and
+/// requests resolve it inside every directory a share has used. Several
+/// one-shot processes each park their own ssh tunnel, and tunnl.gg only
+/// feeds requests to ONE of them — a RAM-token registry made every other
+/// process 404 files it had never seen. With on-disk names any tunnel
+/// can serve any file.
 pub struct ShareManager {
-    /// token -> shared file path
-    files: Arc<Mutex<HashMap<String, PathBuf>>>,
+    /// every directory a share has landed in — requests resolve names
+    /// inside each of them
+    dirs: Arc<Mutex<Vec<PathBuf>>>,
     state: Arc<(Mutex<State>, Condvar)>,
     stop: Arc<AtomicBool>,
     /// pid of the live ssh child (the monitor thread owns the Child)
@@ -55,7 +62,7 @@ impl ShareManager {
             .unwrap_or_else(|| Path::new("."))
             .join("share_key");
         Arc::new(Self {
-            files: Arc::new(Mutex::new(HashMap::new())),
+            dirs: Arc::new(Mutex::new(Vec::new())),
             state: Arc::new((Mutex::new(State::default()), Condvar::new())),
             stop: Arc::new(AtomicBool::new(false)),
             child_pid: AtomicU32::new(0),
@@ -65,19 +72,25 @@ impl ShareManager {
         })
     }
 
-    /// Register `path` under a fresh token and return its public URL —
+    /// Publish `path` (its basename becomes the public URL path) —
     /// starts the server/tunnel lazily and blocks until tunnl.gg assigns
     /// the URL (first share takes a couple of seconds).
     pub fn share(self: &Arc<Self>, path: &Path) -> Result<String> {
-        let token = new_token()?;
-        self.files
-            .lock()
-            .unwrap()
-            .insert(token.clone(), path.to_path_buf());
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("shared file has no usable name")?
+            .to_owned();
+        if let Some(d) = path.parent() {
+            let mut dirs = self.dirs.lock().unwrap();
+            if !dirs.iter().any(|x| x == d) {
+                dirs.push(d.to_path_buf());
+            }
+        }
         self.ensure_server()?;
         self.ensure_tunnel()?;
         let base = self.wait_base()?;
-        Ok(format!("{base}/s/{token}.png"))
+        Ok(format!("{base}/s/{name}"))
     }
 
     fn ensure_server(&self) -> Result<u16> {
@@ -89,8 +102,8 @@ impl ShareManager {
         }
         let l = TcpListener::bind(("127.0.0.1", 0)).context("share listener")?;
         let port = l.local_addr()?.port();
-        let (files, stop) = (self.files.clone(), self.stop.clone());
-        std::thread::spawn(move || serve(l, files, stop));
+        let (dirs, stop) = (self.dirs.clone(), self.stop.clone());
+        std::thread::spawn(move || serve(l, dirs, stop));
         self.state.0.lock().unwrap().port = Some(port);
         Ok(port)
     }
@@ -309,20 +322,7 @@ fn extract_url(line: &str) -> Option<String> {
     url.ends_with(".tunnl.gg").then_some(url)
 }
 
-/// 128-bit hex token — the URL path is the only auth a share link has.
-/// getrandom picks the OS entropy source (BCryptGenRandom on Windows);
-/// /dev/urandom does not exist there and every share died at this call.
-fn new_token() -> Result<String> {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("os entropy: {e}"))?;
-    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
-}
-
-fn serve(
-    listener: TcpListener,
-    files: Arc<Mutex<HashMap<String, PathBuf>>>,
-    stop: Arc<AtomicBool>,
-) {
+fn serve(listener: TcpListener, dirs: Arc<Mutex<Vec<PathBuf>>>, stop: Arc<AtomicBool>) {
     let _ = listener.set_nonblocking(true);
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -331,8 +331,8 @@ fn serve(
                 // reads would EAGAIN before proxied bytes arrive
                 let _ = s.set_nonblocking(false);
                 // own thread — a stalled client must not block accepts
-                let files = files.clone();
-                std::thread::spawn(move || handle_conn(s, &files));
+                let dirs = dirs.clone();
+                std::thread::spawn(move || handle_conn(s, &dirs));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(50))
@@ -342,8 +342,10 @@ fn serve(
     }
 }
 
-/// One request per connection: `GET|HEAD /s/<32-hex>.png` or 404.
-fn handle_conn(s: TcpStream, files: &Mutex<HashMap<String, PathBuf>>) {
+/// One request per connection: `GET|HEAD /s/<name>.png` or 404. The name
+/// is looked up in every dir a share has used; anything but a flat
+/// `[A-Za-z0-9_-]` name is refused so `../` and friends can't escape.
+fn handle_conn(s: TcpStream, dirs: &Mutex<Vec<PathBuf>>) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
     let mut w = match s.try_clone() {
         Ok(w) => w,
@@ -360,14 +362,23 @@ fn handle_conn(s: TcpStream, files: &Mutex<HashMap<String, PathBuf>>) {
     let mut parts = first.split_whitespace();
     let (method, path) = (parts.next(), parts.next());
     let head_only = method == Some("HEAD");
-    let token = (method == Some("GET") || head_only)
+    let name = (method == Some("GET") || head_only)
         .then(|| {
             path.and_then(|p| p.strip_prefix("/s/"))
-                .and_then(|t| t.strip_suffix(".png"))
-                .filter(|t| t.len() == 32 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+                .filter(|n| {
+                    n.ends_with(".png")
+                        && n.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+                })
         })
         .flatten();
-    let file = token.and_then(|t| files.lock().unwrap().get(t).cloned());
+    let file = name.and_then(|n| {
+        dirs.lock()
+            .unwrap()
+            .iter()
+            .map(|d| d.join(n))
+            .find(|p| p.is_file())
+    });
     let Some(file) = file else {
         let _ = w
             .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -405,12 +416,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("a.png");
         std::fs::write(&png, b"\x89PNG-test").unwrap();
-        let files = Arc::new(Mutex::new(HashMap::from([(
-            "0123456789abcdef0123456789abcdef".to_string(),
-            png,
-        )])));
+        let dirs = Arc::new(Mutex::new(vec![dir.clone()]));
         let stop = Arc::new(AtomicBool::new(false));
-        let (f, st) = (files.clone(), stop.clone());
+        let (f, st) = (dirs.clone(), stop.clone());
         let t = std::thread::spawn(move || serve(l, f, st));
 
         let get = |path: &str| -> (String, Vec<u8>) {
@@ -430,16 +438,17 @@ mod tests {
             )
         };
 
-        let (h, b) = get("/s/0123456789abcdef0123456789abcdef.png");
+        let (h, b) = get("/s/a.png");
         assert!(h.contains("200 OK"), "{h}");
         assert_eq!(b, b"\x89PNG-test");
 
-        // wrong token, bad path, directory traversal: all dead ends
+        // unknown name, bad path, traversal, non-png: all dead ends
         for p in [
-            "/s/deadbeefdeadbeefdeadbeefdeadbeef.png",
+            "/s/nope.png",
             "/s/../config.toml",
             "/",
-            "/s/0123456789abcdef0123456789abcdef",
+            "/s/a",
+            "/s/a.txt",
         ] {
             assert!(get(p).0.contains("404"), "{p}");
         }

@@ -68,7 +68,13 @@ pub fn dispatch(
                 SaveTarget::Dir(d) => d.clone(),
                 SaveTarget::File(p) => p.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
             };
-            let p = save(&img, &SaveTarget::Dir(base.join("shared")))?;
+            // the URL path is the file's real name so any parked share
+            // process can serve it — the random suffix is the only auth
+            // a share link has
+            let dir = base.join("shared");
+            std::fs::create_dir_all(&dir)?;
+            let name = format!("quickshort-{}-{}.png", unix_ts()?, rand_hex()?);
+            let p = save(&img, &SaveTarget::File(dir.join(name)))?;
             let url = sm.share(&p)?;
             copy_text_to_clipboard(&url, wait_clipboard);
             Ok(Outcome::Shared(url))
@@ -108,6 +114,13 @@ fn unix_ts() -> Result<u64> {
     Ok(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs())
+}
+
+/// 48-bit hex — the unguessable suffix of a shared file's public name.
+fn rand_hex() -> Result<String> {
+    let mut b = [0u8; 6];
+    getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("os entropy: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// Newest-first `*.png` listing of `dir`, capped at `n` — the tray's
