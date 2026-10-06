@@ -210,6 +210,15 @@ bundle, self-signed identity (`packaging/macos/gen_signing_cert.sh`), zip +
 dmg + sha256 into `dist/`. Tagging `v*` triggers the GitHub workflow, which
 does the same and publishes a GitHub Release.
 
+## Privacy
+
+Everything runs locally — captures, OCR, settings never leave your
+machine. The only outbound traffic is a share upload you trigger (image
+lives 3 days on a Cloudflare Worker), an opt-in bug report (posted as a
+public GitHub issue), and a daily GitHub release check. No analytics,
+no accounts. Full policy: [docs/privacy.html](docs/privacy.html) ·
+[quickshort site](https://truongnat.github.io/quickshort/privacy.html).
+
 ## Support
 
 Free and open source, built in spare time. If Quickshort saves you time:
