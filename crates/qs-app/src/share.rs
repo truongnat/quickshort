@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use image::RgbaImage;
 use std::sync::Arc;
 
-const ENDPOINT: &str = "https://quickshort-share.truongnat.workers.dev";
+const ENDPOINT: &str = "https://quickshort-share.tx001-dev.workers.dev";
 /// Lossy WebP at this quality is visually indistinguishable from the PNG
 /// source on screenshots while roughly halving upload + storage cost.
 const WEBP_QUALITY: f32 = 95.0;
