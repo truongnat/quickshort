@@ -57,7 +57,8 @@ fn run_tesseract(png: &[u8], extra: &[&str]) -> Result<String> {
 }
 
 /// `tesseract --list-langs` → e.g. ["eng", "jpn"] ("osd" filtered out).
-fn installed_langs() -> Vec<String> {
+/// Also feeds the Settings badges via qs_ocr::installed_langs.
+pub fn installed() -> Vec<String> {
     Command::new("tesseract")
         .arg("--list-langs")
         .stderr(Stdio::null())
@@ -87,7 +88,7 @@ fn detect_script(png: &[u8]) -> Option<String> {
 /// Pick a `-l` value from the detected script and the installed packs.
 /// Script names come from tesseract's osd traineddata.
 fn detect_lang(png: &[u8]) -> Result<String> {
-    let installed = installed_langs();
+    let installed = installed();
     let has = |l: &str| installed.iter().any(|i| i == l);
 
     let wanted = match detect_script(png).as_deref() {

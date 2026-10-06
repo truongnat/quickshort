@@ -176,7 +176,9 @@ impl Host {
             Err(e) => {
                 eprintln!("capture failed: {e:#}");
                 if self.toast.is_none() {
-                    if let Ok(t) = Toast::open(el, &format!("Capture failed: {e:#}"), self.cfg.accent_rgb()) {
+                    if let Ok(t) =
+                        Toast::open(el, &format!("Capture failed: {e:#}"), self.cfg.accent_rgb())
+                    {
                         self.toast = Some(t);
                     }
                 }
@@ -571,17 +573,24 @@ impl ApplicationHandler<HostEvent> for Host {
         if let Some(ov) = &mut self.overlay {
             ov.about_to_wait();
         }
-        if let Some(s) = &self.settings {
+        // earliest wake wins — the settings poll (pack install) must not
+        // be starved by a longer toast timeout, and vice versa
+        let mut wake: Option<std::time::Instant> = None;
+        if let Some(s) = &mut self.settings {
             s.about_to_wait();
+            if s.poll_needed() {
+                wake = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+            }
         }
         if let Some(t) = &mut self.toast {
             match t.pump() {
-                Some(wake) => el.set_control_flow(ControlFlow::WaitUntil(wake)),
-                None => {
-                    self.toast = None;
-                    el.set_control_flow(ControlFlow::Wait);
-                }
+                Some(w) => wake = Some(wake.map_or(w, |x| x.min(w))),
+                None => self.toast = None,
             }
         }
+        el.set_control_flow(match wake {
+            Some(w) => ControlFlow::WaitUntil(w),
+            None => ControlFlow::Wait,
+        });
     }
 }

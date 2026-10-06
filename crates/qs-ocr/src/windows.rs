@@ -60,3 +60,18 @@ pub fn extract(img: &RgbaImage, lang: &str) -> Result<String> {
     let res = engine.RecognizeAsync(&bitmap)?.join()?;
     Ok(res.Text()?.to_string_lossy())
 }
+
+/// BCP-47 tags of the OCR packs installed on this machine — feeds the
+/// Settings "not installed" badges.
+pub fn installed() -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(langs) = OcrEngine::AvailableRecognizerLanguages() else {
+        return out;
+    };
+    for i in 0..langs.Size().unwrap_or(0) {
+        if let Ok(tag) = langs.GetAt(i).and_then(|l| l.LanguageTag()) {
+            out.push(tag.to_string_lossy());
+        }
+    }
+    out
+}

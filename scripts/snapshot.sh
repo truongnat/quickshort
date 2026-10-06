@@ -16,7 +16,7 @@ BIN="$ROOT/target/release/quickshort"
 OUT="$ROOT/docs/shots"
 mkdir -p "$OUT"
 
-pages="capture general shortcuts appearance storage about"
+pages="capture general shortcuts appearance ocr storage about"
 i=0
 for name in $pages; do
     png="$OUT/settings-$name.png"

@@ -10,6 +10,7 @@ use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -71,6 +72,7 @@ enum Glyph {
     Folder,
     Info,
     Bolt,
+    Text,
 }
 
 /// Sidebar pages in order.
@@ -79,6 +81,7 @@ const PAGES: &[(&str, Glyph)] = &[
     ("General", Glyph::Gear),
     ("Shortcuts", Glyph::Keys),
     ("Appearance", Glyph::Drop),
+    ("OCR", Glyph::Text),
     ("Storage", Glyph::Folder),
     ("About", Glyph::Info),
 ];
@@ -108,22 +111,7 @@ const KEY_ROWS: &[(&str, Rec)] = &[
 enum Drop {
     RecentN,
     KeepDays,
-    OcrLang,
 }
-
-/// OCR language options — labels shown in the dropdown, values stored
-/// in `ocr_lang` using tesseract's `eng+vie` syntax (Vision and
-/// Windows.Media.Ocr map the codes to their own identifiers).
-const OCR_LANGS: &[(&str, &str)] = &[
-    ("Auto-detect", "auto"),
-    ("English", "eng"),
-    ("Vietnamese", "vie"),
-    ("English + Vietnamese", "eng+vie"),
-    ("Japanese", "jpn"),
-    ("Korean", "kor"),
-    ("Chinese (Simplified)", "chi_sim"),
-    ("Chinese (Traditional)", "chi_tra"),
-];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Sw {
@@ -154,6 +142,12 @@ enum Hit {
     Sw(Sw),
     Swatch(usize),
     Recent(usize),
+    /// OCR page: auto-detect row
+    OcrAuto,
+    /// OCR page: index into qs_ocr::LANGS
+    Lang(usize),
+    /// OCR page: install the missing packs (linux)
+    OcrInstall,
     ViewAll,
     /// check for updates, or install when `update_ver` is set
     Update,
@@ -217,8 +211,22 @@ pub struct Settings {
     dialog_open: bool,
     /// app logo at sidebar size (physical px)
     logo: Option<image::RgbaImage>,
+    /// packs the OCR engine can use — feeds the "not installed" badges
+    ocr_langs: Vec<String>,
+    /// apt install running on a worker thread (pkexec pops the auth UI)
+    install: Option<Arc<Mutex<InstallState>>>,
+    /// last install's outcome line, shown until the next action
+    install_msg: Option<String>,
     dirty: bool,
     closed: bool,
+}
+
+/// Shared with the install worker — about_to_wait polls it each frame.
+#[derive(Clone)]
+enum InstallState {
+    Running,
+    Ok(String),
+    Failed(String),
 }
 
 fn app_logo() -> Option<image::RgbaImage> {
@@ -289,6 +297,9 @@ impl Settings {
             want_mod: false,
             dialog_open: false,
             logo,
+            ocr_langs: qs_ocr::installed_langs(),
+            install: None,
+            install_msg: None,
             dirty: true,
             closed: false,
         })
@@ -322,7 +333,25 @@ impl Settings {
         self.recording.is_some()
     }
 
-    pub fn about_to_wait(&self) {
+    /// True while a pack install is running — the host should wake the
+    /// loop periodically so the page polls the worker's result.
+    pub fn poll_needed(&self) -> bool {
+        self.install.is_some()
+    }
+
+    pub fn about_to_wait(&mut self) {
+        if let Some(arc) = &self.install {
+            let state = arc.lock().unwrap().clone();
+            match state {
+                InstallState::Running => self.dirty = true,
+                InstallState::Ok(m) | InstallState::Failed(m) => {
+                    self.install = None;
+                    self.install_msg = Some(m);
+                    self.ocr_langs = qs_ocr::installed_langs();
+                    self.dirty = true;
+                }
+            }
+        }
         if self.dirty {
             self.win.request_redraw();
         }
@@ -496,6 +525,51 @@ impl Settings {
             Some(Hit::OpenDir) | Some(Hit::ViewAll) => {
                 actions::open_path(&cfg.save_dir());
             }
+            Some(Hit::OcrAuto) => {
+                cfg.ocr_lang = "auto".into();
+                self.dirty = true;
+                return Some(SettingsEvent::Changed);
+            }
+            Some(Hit::Lang(i)) => {
+                if let Some(e) = qs_ocr::LANGS.get(i) {
+                    let mut sel = qs_ocr::lang_codes(&cfg.ocr_lang);
+                    if let Some(pos) = sel.iter().position(|c| c == e.0) {
+                        sel.remove(pos);
+                    } else {
+                        sel.push(e.0.to_owned());
+                    }
+                    // an empty manual set means "scan everything" — auto
+                    cfg.ocr_lang = if sel.is_empty() {
+                        "auto".into()
+                    } else {
+                        sel.join("+")
+                    };
+                    self.dirty = true;
+                    return Some(SettingsEvent::Changed);
+                }
+            }
+            Some(Hit::OcrInstall) => {
+                if self.install.is_some() {
+                    return None;
+                }
+                let pkgs: Vec<String> = qs_ocr::LANGS
+                    .iter()
+                    .map(|e| e.0)
+                    .filter(|c| !self.ocr_langs.iter().any(|l| l == c))
+                    .map(|c| format!("tesseract-ocr-{c}"))
+                    .collect();
+                if pkgs.is_empty() {
+                    return None;
+                }
+                let st = Arc::new(Mutex::new(InstallState::Running));
+                let st2 = st.clone();
+                std::thread::spawn(move || {
+                    *st2.lock().unwrap() = install_packs(&pkgs);
+                });
+                self.install = Some(st);
+                self.install_msg = None;
+                self.dirty = true;
+            }
             Some(Hit::Sw(s)) => {
                 match s {
                     Sw::Login => {
@@ -658,6 +732,9 @@ impl Settings {
             recents: &self.recents,
             thumbs: &self.thumbs,
             logo: self.logo.as_ref(),
+            ocr_langs: &self.ocr_langs,
+            installing: self.install.is_some(),
+            install_msg: self.install_msg.as_deref(),
         };
         let Ok(mut buf) = self.surf.buffer_mut() else {
             return;
@@ -750,7 +827,8 @@ impl Settings {
             1 => draw_general(&p, &mut cv, &v, &mut hits),
             2 => draw_shortcuts(&p, &mut cv, &v, &mut hits),
             3 => draw_appearance(&p, &mut cv, &v, &mut hits),
-            4 => draw_storage(&p, &mut cv, &v, &mut hits),
+            4 => draw_ocr(&p, &mut cv, &v, &mut hits),
+            5 => draw_storage(&p, &mut cv, &v, &mut hits),
             _ => draw_about(&p, &mut cv, &v, &mut hits),
         }
 
@@ -784,7 +862,14 @@ impl Settings {
                         p.fill(&mut cv, ir, 6.0, ROW_HOV, 1.0);
                     }
                     if i == cur {
-                        p.text(&mut cv, ir.0 + 10.0, ir.1 + 20.0, 12.0, "✓", v.cfg.accent_rgb());
+                        p.text(
+                            &mut cv,
+                            ir.0 + 10.0,
+                            ir.1 + 20.0,
+                            12.0,
+                            "✓",
+                            v.cfg.accent_rgb(),
+                        );
                         p.text(&mut cv, ir.0 + 26.0, ir.1 + 20.0, 12.0, o, FG);
                     } else {
                         p.text(&mut cv, ir.0 + 26.0, ir.1 + 20.0, 12.0, o, FG);
@@ -835,6 +920,10 @@ struct View<'a> {
     recents: &'a [PathBuf],
     thumbs: &'a [Option<image::RgbaImage>],
     logo: Option<&'a image::RgbaImage>,
+    ocr_langs: &'a [String],
+    /// a pack install is running — the Install button locks + pulses
+    installing: bool,
+    install_msg: Option<&'a str>,
 }
 
 // layout helpers ------------------------------------------------------------
@@ -867,13 +956,6 @@ fn drop_state(cfg: &Config, d: Drop) -> (Vec<&'static str>, usize) {
                 _ => 0,
             },
         ),
-        Drop::OcrLang => {
-            let cur = OCR_LANGS
-                .iter()
-                .position(|(_, v)| *v == cfg.ocr_lang)
-                .unwrap_or(0);
-            (OCR_LANGS.iter().map(|(l, _)| *l).collect(), cur)
-        }
     }
 }
 
@@ -1148,31 +1230,8 @@ fn draw_general(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     );
     hits.push((mb, Hit::Drop(Drop::RecentN)));
 
-    section_title(p, cv, 344.0, "OCR", "Language used for text extraction.");
+    section_title(p, cv, 344.0, "Reset", "Restore every setting to defaults.");
     let c = card(CX, 378.0, 1);
-    p.card(cv, c);
-    row_label(
-        p,
-        cv,
-        c,
-        Glyph::Info,
-        "OCR language",
-        "Auto-detect picks the script for you",
-    );
-    let ob = (c.0 + c.2 - 14.0 - 160.0, c.1 + 11.0, 160.0, 30.0);
-    let (_, cur) = drop_state(v.cfg, Drop::OcrLang);
-    dropdown_btn(
-        p,
-        cv,
-        ob,
-        OCR_LANGS[cur].0,
-        v.drop_open == Some(Drop::OcrLang),
-        v.hover == Some(Hit::Drop(Drop::OcrLang)),
-    );
-    hits.push((ob, Hit::Drop(Drop::OcrLang)));
-
-    section_title(p, cv, 460.0, "Reset", "Restore every setting to defaults.");
-    let c = card(CX, 494.0, 1);
     p.card(cv, c);
     row_label(
         p,
@@ -1309,6 +1368,213 @@ fn draw_appearance(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect
     );
 }
 
+/// Square checkbox + tick — a checklist control where a switch would
+/// imply exclusivity.
+fn check_box(p: &Painter, cv: &mut Canvas, x: f64, y: f64, on: bool, hover: bool) {
+    if on {
+        p.fill(cv, (x, y, 20.0, 20.0), 5.0, p.accent, 1.0);
+        p.seg(cv, x + 5.5, y + 10.5, x + 9.0, y + 14.0, 2.0, 0xFFFFFF);
+        p.seg(cv, x + 9.0, y + 14.0, x + 15.0, y + 6.5, 2.0, 0xFFFFFF);
+    } else {
+        p.fill(cv, (x, y, 20.0, 20.0), 5.0, 0xFFFFFF, 1.0);
+        p.stroke(
+            cv,
+            (x, y, 20.0, 20.0),
+            5.0,
+            if hover { BORDER_STRONG } else { BORDER },
+            1.0,
+            1.5,
+        );
+    }
+}
+
+/// apt install of missing packs — pkexec raises the polkit auth dialog
+/// so the app never needs root itself. Worker thread reports via the
+/// shared InstallState that about_to_wait polls.
+#[cfg(target_os = "linux")]
+fn install_packs(pkgs: &[String]) -> InstallState {
+    let status = std::process::Command::new("pkexec")
+        .arg("apt-get")
+        .arg("install")
+        .arg("-y")
+        .args(pkgs)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => InstallState::Ok(format!("Installed {} pack(s)", pkgs.len())),
+        Ok(s) => InstallState::Failed(format!("apt exited {s} — nothing installed")),
+        Err(e) => InstallState::Failed(format!("pkexec failed: {e}")),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_packs(_: &[String]) -> InstallState {
+    // unreachable — the button only renders where packs can be installed
+    InstallState::Failed("pack install is Linux-only".into())
+}
+
+fn draw_ocr(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
+    p.text(cv, CX, 52.0, 24.0, "OCR", FG);
+    p.text(
+        cv,
+        CX,
+        76.0,
+        12.5,
+        "Languages the text action (T) recognizes.",
+        FG_DIM,
+    );
+
+    section_title(p, cv, 112.0, "Mode", "How the language is picked.");
+    let c = card(CX, 146.0, 1);
+    p.card(cv, c);
+    let r = (c.0, c.1, c.2, ROW);
+    row_label(
+        p,
+        cv,
+        r,
+        Glyph::Text,
+        "Auto-detect",
+        "Let the engine identify the script — recommended",
+    );
+    let auto = v.cfg.ocr_lang.trim() == "auto";
+    check_box(
+        p,
+        cv,
+        r.0 + r.2 - 34.0,
+        r.1 + 16.0,
+        auto,
+        v.hover == Some(Hit::OcrAuto),
+    );
+    hits.push((r, Hit::OcrAuto));
+
+    // Media.Ocr is single-language; tesseract and Vision take lists
+    let sel_note = if cfg!(target_os = "windows") {
+        "Used when Auto-detect is off — the first checked language wins."
+    } else {
+        "Used when Auto-detect is off — all checked languages run together."
+    };
+    section_title(p, cv, 214.0, "Languages", sel_note);
+    // two-column checklist, 40px rows
+    const LROW: f64 = 40.0;
+    let rows = qs_ocr::LANGS.len().div_ceil(2);
+    let gy = 248.0;
+    let gh = rows as f64 * LROW + 12.0;
+    p.card(cv, (CX, gy, CW, gh));
+    let col_w = (CW - 16.0) / 2.0;
+    let sel = qs_ocr::lang_codes(&v.cfg.ocr_lang);
+    for (i, e) in qs_ocr::LANGS.iter().enumerate() {
+        let col = i / rows;
+        let row = i % rows;
+        let x = CX + 8.0 + col as f64 * col_w;
+        let y = gy + 6.0 + row as f64 * LROW;
+        let hr = (x, y, col_w, LROW);
+        let on = sel.iter().any(|s| s == e.0);
+        let hover = v.hover == Some(Hit::Lang(i));
+        if hover {
+            p.fill(cv, hr, 6.0, ROW_HOV, 1.0);
+        }
+        check_box(p, cv, x + 6.0, y + 10.0, on, hover);
+        p.text(cv, x + 34.0, y + 25.0, 13.0, e.1, FG);
+        let missing = !v.ocr_langs.iter().any(|l| l == e.0);
+        // installed → show the code; missing → the badge alone keeps the
+        // row from colliding with long names like "Chinese (Traditional)"
+        let note = if missing {
+            "not installed".to_owned()
+        } else {
+            e.0.to_owned()
+        };
+        p.text(
+            cv,
+            x + col_w - 16.0 - p.text_w(&note, 10.5),
+            y + 25.0,
+            10.5,
+            &note,
+            if missing { FG_DIM } else { FG_FAINT },
+        );
+        hits.push((hr, Hit::Lang(i)));
+    }
+
+    // footer: install action / progress / outcome / per-OS hint
+    let fy = gy + gh + 22.0;
+    #[cfg(target_os = "linux")]
+    {
+        if v.installing {
+            // pulses while the worker runs — the polkit auth dialog is
+            // the user's cue that the click did something
+            let a = 0.35 + 0.65 * v.pulse.sin().abs();
+            p.text(
+                cv,
+                CX + 8.0,
+                fy + 4.0,
+                11.5,
+                "Installing language packs… approve the system prompt",
+                mix(FG_FAINT, FG_DIM, a),
+            );
+        } else {
+            let missing: Vec<&str> = qs_ocr::LANGS
+                .iter()
+                .map(|e| e.0)
+                .filter(|c| !v.ocr_langs.iter().any(|l| l == *c))
+                .collect();
+            if !missing.is_empty() {
+                let lb = (CX, fy - 6.0, 190.0, 30.0);
+                p.ghost_button(
+                    cv,
+                    lb,
+                    &format!("Install {} missing packs", missing.len()),
+                    v.hover == Some(Hit::OcrInstall),
+                );
+                hits.push((lb, Hit::OcrInstall));
+                p.text(
+                    cv,
+                    lb.0 + lb.2 + 14.0,
+                    fy + 14.0,
+                    11.0,
+                    "or: sudo apt install tesseract-ocr-<code>",
+                    FG_FAINT,
+                );
+            }
+            // outcome sits under the button row so the two never overlap
+            let my = if missing.is_empty() {
+                fy + 4.0
+            } else {
+                fy + 42.0
+            };
+            if let Some(m) = v.install_msg {
+                p.text(cv, CX + 8.0, my, 11.5, m, FG_DIM);
+            } else if missing.is_empty() {
+                p.text(
+                    cv,
+                    CX + 8.0,
+                    my,
+                    11.5,
+                    "All listed languages are installed.",
+                    FG_FAINT,
+                );
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    p.text(
+        cv,
+        CX + 8.0,
+        fy + 4.0,
+        11.5,
+        "Recognition runs through macOS Vision — dimmed entries are unsupported.",
+        FG_FAINT,
+    );
+    #[cfg(target_os = "windows")]
+    p.text(
+        cv,
+        CX + 8.0,
+        fy + 4.0,
+        11.5,
+        "Missing packs: Windows Settings > Time & Language > Language & region.",
+        FG_FAINT,
+    );
+}
+
 fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
     p.text(cv, CX, 52.0, 24.0, "Storage", FG);
     p.text(cv, CX, 76.0, 12.5, "Manage captured files.", FG_DIM);
@@ -1359,7 +1625,10 @@ fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     p.stroke(cv, bar, 4.0, BORDER, 1.0, 1.0);
     let mut lx = r.0 + 14.0;
     for (col, txt) in [
-        (v.cfg.accent_rgb(), format!("Captures · {}", human_bytes(cap_b))),
+        (
+            v.cfg.accent_rgb(),
+            format!("Captures · {}", human_bytes(cap_b)),
+        ),
         (0xAEB6C0, format!("Other · {}", human_bytes(other_b))),
         (0xE9ECF0, format!("Free · {}", human_bytes(free_b))),
     ] {
@@ -1540,11 +1809,6 @@ fn drop_apply(cfg: &mut Config, d: Drop, i: usize) {
             cfg.keep_days = [0u32, 7, 30][i.min(2)];
             // apply the new policy immediately, not just on next launch
             actions::cleanup_captures(&cfg.save_dir(), cfg.keep_days);
-        }
-        Drop::OcrLang => {
-            if let Some((_, v)) = OCR_LANGS.get(i) {
-                cfg.ocr_lang = v.to_string();
-            }
         }
     }
 }
@@ -1790,9 +2054,16 @@ pub fn standalone() -> Result<()> {
                 }
             }
         }
-        fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
-            if let Some(s) = &self.s {
+        fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+            if let Some(s) = &mut self.s {
                 s.about_to_wait();
+                // a pack install reports via shared state — wake the loop
+                // to poll it instead of waiting for a window event
+                if s.poll_needed() {
+                    el.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                        std::time::Instant::now() + std::time::Duration::from_millis(250),
+                    ));
+                }
             }
         }
     }
@@ -1802,10 +2073,7 @@ pub fn standalone() -> Result<()> {
     if let Ok(a) = std::env::var("QS_ACCENT") {
         cfg.accent = a;
     }
-    let mut run = Run {
-        cfg,
-        s: None,
-    };
+    let mut run = Run { cfg, s: None };
     el.run_app(&mut run)?;
     Ok(())
 }
@@ -2120,6 +2388,21 @@ impl Painter<'_> {
                     1.0,
                 );
                 self.seg(cv, cx, cy - s * 0.06, cx, cy + s * 0.24, w * 1.4, rgb);
+            }
+            Glyph::Text => {
+                // three staggered text lines — reads as a document
+                for (i, frac) in [0.62_f64, 0.84, 0.5].iter().enumerate() {
+                    let ly = y + s * (0.28 + i as f64 * 0.22);
+                    self.seg(
+                        cv,
+                        x + s * 0.16,
+                        ly,
+                        x + s * (0.16 + frac),
+                        ly,
+                        w * 1.4,
+                        rgb,
+                    );
+                }
             }
             Glyph::Bolt => {
                 self.seg(

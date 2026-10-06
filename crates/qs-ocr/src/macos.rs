@@ -83,3 +83,14 @@ pub fn extract(img: &RgbaImage, lang: &str) -> Result<String> {
     }
     Ok(lines.join("\n"))
 }
+
+/// BCP-47 tags Vision can recognize at the Accurate level — feeds the
+/// Settings "not installed" badges.
+pub fn installed() -> Vec<String> {
+    let req = VNRecognizeTextRequest::new();
+    req.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+    match unsafe { req.supportedRecognitionLanguagesAndReturnError() } {
+        Ok(langs) => langs.iter().map(|s| s.to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
