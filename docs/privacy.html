@@ -43,88 +43,81 @@
 
 <main class="policy">
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: 2026-01 · Tiếng Việt bên dưới</p>
+  <p class="updated">Last updated: October 2026 · Tiếng Việt bên dưới</p>
 
   <h2>The short version</h2>
-  <p>Quickshort runs entirely on your machine. Screenshots, annotations, OCR, and
-  settings never leave your device. The only things that ever hit a server are:
-  an image <em>you explicitly share</em>, an optional bug report <em>you
-  explicitly send</em>, and an update check against GitHub Releases. There is no
-  analytics, no tracking, no ads, and no account system.</p>
+  <p>Quickshort runs on your machine. Screenshots, annotations, OCR results, and
+  settings stay local. Three kinds of traffic exist: an image you share, a bug
+  report you send, and a daily update check against GitHub Releases. The app has
+  no analytics, no tracking, and no accounts.</p>
 
   <h2>What stays on your device</h2>
   <ul>
-    <li>All captures and saved PNGs (<code>~/Pictures/Quickshort</code> or your configured directory)</li>
+    <li>Captures and saved PNGs (<code>~/Pictures/Quickshort</code>, or your configured directory)</li>
     <li>Settings, hotkeys, and window preferences (<code>~/.config/quickshort/</code>)</li>
-    <li>OCR runs fully on-device — Apple Vision on macOS, Windows.Media.Ocr on Windows, Tesseract on Linux. No image or text is sent to a cloud OCR service.</li>
+    <li>OCR results. Recognition runs on your device: Apple Vision on macOS, Windows.Media.Ocr on Windows, Tesseract on Linux. No image or text goes to a cloud OCR service.</li>
   </ul>
 
-  <h2>What leaves your device — and only when you ask</h2>
+  <h2>What leaves your device</h2>
 
-  <h3>1. Share link (opt-in, per capture)</h3>
-  <p>Pressing <strong>Share</strong> uploads <em>that one image</em> — encoded as
-  WebP — to a Cloudflare Worker (<code>quickshort-share</code>), which stores it
-  in Cloudflare Workers KV and returns a random 128-bit URL
-  (<code>/s/&lt;id&gt;.webp</code>). Anyone holding the link can view the image
-  until it expires.</p>
+  <h3>Share link</h3>
+  <p>Pressing <strong>Share</strong> uploads that one image, encoded as WebP, to
+  a Cloudflare Worker (<code>quickshort-share</code>). The worker stores it in
+  Workers KV and returns a random 128-bit URL (<code>/s/&lt;id&gt;.webp</code>).
+  Anyone holding the link can view the image until it expires.</p>
   <table>
     <tr><th>Data</th><th>Where</th><th>Retention</th></tr>
     <tr><td>Shared image</td><td>Cloudflare KV</td><td>Auto-deleted after <strong>3 days</strong></td></tr>
     <tr><td>Uploader IP (rate-limit key <code>rl:&lt;ip&gt;:&lt;date&gt;</code>)</td><td>Cloudflare KV</td><td>Auto-deleted after 2 days</td></tr>
     <tr><td>Local archive copy (<code>shared/</code> subfolder)</td><td>Your disk</td><td>Until you delete it</td></tr>
   </table>
-  <p>Limits: 12 MB per upload, 30 shares per IP per day. Shared images are not
-  indexed or listed; the unguessable ID is the only protection, so share links
-  are for public-or-semi-private content — not for secrets.</p>
+  <p>Limits are 12 MB per upload and 30 shares per IP per day. Shared images are
+  not indexed or listed anywhere. The unguessable ID is the only protection, so
+  treat a share link as public: fine for a screenshot you would post anyway,
+  wrong for secrets.</p>
 
-  <h3>2. Bug report (opt-in)</h3>
-  <p>The in-app report form sends your app version, OS/arch, a diagnostics
-  bundle, and your optional note to the <code>quickshort-report</code> Worker,
-  which files it as a <strong>public GitHub issue</strong> on
-  <code>truongnat/quickshort</code>. The issue is publicly visible and
-  effectively permanent — do not paste secrets, tokens, or private screenshots
-  into the note.</p>
+  <h3>Bug report</h3>
+  <p>The report form sends your app version, OS and architecture, a diagnostics
+  bundle, and your note to the <code>quickshort-report</code> worker, which
+  files it as a <strong>public GitHub issue</strong> on
+  <code>truongnat/quickshort</code>. The issue is visible to everyone and stays
+  up, so keep secrets and private screenshots out of the note.</p>
 
-  <h3>3. Update check (automatic)</h3>
+  <h3>Update check</h3>
   <p>At most once a day the app queries
   <code>api.github.com/repos/truongnat/quickshort/releases/latest</code> to
-  compare versions. GitHub sees the request's IP and user-agent. No
-  identification is sent. Turn it off with <code>auto_update = false</code>
-  in <code>config.toml</code>.</p>
+  compare versions. GitHub sees the request's IP and user-agent. Turn it off
+  with <code>auto_update = false</code> in <code>config.toml</code>.</p>
 
   <h2>Third parties</h2>
   <ul>
-    <li><strong>Cloudflare</strong> — hosts the share/report workers and KV storage; standard edge request logs apply (Cloudflare's privacy policy governs their side).</li>
-    <li><strong>GitHub</strong> — release downloads, update checks, public issue reports, and this documentation site (GitHub Pages).</li>
-    <li><strong>Google Fonts</strong> — this website loads font files from fonts.googleapis.com; the app itself loads no remote resources.</li>
+    <li>Cloudflare runs the share and report workers and stores shared images. Its standard edge request logs apply.</li>
+    <li>GitHub serves release downloads, update checks, public issues, and this site (GitHub Pages).</li>
+    <li>This website loads fonts from Google Fonts. The app itself loads no remote resources.</li>
   </ul>
 
-  <h2>What we don't do</h2>
-  <ul>
-    <li>No analytics, telemetry, or crash reporting without an explicit click</li>
-    <li>No accounts, no sign-in, no email collection</li>
-    <li>No persistent storage of your images beyond the 3-day share TTL</li>
-    <li>No sale or sharing of any data with anyone</li>
-  </ul>
+  <h2>What we don't collect</h2>
+  <p>No analytics, telemetry, or crash reporting unless you send a report
+  yourself. No accounts and no email collection. Shared images are deleted on
+  schedule, not kept. Nothing is sold or given to advertisers.</p>
 
   <h2>Your controls</h2>
   <ul>
-    <li>Nothing is uploaded unless you press Share or send a bug report.</li>
-    <li>Shared links expire automatically; deleting the local file does not affect the link and vice versa.</li>
-    <li>To remove a public bug report or a shared image early, open an issue on GitHub and it will be deleted.</li>
+    <li>Nothing uploads unless you press Share or send a bug report.</li>
+    <li>A shared link expires on its own. Deleting your local copy under <code>shared/</code> does not affect it.</li>
+    <li>To remove a public bug report or a shared image early, open an issue on GitHub and it gets deleted.</li>
   </ul>
 
-  <h2>Chính sách bảo mật (Tiếng Việt)</h2>
-  <p>Quickshort chạy hoàn toàn trên máy của bạn. Ảnh chụp, chú thích, OCR và cấu
-  hình không bao giờ rời thiết bị. Chỉ có ba thứ chạm tới server: ảnh <em>bạn
-  chủ động bấm Share</em>, báo lỗi <em>bạn chủ động gửi</em>, và request kiểm
-  tra cập nhật tới GitHub Releases. Không analytics, không tracking, không quảng
-  cáo, không tài khoản.</p>
+  <h2>Chính sách bảo mật</h2>
+  <p>Mọi thứ nằm trên máy bạn: ảnh chụp, chú thích, kết quả OCR, cấu hình. Ra
+  mạng chỉ khi bạn bấm Share, bấm gửi báo lỗi, hoặc lúc app tự hỏi GitHub xem
+  có bản mới (một lần mỗi ngày). Ngoài ra không có analytics hay tài khoản
+  gì.</p>
   <ul>
-    <li><strong>Share:</strong> ảnh (WebP) lên Cloudflare Worker, lưu trong Workers KV, <strong>tự xoá sau 3 ngày</strong>. Link là ID ngẫu nhiên 128-bit — ai có link đều xem được, nên đừng dùng cho nội dung bí mật. IP của bạn được lưu trong khoá rate-limit 2 ngày (chặn 30 share/ngày/IP).</li>
-    <li><strong>Báo lỗi:</strong> version, OS, diagnostics và ghi chú của bạn được đăng thành <strong>GitHub issue công khai</strong> — đừng dán mật khẩu/token vào.</li>
-    <li><strong>Update check:</strong> gọi GitHub Releases API; GitHub thấy IP của bạn. Tắt bằng <code>auto_update = false</code> trong <code>config.toml</code>.</li>
-    <li><strong>OCR:</strong> chạy on-device (Vision / Windows.Media.Ocr / Tesseract), không gửi ảnh hay text đi đâu.</li>
+    <li>Ảnh Share được nén WebP rồi up lên Cloudflare Worker, nằm trong Workers KV và <strong>tự xoá sau 3 ngày</strong>. Link là một ID ngẫu nhiên 128-bit: ai có link đều xem được, nên đừng share thứ cần giữ kín. IP của bạn được ghi vào một khoá rate-limit sống 2 ngày, dùng để chặn quá 30 share mỗi ngày.</li>
+    <li>Báo lỗi gồm version, OS, diagnostics và ghi chú bạn nhập, đăng thành một <strong>GitHub issue công khai</strong>. Đừng dán mật khẩu hay token vào đó.</li>
+    <li>Kiểm tra cập nhật là một request tới GitHub Releases; GitHub thấy IP của bạn. Muốn tắt thì đặt <code>auto_update = false</code> trong <code>config.toml</code>.</li>
+    <li>OCR chạy ngay trên máy (Vision trên macOS, Windows.Media.Ocr trên Windows, Tesseract trên Linux). Ảnh và chữ không đi đâu cả.</li>
   </ul>
 
   <h2>Contact</h2>
