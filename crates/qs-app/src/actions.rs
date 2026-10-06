@@ -21,7 +21,7 @@ pub enum Outcome {
     Saved(PathBuf),
     Copied,
     /// public URL of the shared file, already on the clipboard
-    Shared(String),
+    Shared(crate::share::SharedLink),
     /// chars of extracted text put on the clipboard
     TextCopied(usize),
     /// OCR ran but found no text
@@ -74,10 +74,10 @@ pub fn dispatch(
             let dir = base.join("shared");
             std::fs::create_dir_all(&dir)?;
             let name = format!("quickshort-{}-{}.png", unix_ts()?, rand_hex()?);
-            let p = save(&img, &SaveTarget::File(dir.join(name)))?;
-            let url = sm.share(&p)?;
-            copy_text_to_clipboard(&url, wait_clipboard);
-            Ok(Outcome::Shared(url))
+            save(&img, &SaveTarget::File(dir.join(name)))?;
+            let link = sm.share(&img)?;
+            copy_text_to_clipboard(&link.url, wait_clipboard);
+            Ok(Outcome::Shared(link))
         }
         Action::Copy => {
             copy_image_to_clipboard(&img, wait_clipboard);

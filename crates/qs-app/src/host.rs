@@ -468,9 +468,11 @@ impl ApplicationHandler<HostEvent> for Host {
                     Ok(Outcome::Copied) => {
                         self.toast_done(el, "Copied to clipboard".to_string(), true)
                     }
-                    Ok(Outcome::Shared(url)) => {
-                        self.toast_done(el, format!("Link copied — {url}"), true)
-                    }
+                    Ok(Outcome::Shared(link)) => self.toast_done(
+                        el,
+                        format!("Link copied — expires in {}d", link.expires_s / 86400),
+                        true,
+                    ),
                     Ok(Outcome::TextCopied(n)) => {
                         self.toast_done(el, format!("Copied {n} chars"), true)
                     }

@@ -30,12 +30,10 @@ downloads.
   toggle, a proper editing box (arrows, selection, ⌘A) and Vietnamese IME
   input. Shapes and text stay editable blocks: the Select tool picks, drags
   and deletes them
-- **Self-hosted link sharing** — one click saves the PNG on your own
-  machine and publishes it through `ssh -R` to
-  [tunnl.gg](https://tunnl.gg), no backend storage, no account. The URL is
-  stable per app (tied to an app-owned SSH key), serves files statelessly
-  by name so concurrent shares share one tunnel, and stays live while
-  the app runs
+- **Link sharing** — one click uploads the shot as WebP (q95, roughly
+  half a PNG's size) to a Cloudflare Worker (`relay/share/`) and copies
+  an unguessable URL that expires in 3 days. No account, no local
+  server, and the process does not need to stay alive
 - **OCR with per-OS engines** — Vision `VNRecognizeTextRequest` on macOS,
   `Windows.Media.Ocr` on Windows, Tesseract on Linux with script
   auto-detection (`ocr_lang = "auto"`, OSD pass picks eng/jpn/vie/…);

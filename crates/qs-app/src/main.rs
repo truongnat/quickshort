@@ -175,14 +175,18 @@ fn run_one_shot(args: Args) -> Result<()> {
     );
     match &outcome {
         Err(e) => notify(&format!("{e:#}")),
-        Ok(actions::Outcome::Shared(url)) => notify(&format!("shared — link copied\n{url}")),
+        Ok(actions::Outcome::Shared(link)) => notify(&format!(
+            "shared — link copied (expires in {}d)\n{}",
+            link.expires_s / 86400,
+            link.url
+        )),
         Ok(actions::Outcome::TextCopied(n)) => notify(&format!("copied {n} chars")),
         _ => {}
     }
     let outcome = outcome?;
     // shared links are hosted on the worker — nothing to keep alive here
-    if let actions::Outcome::Shared(url) = &outcome {
-        eprintln!("shared {url} (expires in 7 days)");
+    if let actions::Outcome::Shared(link) = &outcome {
+        eprintln!("shared {} (expires in {}s)", link.url, link.expires_s);
     }
     Ok(())
 }
