@@ -180,16 +180,9 @@ fn run_one_shot(args: Args) -> Result<()> {
         _ => {}
     }
     let outcome = outcome?;
-    // the share link only lives while the tunnel does — park so this
-    // one-shot process keeps serving it (pkill quickshort to stop).
-    // a share that reused a sibling's tunnel needs nothing from us.
+    // shared links are hosted on the worker — nothing to keep alive here
     if let actions::Outcome::Shared(url) = &outcome {
-        if sm.owns_tunnel() {
-            eprintln!("sharing {url} — stays up while this process runs");
-            loop {
-                std::thread::park();
-            }
-        }
+        eprintln!("shared {url} (expires in 7 days)");
     }
     Ok(())
 }
