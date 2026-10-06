@@ -50,6 +50,12 @@ window.QS_I18N = {
     "f8.p": "<code>quickshort --capture --out shot.png</code> skips the tray lifecycle — select, act, exit. <code>--delay</code> waits for menus and tooltips, so it composes with launchd, CI jobs, or a shell alias.",
     "f9.h": "Self-updating",
     "f9.p": "The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact.",
+    "f10.h": "Screen recording",
+    "f10.p": "⌘R turns the selection into a live mp4 — PipeWire on Wayland, ScreenCaptureKit on macOS, GDI on Windows. ffmpeg encodes on a worker at 15fps with wall-clock duration, so a slow encode drops frames instead of shrinking the clip. A floating REC card ends it.",
+    "f11.h": "Scrolling capture",
+    "f11.p": "⌘G re-grabs the region while you scroll and stitches the frames into one tall image — long docs, threads, and chat logs that never fit on one screen.",
+    "f12.h": "Pin & beautify",
+    "f12.p": "Pin floats a capture always-on-top as a reference you can drag anywhere. Beautify mounts it on a soft gradient backdrop with rounded corners and a drop shadow — ready for docs and posts.",
 
     "pipe.eyebrow": "THE PIPELINE",
     "pipe.h2": "Four layers. Zero browsers.",
@@ -76,7 +82,7 @@ window.QS_I18N = {
     "dl.l1.d": "Portable, no install. Download, chmod +x, run. Bundles the tray dependencies.",
     "dl.l1.b": "Download AppImage",
     "dl.l2.d": "Registers a .desktop entry and icon, lands in /usr/bin.",
-    "dl.perm": "macOS 14+ needs Screen Recording and Accessibility permissions. Windows installer is unsigned (SmartScreen once). Linux OCR runs Tesseract with script auto-detection.",
+    "dl.perm": "macOS 14+ needs Screen Recording and Accessibility permissions. Windows installer is unsigned (SmartScreen once). Linux OCR runs Tesseract with script auto-detection. Screen recording (⌘R) needs ffmpeg on PATH — brew, winget, or apt.",
 
     "req.eyebrow": "FEEDBACK",
     "req.h2": "Shape what ships next.",
@@ -160,6 +166,12 @@ window.QS_I18N = {
     "f8.p": "<code>quickshort --capture --out shot.png</code> bỏ qua vòng đời tray — chọn, xong, thoát. <code>--delay</code> chờ menu và tooltip, nên kết hợp được với launchd, CI, hay shell alias.",
     "f9.h": "Tự cập nhật",
     "f9.p": "Tray kiểm tra GitHub Releases mỗi ngày một lần. Bản cập nhật tải .app mới, kiểm SHA-256, thay thế tại chỗ kèm rollback nếu lỗi, rồi khởi động lại. Chữ ký self-signed ổn định giữ nguyên quyền Screen Recording và Accessibility.",
+    "f10.h": "Quay màn hình",
+    "f10.p": "⌘R biến vùng chọn thành mp4 — PipeWire trên Wayland, ScreenCaptureKit trên macOS, GDI trên Windows. ffmpeg encode trên thread riêng ở 15fps theo đồng hồ thật, nên encode chậm chỉ drop frame chứ không làm clip ngắn lại. Thẻ REC nổi dừng quay.",
+    "f11.h": "Chụp cuộn trang",
+    "f11.p": "⌘G chụp lặp lại vùng chọn trong lúc bạn cuộn rồi ghép các khung thành một ảnh dài — tài liệu, thread hay log chat không bao giờ vừa một màn hình.",
+    "f12.h": "Pin & làm đẹp",
+    "f12.p": "Pin ghim ảnh luôn nổi trên cùng làm mẫu tham chiếu, kéo đi đâu cũng được. Beautify gắn ảnh lên nền gradient mềm với bo góc và đổ bóng — sẵn sàng cho docs và bài đăng.",
 
     "pipe.eyebrow": "KIẾN TRÚC",
     "pipe.h2": "Bốn tầng. Không trình duyệt.",
@@ -186,7 +198,7 @@ window.QS_I18N = {
     "dl.l1.d": "Portable, không cần cài. Tải về, chmod +x, chạy. Kèm sẵn dependency cho tray.",
     "dl.l1.b": "Tải AppImage",
     "dl.l2.d": "Đăng ký .desktop entry và icon, vào /usr/bin.",
-    "dl.perm": "macOS 14+ cần quyền Screen Recording và Accessibility. Bộ cài Windows chưa ký (SmartScreen một lần). OCR trên Linux chạy Tesseract với tự nhận diện script.",
+    "dl.perm": "macOS 14+ cần quyền Screen Recording và Accessibility. Bộ cài Windows chưa ký (SmartScreen một lần). OCR trên Linux chạy Tesseract với tự nhận diện script. Quay màn hình (⌘R) cần ffmpeg trong PATH — brew, winget hoặc apt.",
 
     "req.eyebrow": "GÓP Ý",
     "req.h2": "Định hình tính năng tiếp theo.",

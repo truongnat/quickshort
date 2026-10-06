@@ -38,6 +38,16 @@ downloads.
   `Windows.Media.Ocr` on Windows, Tesseract on Linux with script
   auto-detection (`ocr_lang = "auto"`, OSD pass picks eng/jpn/vie/…);
   nothing ships in the binary
+- **Screen recording** — `⌘R` records the selected region to mp4 at 15fps:
+  PipeWire push on Wayland, re-capture polling on macOS (ScreenCaptureKit)
+  and Windows (GDI). Encoding runs on a worker through `ffmpeg` — slow
+  encodes drop frames instead of shortening the clip (needs `ffmpeg` on
+  PATH; installers surface it)
+- **Scrolling capture** — `⌘G` re-grabs the region while you scroll and
+  stitches the frames into one tall image — docs, threads, chat logs
+- **Pin & beautify** — Pin floats a capture as an always-on-top reference
+  window; Beautify mounts it on a soft gradient backdrop with rounded
+  corners and a drop shadow
 - **Resident tray app** — menu-bar icon, global hotkey, launch at login,
   recent captures, auto-update
 - **Settings window** — paged preferences (Capture, General, Shortcuts,
@@ -75,6 +85,9 @@ Required permissions (System Settings → Privacy & Security):
 the tray item becomes *Update to vX — Restart to Install*. Or: tray menu →
 **Check for Updates…**, or `brew upgrade --cask quickshort`.
 
+Optional: `brew install ffmpeg` enables screen recording (`⌘R`); without
+it everything else still works — Record fails with a visible toast.
+
 ### Linux
 
 **AppImage** — grab `Quickshort-Linux.AppImage` from
@@ -87,6 +100,9 @@ run. Bundles the tray dependencies (gtk plugin).
 ```bash
 sudo dpkg -i quickshort_amd64.deb
 ```
+
+The deb pulls `ffmpeg` via Recommends (screen recording); AppImage users
+need it on PATH themselves — `sudo apt install ffmpeg`.
 
 Or from source — `./install.sh` installs missing system deps on
 Debian/Ubuntu (pipewire/spa/clang dev packages for the build, plus
@@ -103,7 +119,9 @@ only — bind it yourself.
 installer: Program Files install, Start Menu shortcut, uninstaller entry.
 Unsigned, so SmartScreen warns once (**More info → Run anyway**). Runs as a
 tray app, no console window. Or build from source
-(`cargo build --release -p qs-app`).
+(`cargo build --release -p qs-app`). The installer warns if `ffmpeg.exe`
+isn't on PATH (`winget install ffmpeg`) — it's only needed for `⌘R`
+screen recording.
 
 ## Usage
 
@@ -118,6 +136,7 @@ quickshort --capture --out ~/shots/a.png
 |---|---|---|
 | Anywhere | `⌘⇧S` macOS/Linux, `PrintScreen` Windows (configurable) | Start a selection |
 | Selection made | `⌘S` / `⌘C` / `⌘T` / `⌘L` (rebindable) | Save / copy / OCR / share link → clipboard |
+| Selection made | `⌘G` / `⌘R` (rebindable) | Scrolling capture / record region to mp4 |
 | Selection made | `⌘Z` / `⌘⇧Z` (rebindable key) | Undo / redo an edit |
 | Block selected | `Delete` / `⌫` / `Esc` | Remove block / deselect |
 | Text draft | `Enter` / `Esc` | Commit / discard |
@@ -145,7 +164,11 @@ key_save = "s"                 # overlay ⌘+key actions
 key_copy = "c"
 key_ocr = "t"
 key_share = "l"
+key_scroll = "g"               # scrolling capture
+key_record = "r"               # screen recording (needs ffmpeg on PATH)
 key_undo = "z"                 # ⌘z undo, ⌘⇧z redo
+popup_pos = "top-right"        # toast/card/REC dock corner: top-left,
+                               # top-center, top-right, bottom-* too
 ```
 
 The selection toolbar docks to whichever edge of the region has room.

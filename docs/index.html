@@ -160,6 +160,21 @@
       <h3 data-i18n="f9.h">Self-updating</h3>
       <p data-i18n="f9.p">The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact.</p>
     </article>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">●</div>
+      <h3 data-i18n="f10.h">Screen recording</h3>
+      <p data-i18n="f10.p">⌘R turns the selection into a live mp4 — PipeWire on Wayland, ScreenCaptureKit on macOS, GDI on Windows. ffmpeg encodes on a worker at 15fps with wall-clock duration, so a slow encode drops frames instead of shrinking the clip. A floating REC card ends it.</p>
+    </article>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">⇊</div>
+      <h3 data-i18n="f11.h">Scrolling capture</h3>
+      <p data-i18n="f11.p">⌘G re-grabs the region while you scroll and stitches the frames into one tall image — long docs, threads, and chat logs that never fit on one screen.</p>
+    </article>
+    <article class="cell reveal">
+      <div class="cell-glyph" aria-hidden="true">✦</div>
+      <h3 data-i18n="f12.h">Pin &amp; beautify</h3>
+      <p data-i18n="f12.p">Pin floats a capture always-on-top as a reference you can drag anywhere. Beautify mounts it on a soft gradient backdrop with rounded corners and a drop shadow — ready for docs and posts.</p>
+    </article>
     <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
 </section>
@@ -254,7 +269,7 @@ sudo dpkg -i quickshort_amd64.deb</code>
     </div>
     <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
-  <p class="dl-note reveal" id="permNote" data-i18n="dl.perm">macOS 14+ needs Screen Recording and Accessibility permissions. Windows installer is unsigned (SmartScreen once). Linux OCR runs Tesseract with script auto-detection.</p>
+  <p class="dl-note reveal" id="permNote" data-i18n="dl.perm">macOS 14+ needs Screen Recording and Accessibility permissions. Windows installer is unsigned (SmartScreen once). Linux OCR runs Tesseract with script auto-detection. Screen recording (⌘R) needs ffmpeg on PATH — brew, winget, or apt.</p>
 </section>
 
 <section class="section" id="request">
