@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="no-js">
+<html lang="en" class="no-js" data-lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,6 +13,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<script src="i18n.js"></script>
 </head>
 <body>
 
@@ -23,9 +24,13 @@
       <span>Quickshort</span>
     </a>
     <div class="nav-links">
+      <div class="lang-sw-group" role="group" aria-label="Language">
+        <button class="lang-sw on" data-lang="en" type="button">EN</button>
+        <button class="lang-sw" data-lang="vi" type="button">VI</button>
+      </div>
       <a href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">GitHub</a>
-      <a href="#donate">Sponsor</a>
-      <a class="btn btn-nav" href="#download">Download</a>
+      <a href="#donate" data-i18n="nav.sponsor">Sponsor</a>
+      <a class="btn btn-nav" href="#download" data-i18n="nav.download">Download</a>
     </div>
   </div>
 </nav>
@@ -48,33 +53,33 @@
     <span class="runh" style="top:79%;animation-delay:3.1s"></span>
   </div>
   <div class="hero-inner">
-    <p class="chip"><span class="chip-dot"></span>NATIVE SCREENSHOT TOOL</p>
+    <p class="chip"><span class="chip-dot"></span><span data-i18n="hero.chip">NATIVE SCREENSHOT TOOL</span></p>
     <h1 class="headline">
-      <span class="line"><span>Select.</span> <span>Snip.</span> <span>Ship.</span></span>
+      <span class="line"><span data-i18n="hero.w1">Select.</span> <span data-i18n="hero.w2">Snip.</span> <span data-i18n="hero.w3">Ship.</span></span>
     </h1>
-    <p class="sub">Pixel-perfect region captures across every monitor, with annotations and native OCR. Pure Rust, no Electron.</p>
+    <p class="sub" data-i18n="hero.sub">Pixel-perfect region captures across every monitor, with annotations and native OCR. Pure Rust, no Electron.</p>
     <div class="cta-row">
       <a class="btn btn-primary" id="heroCta" href="#download">Download</a>
-      <a class="btn btn-ghost" href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener">View on GitHub</a>
+      <a class="btn btn-ghost" href="https://github.com/truongnat/quickshort" target="_blank" rel="noopener" data-i18n="hero.gh">View on GitHub</a>
     </div>
   </div>
 </header>
 
 <div class="strip" aria-hidden="true">
   <div class="strip-inner">
-    <span>RETINA-NATIVE</span>
-    <span>MULTI-MONITOR</span>
-    <span>ANNOTATIONS</span>
-    <span>NATIVE OCR</span>
-    <span>ZERO ELECTRON</span>
-    <span>PURE RUST</span>
+    <span data-i18n="strip.1">RETINA-NATIVE</span>
+    <span data-i18n="strip.2">MULTI-MONITOR</span>
+    <span data-i18n="strip.3">ANNOTATIONS</span>
+    <span data-i18n="strip.4">NATIVE OCR</span>
+    <span data-i18n="strip.5">ZERO ELECTRON</span>
+    <span data-i18n="strip.6">PURE RUST</span>
   </div>
 </div>
 
 <section class="section" id="showcase">
   <div class="sec-head">
-    <p class="eyebrow">SHOWCASE</p>
-    <h2 class="reveal">The whole loop, on screen.</h2>
+    <p class="eyebrow" data-i18n="sh.eyebrow">SHOWCASE</p>
+    <h2 class="reveal" data-i18n="sh.h2">The whole loop, on screen.</h2>
   </div>
   <input class="sh-r" type="radio" name="showcase" id="sh-demo" checked>
   <input class="sh-r" type="radio" name="showcase" id="sh-overlay">
@@ -82,11 +87,11 @@
   <input class="sh-r" type="radio" name="showcase" id="sh-tray">
   <input class="sh-r" type="radio" name="showcase" id="sh-settings">
   <div class="sh-tabs">
-    <label for="sh-demo">DEMO</label>
-    <label for="sh-overlay">OVERLAY</label>
-    <label for="sh-annotate">ANNOTATE</label>
-    <label for="sh-tray">TRAY</label>
-    <label for="sh-settings">SETTINGS</label>
+    <label for="sh-demo" data-i18n="sh.t1">DEMO</label>
+    <label for="sh-overlay" data-i18n="sh.t2">OVERLAY</label>
+    <label for="sh-annotate" data-i18n="sh.t3">ANNOTATE</label>
+    <label for="sh-tray" data-i18n="sh.t4">TRAY</label>
+    <label for="sh-settings" data-i18n="sh.t5">SETTINGS</label>
   </div>
   <div class="showcase-frame reveal">
     <span class="cross tl">+</span><span class="cross tr">+</span>
@@ -106,54 +111,54 @@
 
 <section class="section" id="features">
   <div class="sec-head">
-    <h2 class="reveal">Everything a snip should do.<br>Nothing it should not.</h2>
+    <h2 class="reveal" data-i18n="feat.h2">Everything a snip should do.<br>Nothing it should not.</h2>
   </div>
   <div class="grid-cells">
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">✎</div>
-      <h3>Annotate in place</h3>
-      <p>Draw directly on the dimmed overlay — pen, arrow, rectangle, ellipse, highlighter, text, pixelate — everything confined to the captured region. The text tool is a real editing box: font sizes (12–48), bold toggle, caret, selection and ⌘A, with IME input for Vietnamese. Every shape and text block stays editable — the Select tool picks it up, drags it somewhere better, or deletes it. Strokes live on a physical-resolution layer, so they stay as sharp as the capture itself. Undo and redo are one click.</p>
+      <h3 data-i18n="f1.h">Annotate in place</h3>
+      <p data-i18n="f1.p">Draw directly on the dimmed overlay — pen, arrow, rectangle, ellipse, highlighter, text, pixelate — everything confined to the captured region. The text tool is a real editing box: font sizes (12–48), bold toggle, caret, selection and ⌘A, with IME input for Vietnamese. Every shape and text block stays editable — the Select tool picks it up, drags it somewhere better, or deletes it. Strokes live on a physical-resolution layer, so they stay as sharp as the capture itself. Undo and redo are one click.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">⌘</div>
-      <h3>Global hotkey, resident tray</h3>
-      <p>Quickshort sits in the menu bar. Press ⌘⇧S from anywhere and a dimmed overlay covers every monitor at once. Esc cancels, and the shortcut is re-recordable in Settings.</p>
+      <h3 data-i18n="f2.h">Global hotkey, resident tray</h3>
+      <p data-i18n="f2.p">Quickshort sits in the menu bar. Press ⌘⇧S from anywhere and a dimmed overlay covers every monitor at once. Esc cancels, and the shortcut is re-recordable in Settings.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">2×</div>
-      <h3>Physical pixels, always</h3>
-      <p>Captures request framebuffer resolution, not logical points. On a Retina display the PNG is 2880px wide and text stays crisp at 100% zoom. Mixed-DPI setups map each monitor through its own scale.</p>
+      <h3 data-i18n="f3.h">Physical pixels, always</h3>
+      <p data-i18n="f3.p">Captures request framebuffer resolution, not logical points. On a Retina display the PNG is 2880px wide and text stays crisp at 100% zoom. Mixed-DPI setups map each monitor through its own scale.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">¶</div>
-      <h3>OCR with OS engines</h3>
-      <p>⌘T runs the selection through macOS Vision (Windows.Media.Ocr on Windows) and puts the text on your clipboard with a toast confirmation. Native engines, no bundled models, no cloud calls.</p>
+      <h3 data-i18n="f4.h">OCR with OS engines</h3>
+      <p data-i18n="f4.p">⌘T runs the selection through macOS Vision (Windows.Media.Ocr on Windows) and puts the text on your clipboard with a toast confirmation. Native engines, no bundled models, no cloud calls.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">⇄</div>
-      <h3>Cross-monitor selection</h3>
-      <p>Start a drag on one display and finish it on another. Each monitor's crop is mapped through its own origin and DPI, then stitched into a single image.</p>
+      <h3 data-i18n="f5.h">Cross-monitor selection</h3>
+      <p data-i18n="f5.p">Start a drag on one display and finish it on another. Each monitor's crop is mapped through its own origin and DPI, then stitched into a single image.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">⛓</div>
-      <h3>Links you actually own</h3>
-      <p>⌘L publishes the capture straight from your machine: a tiny local server plus an ssh -R tunnel through tunnl.gg — no backend storage, no account, nothing uploaded. The URL is stable across restarts and dies when you quit.</p>
+      <h3 data-i18n="f6.h">Share links that outlive the app</h3>
+      <p data-i18n="f6.p">⌘L uploads the capture to a Cloudflare edge worker and drops a public link on your clipboard — still serving the image 7 days later, long after you quit.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">∅</div>
-      <h3>Local-first, no account</h3>
-      <p>No sign-up, no telemetry, nothing leaves your machine. Captures land in your folder, settings live in a plain config file, and sharing runs through a tunnel you own — not our storage.</p>
+      <h3 data-i18n="f7.h">Local-first, no account</h3>
+      <p data-i18n="f7.p">No sign-up, no telemetry, nothing leaves your machine. Captures land in your folder, settings live in a plain config file, and sharing runs through a minimal relay — not third-party storage.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">❯</div>
-      <h3>Scriptable one-shot</h3>
-      <p><code>quickshort --capture --out shot.png</code> skips the tray lifecycle — select, act, exit. <code>--delay</code> waits for menus and tooltips, so it composes with launchd, CI jobs, or a shell alias.</p>
+      <h3 data-i18n="f8.h">Scriptable one-shot</h3>
+      <p data-i18n="f8.p"><code>quickshort --capture --out shot.png</code> skips the tray lifecycle — select, act, exit. <code>--delay</code> waits for menus and tooltips, so it composes with launchd, CI jobs, or a shell alias.</p>
     </article>
     <article class="cell reveal">
       <div class="cell-glyph" aria-hidden="true">↻</div>
-      <h3>Self-updating</h3>
-      <p>The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact.</p>
+      <h3 data-i18n="f9.h">Self-updating</h3>
+      <p data-i18n="f9.p">The tray checks GitHub Releases once a day. An update downloads the new .app, verifies its SHA-256, swaps it in place with rollback on failure, and relaunches. A stable self-signed identity keeps Screen Recording and Accessibility grants intact.</p>
     </article>
     <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
@@ -161,30 +166,30 @@
 
 <section class="section" id="pipeline">
   <div class="sec-head">
-    <p class="eyebrow">THE PIPELINE</p>
-    <h2 class="reveal">Four layers. Zero browsers.</h2>
+    <p class="eyebrow" data-i18n="pipe.eyebrow">THE PIPELINE</p>
+    <h2 class="reveal" data-i18n="pipe.h2">Four layers. Zero browsers.</h2>
   </div>
   <div class="grid-cells pipe-cells">
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <div class="cell pipe-step reveal">
       <span class="pipe-num">1</span>
-      <h3>Capture</h3>
-      <p>Every monitor lands in RAM in one shot. ScreenCaptureKit, GDI BitBlt, or PipeWire shm.</p>
+      <h3 data-i18n="p1.h">Capture</h3>
+      <p data-i18n="p1.p">Every monitor lands in RAM in one shot. ScreenCaptureKit, GDI BitBlt, or PipeWire shm.</p>
     </div>
     <div class="cell pipe-step reveal">
       <span class="pipe-num">2</span>
-      <h3>Overlay</h3>
-      <p>Borderless window per monitor dims the frames and tracks the drag in virtual coordinates.</p>
+      <h3 data-i18n="p2.h">Overlay</h3>
+      <p data-i18n="p2.p">Borderless window per monitor dims the frames and tracks the drag in virtual coordinates.</p>
     </div>
     <div class="cell pipe-step reveal">
       <span class="pipe-num">3</span>
-      <h3>Map</h3>
-      <p>Selection coordinates resolve through each monitor's origin and DPI scale factor.</p>
+      <h3 data-i18n="p3.h">Map</h3>
+      <p data-i18n="p3.p">Selection coordinates resolve through each monitor's origin and DPI scale factor.</p>
     </div>
     <div class="cell pipe-step reveal">
       <span class="pipe-num">4</span>
-      <h3>Stitch</h3>
-      <p>Per-monitor crops merge on a worker thread while the event loop stays free.</p>
+      <h3 data-i18n="p4.h">Stitch</h3>
+      <p data-i18n="p4.p">Per-monitor crops merge on a worker thread while the event loop stays free.</p>
     </div>
     <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
@@ -192,19 +197,19 @@
 
 <section class="section" id="download">
   <div class="sec-head">
-    <h2 class="reveal">Grab it.</h2>
+    <h2 class="reveal" data-i18n="dl.h2">Grab it.</h2>
     <p class="dl-note reveal" id="osNote">Detected: macOS</p>
   </div>
   <div class="grid-cells dl-cells" id="dlMac">
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <div class="cell reveal">
       <h3>DMG</h3>
-      <p class="dl-desc">Download, open, drag to Applications. Unsigned build: right-click, Open, once.</p>
-      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest" target="_blank" rel="noopener">Latest release</a>
+      <p class="dl-desc" data-i18n="dl.m1.d">Download, open, drag to Applications. Unsigned build: right-click, Open, once.</p>
+      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest" target="_blank" rel="noopener" data-i18n="dl.m1.b">Latest release</a>
     </div>
     <div class="cell reveal">
       <h3>Homebrew</h3>
-      <p class="dl-desc">Custom tap, quarantine stripped for you.</p>
+      <p class="dl-desc" data-i18n="dl.m2.d">Custom tap, quarantine stripped for you.</p>
       <div class="code-block">
         <code id="brewcmd">brew tap truongnat/tap
 brew install --cask quickshort</code>
@@ -217,12 +222,12 @@ brew install --cask quickshort</code>
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <div class="cell reveal">
       <h3>Installer</h3>
-      <p class="dl-desc">Setup wizard: installs to Program Files, Start Menu shortcut, uninstaller included. Unsigned build: SmartScreen will warn once.</p>
-      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest/download/Quickshort-Windows-Setup.exe" target="_blank" rel="noopener">Download .exe</a>
+      <p class="dl-desc" data-i18n="dl.w1.d">Setup wizard: installs to Program Files, Start Menu shortcut, uninstaller included. Unsigned build: SmartScreen will warn once.</p>
+      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest/download/Quickshort-Windows-Setup.exe" target="_blank" rel="noopener" data-i18n="dl.w1.b">Download .exe</a>
     </div>
     <div class="cell reveal">
       <h3>From source</h3>
-      <p class="dl-desc">Prefer to build it yourself? GDI capture and Windows.Media.Ocr backends are native.</p>
+      <p class="dl-desc" data-i18n="dl.w2.d">Prefer to build it yourself? GDI capture and Windows.Media.Ocr backends are native.</p>
       <div class="code-block">
         <code>git clone https://github.com/truongnat/quickshort
 cd quickshort && cargo build --release</code>
@@ -235,12 +240,12 @@ cd quickshort && cargo build --release</code>
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <div class="cell reveal">
       <h3>AppImage</h3>
-      <p class="dl-desc">Portable, no install. Download, chmod +x, run. Bundles the tray dependencies.</p>
-      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest/download/Quickshort-Linux.AppImage" target="_blank" rel="noopener">Download AppImage</a>
+      <p class="dl-desc" data-i18n="dl.l1.d">Portable, no install. Download, chmod +x, run. Bundles the tray dependencies.</p>
+      <a class="btn btn-primary" href="https://github.com/truongnat/quickshort/releases/latest/download/Quickshort-Linux.AppImage" target="_blank" rel="noopener" data-i18n="dl.l1.b">Download AppImage</a>
     </div>
     <div class="cell reveal">
       <h3>Debian / Ubuntu</h3>
-      <p class="dl-desc">Registers a .desktop entry and icon, lands in /usr/bin.</p>
+      <p class="dl-desc" data-i18n="dl.l2.d">Registers a .desktop entry and icon, lands in /usr/bin.</p>
       <div class="code-block">
         <code>curl -LO https://github.com/truongnat/quickshort/releases/latest/download/quickshort_amd64.deb
 sudo dpkg -i quickshort_amd64.deb</code>
@@ -249,24 +254,41 @@ sudo dpkg -i quickshort_amd64.deb</code>
     </div>
     <span class="cross bl">+</span><span class="cross br">+</span>
   </div>
-  <p class="dl-note reveal" id="permNote">macOS 14+ needs Screen Recording and Accessibility permissions. Windows installer is unsigned (SmartScreen once). Linux OCR runs Tesseract with script auto-detection.</p>
+  <p class="dl-note reveal" id="permNote" data-i18n="dl.perm">macOS 14+ needs Screen Recording and Accessibility permissions. Windows installer is unsigned (SmartScreen once). Linux OCR runs Tesseract with script auto-detection.</p>
+</section>
+
+<section class="section" id="request">
+  <div class="sec-head">
+    <p class="eyebrow" data-i18n="req.eyebrow">FEEDBACK</p>
+    <h2 class="reveal" data-i18n="req.h2">Shape what ships next.</h2>
+    <p class="req-desc reveal" data-i18n="req.desc">Bug reports get filed straight from the app — ideas come from here. Tell us what Quickshort should learn next. No account needed; it lands as a GitHub issue under the hood.</p>
+  </div>
+  <form class="req-form reveal" id="reqForm" novalidate>
+    <input class="req-in" id="reqTitle" type="text" maxlength="120" required data-i18n-ph="req.title" placeholder="Short title — e.g. “Pin a capture on screen”">
+    <textarea class="req-in" id="reqNote" rows="5" maxlength="8000" required data-i18n-ph="req.note" placeholder="What should it do? How would it help your workflow?"></textarea>
+    <div class="req-row">
+      <input class="req-in req-contact" id="reqContact" type="text" maxlength="200" data-i18n-ph="req.contact" placeholder="Contact (optional — GitHub @handle or email)">
+      <button class="btn btn-primary" type="submit" data-i18n="req.send">Send request</button>
+    </div>
+    <p class="req-status" id="reqStatus" role="status"></p>
+  </form>
 </section>
 
 <section class="section" id="donate">
   <div class="sec-head">
-    <p class="eyebrow">SUPPORT</p>
-    <h2 class="reveal">Free for everyone.<br>Funded by a few.</h2>
+    <p class="eyebrow" data-i18n="donate.eyebrow">SUPPORT</p>
+    <h2 class="reveal" data-i18n="donate.h2">Free for everyone.<br>Funded by a few.</h2>
   </div>
   <div class="grid-cells donate-cells">
     <span class="cross tl">+</span><span class="cross tr">+</span>
     <div class="cell reveal">
       <h3>GitHub Sponsors</h3>
-      <p class="dl-desc">International — card or PayPal. Personal sponsorships carry zero fees.</p>
-      <a class="btn btn-primary" href="https://github.com/sponsors/truongnat" target="_blank" rel="noopener">Become a sponsor</a>
+      <p class="dl-desc" data-i18n="donate.gh">International — card or PayPal. Personal sponsorships carry zero fees.</p>
+      <a class="btn btn-primary" href="https://github.com/sponsors/truongnat" target="_blank" rel="noopener" data-i18n="donate.gh.b">Become a sponsor</a>
     </div>
     <div class="cell reveal">
       <h3>VietQR</h3>
-      <p class="dl-desc">Trong nước — quét bằng app ngân hàng bất kỳ, tiền vào thẳng tài khoản.</p>
+      <p class="dl-desc" data-i18n="donate.qr">Trong nước — quét bằng app ngân hàng bất kỳ, tiền vào thẳng tài khoản.</p>
       <div class="donate-qr">
         <img src="donate-qr.png" alt="VietQR transfer QR — MB Bank account 0969069035" width="170">
         <div class="donate-qr-info">

@@ -14,6 +14,19 @@ if (isStatic) {
   if (hero) hero.style.minHeight = "auto";
 }
 
+/* ---------- language: ?lang= > localStorage > en (default) ---------- */
+(() => {
+  const param = new URLSearchParams(location.search).get("lang");
+  const saved = localStorage.getItem("qs-lang");
+  QS_APPLY_LANG(param || saved || "en");
+  document.querySelectorAll(".lang-sw").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      localStorage.setItem("qs-lang", btn.dataset.lang);
+      QS_APPLY_LANG(btn.dataset.lang);
+    });
+  });
+})();
+
 /* ---------- masked headline: slide words up on load ---------- */
 requestAnimationFrame(() => {
   requestAnimationFrame(() => document.documentElement.classList.add("ready"));
@@ -60,31 +73,67 @@ if (!reduced && "IntersectionObserver" in window) {
   };
   if (!cta || !grids.macos || !grids.windows || !grids.linux) return;
 
-  const NAMES = { macos: "macOS", windows: "Windows", linux: "Linux" };
-  const NOTES = {
-    macos: "Detected macOS. DMG or Homebrew.",
-    windows: "Detected Windows. One setup exe.",
-    linux: "Detected Linux. AppImage or .deb.",
+  const render = () => {
+    for (const k of Object.keys(grids)) grids[k].hidden = k !== os;
+    cta.textContent = QS_T("dl.cta", { os: QS_T(`os.${os}`) });
+    if (note) note.textContent = QS_T(`dl.${os === "macos" ? "mac" : os === "windows" ? "win" : "linux"}`);
   };
-  for (const k of Object.keys(grids)) grids[k].hidden = k !== os;
-  cta.textContent = `Download for ${NAMES[os]}`;
-  if (note) note.textContent = NOTES[os];
+  render();
+  document.addEventListener("qs-lang", render);
   document.body.dataset.os = os;
 })();
 
 /* ---------- copy buttons ---------- */
 document.querySelectorAll(".copy-btn").forEach((btn) => {
+  const render = () => {
+    if (!btn.classList.contains("copied")) btn.textContent = QS_T("ui.copy");
+  };
+  render();
+  document.addEventListener("qs-lang", render);
   btn.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(btn.dataset.copy);
-      btn.textContent = "Copied";
+      btn.textContent = QS_T("ui.copied");
       btn.classList.add("copied");
       setTimeout(() => {
-        btn.textContent = "Copy";
+        btn.textContent = QS_T("ui.copy");
         btn.classList.remove("copied");
       }, 1600);
     } catch {
-      btn.textContent = "Failed";
+      btn.textContent = QS_T("ui.failed");
     }
   });
 });
+
+/* ---------- feature request form → report relay worker ---------- */
+(() => {
+  const form = document.getElementById("reqForm");
+  if (!form) return;
+  const status = document.getElementById("reqStatus");
+  const ENDPOINT = "https://quickshort-report.truongnat.workers.dev";
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = document.getElementById("reqTitle").value.trim();
+    const note = document.getElementById("reqNote").value.trim();
+    const contact = document.getElementById("reqContact").value.trim();
+    if (!title || !note) return;
+    status.textContent = QS_T("req.sending");
+    status.className = "req-status";
+    try {
+      const r = await fetch(ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "feature", title, note, contact }),
+      });
+      const data = r.ok ? await r.json() : null;
+      if (!data?.url) throw new Error(`relay ${r.status}`);
+      status.innerHTML = `${QS_T("req.sent")} — <a href="${data.url}" target="_blank" rel="noopener">${data.url.replace(/^https?:\/\//, "")}</a>`;
+      status.classList.add("ok");
+      form.reset();
+    } catch {
+      status.innerHTML = `<a href="https://github.com/truongnat/quickshort/issues/new?labels=enhancement" target="_blank" rel="noopener">${QS_T("req.fail")}</a>`;
+      status.classList.add("err");
+    }
+  });
+})();

@@ -171,6 +171,10 @@ const LINKS: &[(&str, &str)] = &[
         "Report an issue",
         "https://github.com/truongnat/quickshort/issues",
     ),
+    (
+        "Request a feature",
+        "https://truongnat.github.io/quickshort/#request",
+    ),
     ("Support", "https://truongnat.github.io/quickshort/#donate"),
 ];
 
