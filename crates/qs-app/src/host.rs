@@ -32,6 +32,8 @@ enum HostEvent {
     QuickShare(Result<crate::share::SharedLink, String>),
     /// Scroll-capture worker finished — the stitched tall image or error.
     ScrollDone(Result<image::RgbaImage, String>),
+    /// Recording worker finished — (first frame, mp4 path) or error.
+    RecDone(Result<(image::RgbaImage, std::path::PathBuf), String>),
     /// Release check finished — `manual` gates the "up to date" toast.
     UpdateCheck {
         res: Result<Option<Release>, String>,
@@ -90,6 +92,9 @@ struct Host {
     card: Option<QuickAccess>,
     /// Floating always-on-top reference images.
     pins: Vec<Pin>,
+    /// Recording stop card + the flag its worker watches. The window is
+    /// dropped on Stop; the flag lives on until the encoder finishes.
+    rec: Option<(crate::recstop::RecStop, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     /// Newer release found, waiting for the user to click Update.
     pending_update: Option<Release>,
     /// Lazy — the listener + ssh tunnel only spawn on the first Share.
@@ -111,6 +116,7 @@ impl Host {
             toast: None,
             card: None,
             pins: Vec::new(),
+            rec: None,
             pending_update: None,
             share: None,
         }
@@ -583,6 +589,15 @@ impl ApplicationHandler<HostEvent> for Host {
                 Ok(img) => self.open_card(el, img, "Captured — pick an action", None),
                 Err(e) => self.toast_done(el, format!("Scroll failed: {e}"), false),
             },
+            HostEvent::RecDone(res) => {
+                self.rec = None;
+                match res {
+                    Ok((img, path)) => {
+                        self.open_card(el, img, "Recording saved", Some(path))
+                    }
+                    Err(e) => self.toast_done(el, format!("Recording failed: {e}"), false),
+                }
+            }
             HostEvent::QuickShare(res) => {
                 let Some(c) = &mut self.card else { return };
                 c.set_sharing(false);
@@ -619,6 +634,15 @@ impl ApplicationHandler<HostEvent> for Host {
             if t.win_id() == id {
                 if t.window_event(event) {
                     self.toast = None;
+                }
+                return;
+            }
+        }
+        if let Some((r, stop)) = &mut self.rec {
+            if r.win_id() == id {
+                if r.window_event(event) {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.rec = None; // encoder finalizes → RecDone follows
                 }
                 return;
             }
@@ -675,6 +699,23 @@ impl ApplicationHandler<HostEvent> for Host {
                 std::thread::spawn(move || {
                     let res = crate::scroll::run(sel).map_err(|e| e.to_string());
                     let _ = px.send_event(HostEvent::ScrollDone(res));
+                });
+                return;
+            }
+            // recording keeps its own stream open and stops via the
+            // floating RecStop card — RecDone carries (thumb, path)
+            if action == qs_overlay::Action::Record {
+                let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                match crate::recstop::RecStop::open(el) {
+                    Ok(r) => self.rec = Some((r, stop.clone())),
+                    Err(e) => eprintln!("rec stop card: {e:#}"),
+                }
+                let px = self.proxy.clone();
+                let dir = self.cfg.save_dir();
+                let stop2 = stop.clone();
+                std::thread::spawn(move || {
+                    let res = crate::record::run(sel, &dir, stop2).map_err(|e| e.to_string());
+                    let _ = px.send_event(HostEvent::RecDone(res));
                 });
                 return;
             }
@@ -736,6 +777,10 @@ impl ApplicationHandler<HostEvent> for Host {
                 Some(w) => wake = Some(wake.map_or(w, |x| x.min(w))),
                 None => self.card = None,
             }
+        }
+        if let Some((r, _)) = &mut self.rec {
+            let w = r.pump();
+            wake = Some(wake.map_or(w, |x| x.min(w)));
         }
         el.set_control_flow(match wake {
             Some(w) => ControlFlow::WaitUntil(w),

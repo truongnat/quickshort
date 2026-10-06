@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::ScreenCapture;
 
 mod portal;
-mod wayland;
+pub mod wayland;
 mod x11;
 
 /// Wayland has no global virtual coordinate space exposed to clients; the

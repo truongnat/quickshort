@@ -18,6 +18,8 @@ pub enum Action {
     /// Repeated captures of this rect while the user scrolls, stitched
     /// into one tall image
     Scroll,
+    /// PipeWire screencast of this rect, piped to ffmpeg until stopped
+    Record,
 }
 
 /// Drawing tools — stay in the overlay and annotate the canvas.
@@ -64,6 +66,7 @@ const MAIN: &[Item] = &[
     Item::Act(Action::Save),
     Item::Act(Action::Copy),
     Item::Act(Action::Scroll),
+    Item::Act(Action::Record),
     Item::Act(Action::Ocr),
     Item::Act(Action::Share),
 ];
@@ -533,6 +536,17 @@ fn draw_icon(
                 .min(seg_sdf(lx, ly, -2.2, 0.3, 0.0, 2.5))
                 .min(seg_sdf(lx, ly, 2.2, 0.3, 0.0, 2.5));
             let a = stroke(d_page, STROKE).max(stroke(d_arrow, STROKE)) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Act(Action::Record) => {
+            // video camera: body rect + lens wedge on the right
+            let d_body = rrect_sdf(lx, ly, -1.2, 0.0, 4.8, 3.6, 1.4);
+            let d_lens = seg_sdf(lx, ly, 3.8, -2.4, 6.4, -3.6)
+                .min(seg_sdf(lx, ly, 6.4, -3.6, 6.4, 3.6))
+                .min(seg_sdf(lx, ly, 6.4, 3.6, 3.8, 2.4));
+            let a = stroke(d_body.min(d_lens), STROKE) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }

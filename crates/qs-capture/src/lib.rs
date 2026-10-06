@@ -24,6 +24,10 @@ pub fn platform_init() {
     windows::enable_dpi_awareness();
 }
 
+/// Live one-monitor screencast — GNOME/Wayland only for now.
+#[cfg(target_os = "linux")]
+pub use linux::wayland::{record_start, LiveStream};
+
 /// Pick the right backend for the current platform/session.
 pub fn backend() -> Result<Box<dyn ScreenCapture>> {
     #[cfg(target_os = "linux")]

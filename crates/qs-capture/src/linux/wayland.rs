@@ -405,77 +405,14 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                     if st.borrow().frame.is_some() {
                         return;
                     }
-                    let Some(mut buf) = stream.dequeue_buffer() else {
-                        return;
-                    };
                     let (w, h) = {
                         let s = st.borrow();
                         (s.size.0.max(1) as usize, s.size.1.max(1) as usize)
                     };
-                    let mut got = false;
-                    for data in buf.datas_mut() {
-                        let chunk = data.chunk();
-                        let (off, len, stride) = (
-                            chunk.offset() as usize,
-                            chunk.size() as usize,
-                            (chunk.stride().unsigned_abs() as usize).max(w * 4),
-                        );
-                        // MemFd/DmaBuf frames arrive with a null data
-                        // pointer — mmap the fd ourselves instead of
-                        // dropping a perfectly good frame.
-                        let mut mapped: Option<(*mut libc::c_void, usize)> = None;
-                        let raw = match data.data() {
-                            Some(d) => d,
-                            None => {
-                                let r = data.as_raw();
-                                let total = (r.maxsize + r.mapoffset) as usize;
-                                if r.fd < 0 || total == 0 {
-                                    continue;
-                                }
-                                let p = unsafe {
-                                    libc::mmap(
-                                        std::ptr::null_mut(),
-                                        total,
-                                        libc::PROT_READ,
-                                        libc::MAP_PRIVATE,
-                                        r.fd as i32,
-                                        0,
-                                    )
-                                };
-                                if p == libc::MAP_FAILED {
-                                    continue;
-                                }
-                                mapped = Some((p, total));
-                                unsafe {
-                                    std::slice::from_raw_parts(
-                                        (p as *const u8).add(r.mapoffset as usize),
-                                        r.maxsize as usize,
-                                    )
-                                }
-                            }
-                        };
-                        let ok = len > 0 && raw.len() >= off + len;
-                        if ok {
-                            let s = &raw[off..off + len];
-                            let mut out = vec![0u8; w * h * 4];
-                            for y in 0..h {
-                                let si = y * stride;
-                                if si + w * 4 > s.len() {
-                                    break;
-                                }
-                                out[y * w * 4..(y + 1) * w * 4].copy_from_slice(&s[si..si + w * 4]);
-                            }
-                            st.borrow_mut().frame = Some(out);
-                            got = true;
-                        }
-                        if let Some((p, total)) = mapped {
-                            unsafe { libc::munmap(p, total) };
-                        }
-                        if got {
-                            break;
-                        }
-                    }
-                    drop(buf); // Buffer::drop returns it to the stream
+                    let got = drain_frame(stream, w, h).is_some_and(|f| {
+                        st.borrow_mut().frame = Some(f);
+                        true
+                    });
                     if !got {
                         st.borrow_mut().rejects += 1;
                     }
@@ -596,14 +533,81 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
     out
 }
 
+/// Pull the newest buffer off `stream` and copy it into a tight w*h*4
+/// byte frame in the stream's negotiated layout (caller converts).
+/// MemFd/DmaBuf frames arrive with a null data pointer — mmap the fd
+/// ourselves instead of dropping a perfectly good frame.
+fn drain_frame(stream: &pw::stream::StreamRef, w: usize, h: usize) -> Option<Vec<u8>> {
+    let mut buf = stream.dequeue_buffer()?;
+    let mut out = None;
+    for data in buf.datas_mut() {
+        let chunk = data.chunk();
+        let (off, len, stride) = (
+            chunk.offset() as usize,
+            chunk.size() as usize,
+            (chunk.stride().unsigned_abs() as usize).max(w * 4),
+        );
+        let mut mapped: Option<(*mut libc::c_void, usize)> = None;
+        let raw = match data.data() {
+            Some(d) => d,
+            None => {
+                let r = data.as_raw();
+                let total = (r.maxsize + r.mapoffset) as usize;
+                if r.fd < 0 || total == 0 {
+                    continue;
+                }
+                let p = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        total,
+                        libc::PROT_READ,
+                        libc::MAP_PRIVATE,
+                        r.fd as i32,
+                        0,
+                    )
+                };
+                if p == libc::MAP_FAILED {
+                    continue;
+                }
+                mapped = Some((p, total));
+                unsafe {
+                    std::slice::from_raw_parts(
+                        (p as *const u8).add(r.mapoffset as usize),
+                        r.maxsize as usize,
+                    )
+                }
+            }
+        };
+        if len > 0 && raw.len() >= off + len {
+            let s = &raw[off..off + len];
+            let mut f = vec![0u8; w * h * 4];
+            for y in 0..h {
+                let si = y * stride;
+                if si + w * 4 > s.len() {
+                    break;
+                }
+                f[y * w * 4..(y + 1) * w * 4].copy_from_slice(&s[si..si + w * 4]);
+            }
+            out = Some(f);
+        }
+        if let Some((p, total)) = mapped {
+            unsafe { libc::munmap(p, total) };
+        }
+        if out.is_some() {
+            break;
+        }
+    }
+    drop(buf); // Buffer::drop returns it to the stream
+    out
+}
+
 /// Convert collected raw frames to RGBA images.
 fn collect_frames(chans: &[Rc<RefCell<ChanState>>]) -> Result<Vec<image::RgbaImage>> {
-    use spa::param::video::VideoFormat;
     let mut out = Vec::with_capacity(chans.len());
     for st in chans {
         let st = st.borrow_mut();
         let (w, h) = st.size;
-        let mut px = match (&st.frame, &st.err) {
+        let px = match (&st.frame, &st.err) {
             (Some(px), _) => px.clone(),
             (None, Some(e)) => bail!("pw stream error: {e}"),
             (None, None) => {
@@ -614,34 +618,44 @@ fn collect_frames(chans: &[Rc<RefCell<ChanState>>]) -> Result<Vec<image::RgbaIma
                 bail!("no frame received from PipeWire node (timeout)");
             }
         };
-        let mut fmt = st.format;
-        if fmt == VideoFormat::Unknown && px.len() == (w * h * 4) as usize {
-            // param_changed never fired; mutter's screencast default is BGRx
-            fmt = VideoFormat::BGRx;
-        }
-        use VideoFormat as F;
-        match fmt {
-            F::RGBA => {}
-            F::RGBx | F::BGRx | F::xBGR | F::BGRA | F::ABGR | F::xRGB | F::ARGB => {
-                for p in px.chunks_exact_mut(4) {
-                    match fmt {
-                        F::BGRA | F::BGRx | F::xBGR => p.swap(0, 2),
-                        F::ABGR => {
-                            p.copy_from_slice(&[p[3], p[2], p[1], p[0]]);
-                        }
-                        F::xRGB | F::ARGB => {
-                            p.copy_from_slice(&[p[1], p[2], p[3], p[0]]);
-                        }
-                        _ => {}
-                    }
-                    p[3] = 255;
-                }
-            }
-            other => bail!("unsupported negotiated format {other:?}"),
-        }
-        out.push(image::RgbaImage::from_raw(w, h, px).context("frame dims")?);
+        out.push(to_rgba(st.format, w, h, px)?);
     }
     Ok(out)
+}
+
+/// Negotiated-layout bytes → RGBA image; mutter's screencast default is
+/// BGRx, so assume that when param_changed never fired.
+fn to_rgba(
+    fmt: spa::param::video::VideoFormat,
+    w: u32,
+    h: u32,
+    mut px: Vec<u8>,
+) -> Result<image::RgbaImage> {
+    use spa::param::video::VideoFormat as F;
+    let mut fmt = fmt;
+    if fmt == F::Unknown && px.len() == (w * h * 4) as usize {
+        fmt = F::BGRx;
+    }
+    match fmt {
+        F::RGBA => {}
+        F::RGBx | F::BGRx | F::xBGR | F::BGRA | F::ABGR | F::xRGB | F::ARGB => {
+            for p in px.chunks_exact_mut(4) {
+                match fmt {
+                    F::BGRA | F::BGRx | F::xBGR => p.swap(0, 2),
+                    F::ABGR => {
+                        p.copy_from_slice(&[p[3], p[2], p[1], p[0]]);
+                    }
+                    F::xRGB | F::ARGB => {
+                        p.copy_from_slice(&[p[1], p[2], p[3], p[0]]);
+                    }
+                    _ => {}
+                }
+                p[3] = 255;
+            }
+        }
+        other => bail!("unsupported negotiated format {other:?}"),
+    }
+    image::RgbaImage::from_raw(w, h, px).context("frame dims")
 }
 
 // ------------------------------------------------------------------ geometry
@@ -759,6 +773,32 @@ mod tests {
         }
     }
 
+    /// Live-stream smoke test — needs a real Wayland session. Records the
+    /// primary monitor for ~3s and dumps received frames; proves the
+    /// repeated-frame path delivers more than one frame.
+    #[test]
+    #[ignore]
+    fn live_stream_delivers_repeated_frames() {
+        let mon = MutterCapture.capture_all().unwrap().remove(0);
+        let g = mon.geometry;
+        let live = record_start(g.logical_rect()).unwrap();
+        let mut n = 0;
+        let mut first = None;
+        while let Ok(img) = live.frames().recv_timeout(std::time::Duration::from_secs(3)) {
+            if first.is_none() {
+                img.save("/tmp/qs-rec-frame0.png").unwrap();
+                first = Some(img.clone());
+            }
+            n += 1;
+            if n >= 30 {
+                break;
+            }
+        }
+        drop(live);
+        eprintln!("live stream delivered {n} frames");
+        assert!(n >= 3, "expected repeated frames, got {n}");
+    }
+
     // Dump each monitor's frame to /tmp/qs-dump-<i>.png — visual debugging.
     #[test]
     #[ignore]
@@ -769,4 +809,358 @@ mod tests {
             eprintln!("saved {p}");
         }
     }
+}
+
+// ------------------------------------------------------------------ record
+
+/// Live screencast of one monitor — full-monitor RGBA frames arrive on
+/// `rx` until `stop` fires. Dropping stops the mutter session.
+pub struct LiveStream {
+    /// monitor rect in virtual logical coords — the app crops `sel` out
+    /// of each frame with `scale` (physical px per logical px)
+    pub logical: Rect,
+    pub scale: f64,
+    rx: std::sync::mpsc::Receiver<image::RgbaImage>,
+    conn: Connection,
+    session: OwnedObjectPath,
+    handle: Option<std::thread::JoinHandle<()>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _poke: DamagePoke,
+}
+
+impl LiveStream {
+    pub fn frames(&self) -> &std::sync::mpsc::Receiver<image::RgbaImage> {
+        &self.rx
+    }
+    pub fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for LiveStream {
+    fn drop(&mut self) {
+        self.stop();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+        let _ = Proxy::new(
+            &self.conn,
+            BUS,
+            self.session.as_str(),
+            "org.gnome.Mutter.ScreenCast.Session",
+        )
+        .and_then(|p| p.call::<_, _, ()>("Stop", &()));
+    }
+}
+
+/// Screencast session on the monitor overlapping `sel` the most, cursor
+/// embedded so the recording shows it. PipeWire frames are pumped on a
+/// private thread into a small channel — a slow consumer gets dropped
+/// frames rather than back-pressuring the stream.
+pub fn record_start(sel: Rect) -> Result<LiveStream> {
+    let conn = Connection::session().context("session dbus")?;
+    let mons = display_config(&conn)?;
+    let m = mons
+        .iter()
+        .max_by_key(|m| {
+            m.logical
+                .intersection(&sel)
+                .map(|r| (r.w as i64 * r.h as i64) as u64)
+                .unwrap_or(0)
+        })
+        .context("no monitor overlaps the selection")?;
+
+    let sc = Proxy::new(&conn, BUS, ROOT, BUS)?;
+    let session: OwnedObjectPath = sc
+        .call("CreateSession", &(empty_opts(),))
+        .context("CreateSession failed")?;
+    let sess = Proxy::new(
+        &conn,
+        BUS,
+        session.as_str(),
+        "org.gnome.Mutter.ScreenCast.Session",
+    )?;
+    // cursor-mode 2 = embedded — a recording without a cursor is useless
+    let stream_path: OwnedObjectPath = sess.call(
+        "RecordMonitor",
+        &(
+            m.connector.as_str(),
+            opts(&[("cursor-mode", Value::from(2u32))]),
+        ),
+    )?;
+    let mut rx_sig = async_io::block_on(async {
+        let sp = zbus::Proxy::new(
+            conn.inner(),
+            BUS,
+            stream_path.as_str(),
+            "org.gnome.Mutter.ScreenCast.Stream",
+        )
+        .await?;
+        sp.receive_signal("PipeWireStreamAdded").await
+    })?;
+    sess.call::<_, _, ()>("Start", &())?;
+    use futures_lite::StreamExt;
+    let msg = async_io::block_on(futures_lite::future::or(
+        async move { rx_sig.next().await },
+        async {
+            async_io::Timer::after(std::time::Duration::from_secs(10)).await;
+            None
+        },
+    ))
+    .with_context(|| format!("no PipeWireStreamAdded for {}", m.connector))?;
+    let (node,): (u32,) = msg.body().deserialize()?;
+    drop(sess); // its Drop would outlive the moved `session` path
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<image::RgbaImage>(3);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let phys = m.phys;
+    let handle = std::thread::spawn(move || {
+        if let Err(e) = stream_pump(node, phys, tx, stop2) {
+            eprintln!("record stream: {e:#}");
+        }
+    });
+
+    Ok(LiveStream {
+        logical: m.logical,
+        scale: m.phys.0 as f64 / m.logical.w.max(1) as f64,
+        rx,
+        conn,
+        session,
+        handle: Some(handle),
+        stop,
+        _poke: DamagePoke::start(vec![
+            (
+                m.logical.x + m.logical.w as i32 / 2,
+                m.logical.y + m.logical.h as i32 / 2,
+            ),
+        ]),
+    })
+}
+
+/// PipeWire consumer loop: every processed buffer becomes an RgbaImage;
+/// `try_send` drops the frame on backpressure (encoder falling behind →
+/// realtime wins over completeness).
+fn stream_pump(
+    node: u32,
+    expect: (u32, u32),
+    tx: std::sync::mpsc::SyncSender<image::RgbaImage>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    use pw::properties::properties;
+    use spa::param::format::{FormatProperties, MediaSubtype, MediaType};
+    use spa::param::video::{VideoFormat, VideoInfoRaw};
+    use spa::param::{format_utils, ParamType};
+    use spa::pod::serialize::PodSerializer;
+    use spa::pod::{ChoiceValue, Object, Property, Value};
+    use spa::utils::{
+        Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Id, Rectangle, SpaTypes,
+    };
+    use std::cell::Cell;
+    use std::io::Cursor;
+    use std::time::Duration;
+
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(pw::init);
+    let mainloop = pw::main_loop::MainLoop::new(None).context("pw mainloop")?;
+    let context = pw::context::Context::new(&mainloop).context("pw context")?;
+    let core = context.connect(None).context("pw connect")?;
+
+    // warm the registry so connect() finds the node (same race as grab)
+    {
+        let registry = core.get_registry().context("pw registry")?;
+        let pending = Rc::new(Cell::new(false));
+        let weak = mainloop.downgrade();
+        let _l = registry
+            .add_listener_local()
+            .global(move |g| {
+                if g.id == node {
+                    pending.set(true);
+                    if let Some(ml) = weak.upgrade() {
+                        ml.quit();
+                    }
+                }
+            })
+            .register();
+        let weak = mainloop.downgrade();
+        let warm = mainloop.loop_().add_timer(move |_| {
+            if let Some(ml) = weak.upgrade() {
+                ml.quit();
+            }
+        });
+        warm.update_timer(Some(Duration::from_secs(2)), None);
+        mainloop.run();
+        drop(warm);
+    }
+
+    let stream = Rc::new(
+        pw::stream::Stream::new(
+            &core,
+            "quickshort-record",
+            properties! {
+                *pw::keys::MEDIA_TYPE => "Video",
+                *pw::keys::MEDIA_CATEGORY => "Capture",
+                *pw::keys::MEDIA_ROLE => "Screen",
+            },
+        )
+        .context("pw stream")?,
+    );
+
+    struct St {
+        format: VideoFormat,
+        size: (u32, u32),
+        err: Option<String>,
+    }
+    let st = Rc::new(RefCell::new(St {
+        format: VideoFormat::Unknown,
+        size: expect,
+        err: None,
+    }));
+
+    let _listener = stream
+        .add_local_listener::<()>()
+        .state_changed({
+            let weak = mainloop.downgrade();
+            let st = st.clone();
+            move |_, _, _, new| {
+                if let pw::stream::StreamState::Error(e) = new {
+                    st.borrow_mut().err = Some(e.to_string());
+                    if let Some(ml) = weak.upgrade() {
+                        ml.quit();
+                    }
+                }
+            }
+        })
+        .param_changed({
+            let st = st.clone();
+            move |_, _, id, param| {
+                let Some(param) = param else { return };
+                if id != ParamType::Format.as_raw() {
+                    return;
+                }
+                let Ok((mt, ms)) = format_utils::parse_format(param) else {
+                    return;
+                };
+                if mt != MediaType::Video || ms != MediaSubtype::Raw {
+                    return;
+                }
+                let mut info = VideoInfoRaw::new();
+                if info.parse(param).is_ok() {
+                    let size = info.size();
+                    let mut st = st.borrow_mut();
+                    st.format = info.format();
+                    st.size = (size.width, size.height);
+                }
+            }
+        })
+        .process({
+            let st = st.clone();
+            move |stream, _| {
+                let (w, h, fmt) = {
+                    let s = st.borrow();
+                    (s.size.0.max(1), s.size.1.max(1), s.format)
+                };
+                if let Some(raw) = drain_frame(stream, w as usize, h as usize) {
+                    match to_rgba(fmt, w, h, raw) {
+                        Ok(img) => {
+                            let _ = tx.try_send(img);
+                        }
+                        Err(e) => eprintln!("record frame: {e:#}"),
+                    }
+                }
+            }
+        })
+        .register()
+        .context("pw listener")?;
+
+    let formats = [
+        VideoFormat::BGRx,
+        VideoFormat::BGRA,
+        VideoFormat::RGBx,
+        VideoFormat::RGBA,
+        VideoFormat::xRGB,
+        VideoFormat::ARGB,
+        VideoFormat::xBGR,
+        VideoFormat::ABGR,
+    ];
+    let obj = Object {
+        type_: SpaTypes::ObjectParamFormat.as_raw(),
+        id: ParamType::EnumFormat.as_raw(),
+        properties: vec![
+            Property::new(
+                FormatProperties::MediaType.as_raw(),
+                Value::Id(Id(MediaType::Video.as_raw())),
+            ),
+            Property::new(
+                FormatProperties::MediaSubtype.as_raw(),
+                Value::Id(Id(MediaSubtype::Raw.as_raw())),
+            ),
+            Property::new(
+                FormatProperties::VideoFormat.as_raw(),
+                Value::Choice(ChoiceValue::Id(Choice(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::Enum {
+                        default: Id(formats[0].as_raw()),
+                        alternatives: formats[1..].iter().map(|f| Id(f.as_raw())).collect(),
+                    },
+                ))),
+            ),
+            Property::new(
+                FormatProperties::VideoSize.as_raw(),
+                Value::Rectangle(Rectangle {
+                    width: expect.0,
+                    height: expect.1,
+                }),
+            ),
+            Property::new(
+                FormatProperties::VideoFramerate.as_raw(),
+                Value::Fraction(Fraction { num: 0, denom: 1 }),
+            ),
+        ],
+    };
+    let values = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(obj))
+        .context("serialize EnumFormat")?
+        .0
+        .into_inner();
+    let pod = spa::pod::Pod::from_bytes(&values).context("pod bytes")?;
+    let mut params = [pod];
+    stream
+        .connect(
+            Direction::Input,
+            Some(node),
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+            &mut params,
+        )
+        .context("pw stream connect")?;
+
+    // keep asking for frames — a static screen reports no damage, and the
+    // resampler still wants a first frame + a heartbeat
+    let s2 = Rc::clone(&stream);
+    let poke = mainloop.loop_().add_timer(move |_| {
+        let _ = s2.trigger_process();
+    });
+    poke.update_timer(
+        Some(Duration::from_millis(250)),
+        Some(Duration::from_millis(250)),
+    );
+
+    let weak = mainloop.downgrade();
+    let quit = mainloop.loop_().add_timer(move |_| {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(ml) = weak.upgrade() {
+                ml.quit();
+            }
+        }
+    });
+    quit.update_timer(
+        Some(Duration::from_millis(200)),
+        Some(Duration::from_millis(200)),
+    );
+
+    mainloop.run();
+    if let Some(e) = st.borrow_mut().err.take() {
+        bail!("pw stream: {e}");
+    }
+    stream.disconnect().ok();
+    Ok(())
 }

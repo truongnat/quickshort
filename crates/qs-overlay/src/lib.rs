@@ -52,6 +52,8 @@ pub struct Keys {
     pub share: char,
     /// scrolling capture — repeated grabs of the selection stitched tall
     pub scroll: char,
+    /// screen recording — PipeWire stream → ffmpeg until stopped
+    pub record: char,
     pub undo: char,
 }
 
@@ -65,6 +67,7 @@ impl Default for Prefs {
                 ocr: 't',
                 share: 'l',
                 scroll: 'g',
+                record: 'r',
                 undo: 'z',
             },
         }
@@ -1585,6 +1588,8 @@ impl Session {
                             Some(Action::Share)
                         } else if ch == k.scroll {
                             Some(Action::Scroll)
+                        } else if ch == k.record {
+                            Some(Action::Record)
                         } else {
                             None
                         };

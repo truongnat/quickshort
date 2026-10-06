@@ -12,6 +12,8 @@ mod config;
 mod host;
 mod pin;
 mod quick_access;
+mod record;
+mod recstop;
 mod scroll;
 mod settings;
 mod share;
@@ -187,6 +189,30 @@ fn run_one_shot(args: Args) -> Result<()> {
             cfg.accent_rgb(),
             true,
         );
+        return Ok(());
+    }
+
+    // recording: worker encodes while the stop card blocks the main loop;
+    // stop click flips the flag, join() then delivers (thumb, mp4)
+    if action == qs_overlay::Action::Record {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dir = cfg.save_dir();
+        let stop2 = stop.clone();
+        let worker = std::thread::spawn(move || record::run(sel, &dir, stop2));
+        let _ = recstop::standalone(stop);
+        match worker.join().map_err(|_| anyhow::anyhow!("record worker panicked"))? {
+            Ok((img, path)) => {
+                let _ = quick_access::standalone(
+                    img,
+                    "Recording saved",
+                    Some(path),
+                    cfg.save_dir(),
+                    cfg.accent_rgb(),
+                    true,
+                );
+            }
+            Err(e) => notify(&format!("recording failed: {e:#}")),
+        }
         return Ok(());
     }
 

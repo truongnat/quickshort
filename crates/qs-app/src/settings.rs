@@ -96,6 +96,7 @@ enum Rec {
     Ocr,
     Share,
     Scroll,
+    Record,
     Undo,
 }
 
@@ -106,6 +107,7 @@ const KEY_ROWS: &[(&str, Rec)] = &[
     ("Extract text (OCR)", Rec::Ocr),
     ("Share link", Rec::Share),
     ("Scrolling capture", Rec::Scroll),
+    ("Screen recording", Rec::Record),
     ("Undo / Redo", Rec::Undo),
 ];
 
@@ -617,6 +619,7 @@ impl Settings {
                     cfg.key_ocr = d.key_ocr;
                     cfg.key_share = d.key_share;
                     cfg.key_scroll = d.key_scroll;
+                    cfg.key_record = d.key_record;
                     cfg.key_undo = d.key_undo;
                     self.dirty = true;
                     return Some(SettingsEvent::Changed);
@@ -1778,6 +1781,7 @@ fn key_str(cfg: &Config, r: Rec) -> &str {
         Rec::Ocr => &cfg.key_ocr,
         Rec::Share => &cfg.key_share,
         Rec::Scroll => &cfg.key_scroll,
+        Rec::Record => &cfg.key_record,
         Rec::Undo => &cfg.key_undo,
         Rec::Global => "",
     }
@@ -1787,7 +1791,7 @@ fn key_str(cfg: &Config, r: Rec) -> &str {
 /// binding stays unique — silent duplicates would make one action dead.
 fn set_key(cfg: &mut Config, slot: Rec, ch: char) {
     let old = key_str(cfg, slot).chars().next().unwrap_or(' ');
-    for other in [Rec::Save, Rec::Copy, Rec::Ocr, Rec::Share, Rec::Scroll, Rec::Undo] {
+    for other in [Rec::Save, Rec::Copy, Rec::Ocr, Rec::Share, Rec::Scroll, Rec::Record, Rec::Undo] {
         if other != slot && key_str(cfg, other).chars().next() == Some(ch) {
             *key_mut(cfg, other) = old.to_string();
         }
@@ -1802,6 +1806,7 @@ fn key_mut(cfg: &mut Config, r: Rec) -> &mut String {
         Rec::Ocr => &mut cfg.key_ocr,
         Rec::Share => &mut cfg.key_share,
         Rec::Scroll => &mut cfg.key_scroll,
+        Rec::Record => &mut cfg.key_record,
         Rec::Undo => &mut cfg.key_undo,
         Rec::Global => unreachable!(),
     }
