@@ -10,6 +10,7 @@
 mod actions;
 mod config;
 mod host;
+mod quick_access;
 mod settings;
 mod share;
 mod toast;
@@ -24,6 +25,7 @@ struct Args {
     capture_now: bool,
     settings_only: bool,
     toast_demo: bool,
+    card_demo: bool,
     delay_secs: f64,
     out: Option<std::path::PathBuf>,
 }
@@ -33,6 +35,7 @@ fn parse_args() -> Result<Args> {
         capture_now: false,
         settings_only: false,
         toast_demo: false,
+        card_demo: false,
         delay_secs: 0.0,
         out: None,
     };
@@ -42,6 +45,7 @@ fn parse_args() -> Result<Args> {
             "--capture" => args.capture_now = true,
             "--settings" => args.settings_only = true,
             "--toast" => args.toast_demo = true,
+            "--card" => args.card_demo = true,
             "--delay" => {
                 let v = it.next().context("--delay needs SECS")?;
                 args.delay_secs = v.parse().context("--delay: not a number")?;
@@ -72,6 +76,19 @@ fn main() -> Result<()> {
     }
     if args.toast_demo {
         return toast::standalone();
+    }
+    if args.card_demo {
+        let img = image::RgbaImage::from_fn(800, 500, |x, y| {
+            image::Rgba([(x % 255) as u8, (y % 255) as u8, 160, 255])
+        });
+        return quick_access::standalone(
+            img,
+            "Saved quickshort-demo.png",
+            None,
+            std::path::PathBuf::from("/tmp"),
+            0x1677DF,
+            false,
+        );
     }
     if !args.capture_now {
         return host::run(config::Config::load());
@@ -175,18 +192,44 @@ fn run_one_shot(args: Args) -> Result<()> {
     );
     match &outcome {
         Err(e) => notify(&format!("{e:#}")),
-        Ok(actions::Outcome::Shared(link)) => notify(&format!(
-            "shared — link copied (expires in {}d)\n{}",
-            link.expires_s / 86400,
-            link.url
-        )),
-        Ok(actions::Outcome::TextCopied(n)) => notify(&format!("copied {n} chars")),
-        _ => {}
+        Ok(d) => match &d.outcome {
+            actions::Outcome::Shared(link) => notify(&format!(
+                "shared — link copied (expires in {}d)\n{}",
+                link.expires_s / 86400,
+                link.url
+            )),
+            actions::Outcome::TextCopied(n) => notify(&format!("copied {n} chars")),
+            _ => {}
+        },
     }
     let outcome = outcome?;
     // shared links are hosted on the worker — nothing to keep alive here
-    if let actions::Outcome::Shared(link) = &outcome {
+    if let actions::Outcome::Shared(link) = &outcome.outcome {
         eprintln!("shared {} (expires in {}s)", link.url, link.expires_s);
     }
+
+    // image outcomes get the quick-access card, same as the resident app;
+    // its private event loop keeps this process alive until dismissed
+    let (msg, saved) = match &outcome.outcome {
+        actions::Outcome::Saved(p) => (
+            format!(
+                "Saved {}",
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+            Some(p.clone()),
+        ),
+        actions::Outcome::Copied => ("Copied to clipboard".to_string(), None),
+        _ => return Ok(()),
+    };
+    let _ = quick_access::standalone(
+        outcome.img,
+        &msg,
+        saved,
+        cfg.save_dir(),
+        cfg.accent_rgb(),
+        true,
+    );
     Ok(())
 }

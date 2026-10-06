@@ -28,6 +28,14 @@ pub enum Outcome {
     NoText,
 }
 
+/// `dispatch` output: the outcome plus the image it was produced from —
+/// the resident app's quick-access card needs the pixels for its
+/// thumbnail and for follow-up actions (copy/save/share/pin).
+pub struct Dispatch {
+    pub outcome: Outcome,
+    pub img: RgbaImage,
+}
+
 /// Stitch the selection, bake annotations, run the action. `wait_clipboard`:
 /// on Linux/Wayland the clipboard dies with its owner — the one-shot binary
 /// must block (`true`); the resident app stays alive so it passes `false`.
@@ -41,7 +49,7 @@ pub fn dispatch(
     share: Option<std::sync::Arc<crate::share::ShareManager>>,
     copy_after_save: bool,
     ocr_lang: &str,
-) -> Result<Outcome> {
+) -> Result<Dispatch> {
     eprintln!("dispatch {action:?}");
     let img = std::thread::spawn(move || qs_core::stitch(&frames, sel))
         .join()
@@ -51,13 +59,13 @@ pub fn dispatch(
     };
     qs_overlay::annotate_image(&mut img, sel, annots, scale);
 
-    match action {
+    let outcome = match action {
         Action::Save => {
             let p = save(&img, target)?;
             if copy_after_save {
                 copy_image_to_clipboard(&img, wait_clipboard);
             }
-            Ok(Outcome::Saved(p))
+            Outcome::Saved(p)
         }
         Action::Share => {
             let sm = share.context("link sharing needs the resident app")?;
@@ -68,32 +76,31 @@ pub fn dispatch(
                 SaveTarget::Dir(d) => d.clone(),
                 SaveTarget::File(p) => p.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
             };
-            // the URL path is the file's real name so any parked share
-            // process can serve it — the random suffix is the only auth
-            // a share link has
             let dir = base.join("shared");
             std::fs::create_dir_all(&dir)?;
             let name = format!("quickshort-{}-{}.png", unix_ts()?, rand_hex()?);
             save(&img, &SaveTarget::File(dir.join(name)))?;
             let link = sm.share(&img)?;
             copy_text_to_clipboard(&link.url, wait_clipboard);
-            Ok(Outcome::Shared(link))
+            Outcome::Shared(link)
         }
         Action::Copy => {
             copy_image_to_clipboard(&img, wait_clipboard);
-            Ok(Outcome::Copied)
+            Outcome::Copied
         }
         Action::Ocr => {
             let t = qs_ocr::extract_text(&img, ocr_lang)?;
             if t.is_empty() {
-                return Ok(Outcome::NoText);
+                Outcome::NoText
+            } else {
+                let n = t.chars().count();
+                copy_text_to_clipboard(&t, wait_clipboard);
+                eprintln!("copied {n} chars of text to clipboard");
+                Outcome::TextCopied(n)
             }
-            let n = t.chars().count();
-            copy_text_to_clipboard(&t, wait_clipboard);
-            eprintln!("copied {n} chars of text to clipboard");
-            Ok(Outcome::TextCopied(n))
         }
-    }
+    };
+    Ok(Dispatch { outcome, img })
 }
 
 fn save(img: &RgbaImage, target: &SaveTarget) -> Result<PathBuf> {
@@ -358,6 +365,22 @@ pub fn open_url(url: &str) {
     if let Err(e) = r {
         eprintln!("open {url}: {e}");
     }
+}
+
+/// Follow-up actions for the quick-access card — the same primitives
+/// `dispatch` uses. `wait` is the clipboard-survival flag: the resident
+/// app passes false (it stays alive), one-shot mode passes true so the
+/// copy outlives the process.
+pub fn copy_image(img: &RgbaImage, wait: bool) {
+    copy_image_to_clipboard(img, wait);
+}
+
+pub fn copy_text(text: &str, wait: bool) {
+    copy_text_to_clipboard(text, wait);
+}
+
+pub fn save_to_dir(img: &RgbaImage, dir: &Path) -> Result<PathBuf> {
+    save(img, &SaveTarget::Dir(dir.to_path_buf()))
 }
 
 /// Reveal `p` in the OS file manager / image viewer.

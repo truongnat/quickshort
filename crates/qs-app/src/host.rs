@@ -12,8 +12,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
-use crate::actions::{self, Outcome, SaveTarget};
+use crate::actions::{self, Dispatch, Outcome, SaveTarget};
 use crate::config::Config;
+use crate::quick_access::{QaAction, QuickAccess};
 use crate::settings::{Settings, SettingsEvent};
 use crate::toast::Toast;
 use crate::tray;
@@ -24,8 +25,10 @@ enum HostEvent {
     /// Tray "Capture Region" or the global hotkey.
     Trigger,
     Menu(MenuId),
-    /// Action worker finished — refresh the menu, update the toast.
-    Done(Result<Outcome, String>),
+    /// Action worker finished — refresh the menu, open the result card.
+    Done(Result<Dispatch, String>),
+    /// A share upload kicked off from the quick-access card finished.
+    QuickShare(Result<crate::share::SharedLink, String>),
     /// Release check finished — `manual` gates the "up to date" toast.
     UpdateCheck {
         res: Result<Option<Release>, String>,
@@ -80,6 +83,8 @@ struct Host {
     hotkey_suspended: bool,
     settings: Option<Settings>,
     toast: Option<Toast>,
+    /// Post-capture thumbnail card — owns the image until dismissed.
+    card: Option<QuickAccess>,
     /// Newer release found, waiting for the user to click Update.
     pending_update: Option<Release>,
     /// Lazy — the listener + ssh tunnel only spawn on the first Share.
@@ -99,6 +104,7 @@ impl Host {
             hotkey_suspended: false,
             settings: None,
             toast: None,
+            card: None,
             pending_update: None,
             share: None,
         }
@@ -165,6 +171,7 @@ impl Host {
         if self.overlay.is_some() {
             return; // a selection is already in progress
         }
+        self.card = None; // a stale card owns the previous capture's image
         let frames = match qs_capture::backend().and_then(|b| b.capture_all()) {
             Ok(f) if !f.is_empty() => f,
             Ok(_) => return eprintln!("no monitors captured"),
@@ -302,6 +309,75 @@ impl Host {
             }
         }
         self.rebuild_menu();
+    }
+
+    /// Open the post-capture thumbnail card; falls back to the plain toast
+    /// when the window can't be created.
+    fn open_card(
+        &mut self,
+        el: &ActiveEventLoop,
+        img: image::RgbaImage,
+        msg: &str,
+        saved: Option<PathBuf>,
+    ) {
+        self.toast = None;
+        match QuickAccess::open(el, img, msg, saved, self.cfg.accent_rgb()) {
+            Ok(c) => self.card = Some(c),
+            Err(e) => {
+                eprintln!("card: {e:#}");
+                self.toast_done(el, msg.to_string(), true);
+            }
+        }
+    }
+
+    /// A click on the card's action pills — everything runs with the image
+    /// the card still owns.
+    fn on_card_action(&mut self, _el: &ActiveEventLoop, act: QaAction) {
+        if matches!(act, QaAction::Close) {
+            self.card = None;
+            return;
+        }
+        let mut rebuild = false;
+        if let Some(c) = &mut self.card {
+            match act {
+                QaAction::Copy => {
+                    actions::copy_image(c.image(), false);
+                    c.notify("Copied to clipboard");
+                }
+                QaAction::SaveNow => {
+                    match actions::save_to_dir(c.image(), &self.cfg.save_dir()) {
+                        Ok(p) => {
+                            c.set_saved(p);
+                            c.notify("Screenshot saved");
+                            rebuild = true;
+                        }
+                        Err(e) => c.notify(&format!("Save failed: {e}")),
+                    }
+                }
+                QaAction::Reveal => {
+                    if let Some(p) = c.saved_path() {
+                        actions::open_path(&p);
+                    }
+                }
+                QaAction::Share => {
+                    let sm = self
+                        .share
+                        .get_or_insert_with(crate::share::ShareManager::new)
+                        .clone();
+                    let img = c.image().clone();
+                    let px = self.proxy.clone();
+                    c.set_sharing(true);
+                    std::thread::spawn(move || {
+                        let res = sm.share(&img).map_err(|e| e.to_string());
+                        let _ = px.send_event(HostEvent::QuickShare(res));
+                    });
+                }
+                QaAction::Close => unreachable!(),
+            }
+        }
+        if rebuild {
+            self.rebuild_menu();
+        }
     }
 
     /// Mirror a finished action into the toast (opened for OCR; lazily
@@ -455,35 +531,63 @@ impl ApplicationHandler<HostEvent> for Host {
                 Err(e) => self.toast_done(el, format!("Update failed: {e}"), false),
             },
             HostEvent::Done(res) => {
-                eprintln!("done: {res:?}");
+                eprintln!("done: {:?}", res.as_ref().map(|d| &d.outcome));
                 match res {
-                    Ok(Outcome::Saved(p)) => {
-                        self.rebuild_menu();
-                        let name = p
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        self.toast_done(el, format!("Saved {name}"), true);
-                    }
-                    Ok(Outcome::Copied) => {
-                        self.toast_done(el, "Copied to clipboard".to_string(), true)
-                    }
-                    Ok(Outcome::Shared(link)) => self.toast_done(
-                        el,
-                        format!("Link copied — expires in {}d", link.expires_s / 86400),
-                        true,
-                    ),
-                    Ok(Outcome::TextCopied(n)) => {
-                        self.toast_done(el, format!("Copied {n} chars"), true)
-                    }
-                    Ok(Outcome::NoText) => self.toast_done(el, "No text found".to_string(), false),
+                    // image outcomes get the thumbnail card; the rest is
+                    // text-only feedback that still fits a plain toast
+                    Ok(d) => match d.outcome {
+                        Outcome::Saved(p) => {
+                            self.rebuild_menu();
+                            let name = p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            self.open_card(el, d.img, &format!("Saved {name}"), Some(p));
+                        }
+                        Outcome::Copied => {
+                            self.open_card(el, d.img, "Copied to clipboard", None)
+                        }
+                        Outcome::Shared(link) => self.toast_done(
+                            el,
+                            format!("Link copied — expires in {}d", link.expires_s / 86400),
+                            true,
+                        ),
+                        Outcome::TextCopied(n) => {
+                            self.toast_done(el, format!("Copied {n} chars"), true)
+                        }
+                        Outcome::NoText => {
+                            self.toast_done(el, "No text found".to_string(), false)
+                        }
+                    },
                     Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
+                }
+            }
+            HostEvent::QuickShare(res) => {
+                let Some(c) = &mut self.card else { return };
+                c.set_sharing(false);
+                match res {
+                    Ok(link) => {
+                        actions::copy_text(&link.url, false);
+                        c.notify(&format!(
+                            "Link copied — expires in {}d",
+                            link.expires_s / 86400
+                        ));
+                    }
+                    Err(e) => c.notify(&format!("Share failed: {e}")),
                 }
             }
         }
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(c) = &mut self.card {
+            if c.win_id() == id {
+                if let Some(act) = c.window_event(event) {
+                    self.on_card_action(el, act);
+                }
+                return;
+            }
+        }
         if let Some(t) = &mut self.toast {
             if t.win_id() == id {
                 if t.window_event(event) {
@@ -580,6 +684,12 @@ impl ApplicationHandler<HostEvent> for Host {
             match t.pump() {
                 Some(w) => wake = Some(wake.map_or(w, |x| x.min(w))),
                 None => self.toast = None,
+            }
+        }
+        if let Some(c) = &mut self.card {
+            match c.pump() {
+                Some(w) => wake = Some(wake.map_or(w, |x| x.min(w))),
+                None => self.card = None,
             }
         }
         el.set_control_flow(match wake {
