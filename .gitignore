@@ -6,3 +6,4 @@ quickshort.app/
 Quickshort.app/
 dist/
 demo/out/
+.wrangler/
