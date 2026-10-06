@@ -271,20 +271,115 @@ pub(super) fn grab_frames(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<i
     Err(err.unwrap())
 }
 
+/// `connect()` on a node mutter hasn't published to the registry yet parks
+/// the stream in `unconnected` forever — enumerate globals until every
+/// wanted node has been seen (2s cap, they may lag the D-Bus signal).
+fn warm_registry(
+    mainloop: &pw::main_loop::MainLoop,
+    core: &pw::core::Core,
+    nodes: std::collections::HashSet<u32>,
+) -> Result<()> {
+    let registry = core.get_registry().context("pw registry")?;
+    let pending = Rc::new(RefCell::new(nodes));
+    let weak = mainloop.downgrade();
+    let _listener = registry
+        .add_listener_local()
+        .global(move |g| {
+            if !pending.borrow_mut().remove(&g.id) || !pending.borrow().is_empty() {
+                return;
+            }
+            if let Some(ml) = weak.upgrade() {
+                ml.quit();
+            }
+        })
+        .register();
+    let weak = mainloop.downgrade();
+    let warm = mainloop.loop_().add_timer(move |_| {
+        if let Some(ml) = weak.upgrade() {
+            ml.quit();
+        }
+    });
+    warm.update_timer(Some(std::time::Duration::from_secs(2)), None);
+    mainloop.run();
+    Ok(())
+}
+
+/// Serialized EnumFormat pod offering every raw video layout mutter uses,
+/// at `expect` resolution — the compositor picks one in `param_changed`.
+fn raw_video_enumformat(expect: (u32, u32)) -> Result<Vec<u8>> {
+    use spa::param::format::{FormatProperties, MediaSubtype, MediaType};
+    use spa::param::video::VideoFormat;
+    use spa::param::ParamType;
+    use spa::pod::serialize::PodSerializer;
+    use spa::pod::{ChoiceValue, Object, Property, Value};
+    use spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle, SpaTypes};
+    use std::io::Cursor;
+
+    let formats = [
+        VideoFormat::BGRx,
+        VideoFormat::BGRA,
+        VideoFormat::RGBx,
+        VideoFormat::RGBA,
+        VideoFormat::xRGB,
+        VideoFormat::ARGB,
+        VideoFormat::xBGR,
+        VideoFormat::ABGR,
+    ];
+    let obj = Object {
+        type_: SpaTypes::ObjectParamFormat.as_raw(),
+        id: ParamType::EnumFormat.as_raw(),
+        properties: vec![
+            Property::new(
+                FormatProperties::MediaType.as_raw(),
+                Value::Id(Id(MediaType::Video.as_raw())),
+            ),
+            Property::new(
+                FormatProperties::MediaSubtype.as_raw(),
+                Value::Id(Id(MediaSubtype::Raw.as_raw())),
+            ),
+            Property::new(
+                FormatProperties::VideoFormat.as_raw(),
+                Value::Choice(ChoiceValue::Id(Choice(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::Enum {
+                        default: Id(formats[0].as_raw()),
+                        alternatives: formats[1..].iter().map(|f| Id(f.as_raw())).collect(),
+                    },
+                ))),
+            ),
+            Property::new(
+                FormatProperties::VideoSize.as_raw(),
+                Value::Rectangle(Rectangle {
+                    width: expect.0,
+                    height: expect.1,
+                }),
+            ),
+            Property::new(
+                FormatProperties::VideoFramerate.as_raw(),
+                Value::Fraction(Fraction { num: 0, denom: 1 }),
+            ),
+        ],
+    };
+    Ok(
+        PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(obj))
+            .context("serialize EnumFormat")?
+            .0
+            .into_inner(),
+    )
+}
+
 /// Single attempt: EnumFormat negotiates a raw pixel format per stream, shm
 /// buffers are copied row-wise and normalized to RGBA.
 fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::RgbaImage>> {
     use pw::properties::properties;
-    use spa::param::format::{FormatProperties, MediaSubtype, MediaType};
+    use spa::param::format::{MediaSubtype, MediaType};
     use spa::param::video::{VideoFormat, VideoInfoRaw};
     use spa::param::{format_utils, ParamType};
-    use spa::pod::serialize::PodSerializer;
-    use spa::pod::{ChoiceValue, Object, Property, Value};
-    use spa::utils::{
-        Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Id, Rectangle, SpaTypes,
-    };
+    
+    
+    use spa::utils::Direction;
     use std::cell::Cell;
-    use std::io::Cursor;
+    
     use std::time::Duration;
 
     let mainloop = pw::main_loop::MainLoop::new(None).context("pw mainloop")?;
@@ -292,40 +387,8 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
     let core = context.connect(None).context("pw connect")?;
 
     // PipeWireStreamAdded reports the node id mutter will create, but our
-    // registry only learns about it asynchronously — connect() on a
-    // not-yet-visible target leaves the stream parked in `unconnected`
-    // forever. Warm the registry first: globals are enumerated on the
-    // first run, so quit as soon as every wanted node has been seen.
-    {
-        let registry = core.get_registry().context("pw registry")?;
-        let pending = Rc::new(RefCell::new(
-            nodes
-                .iter()
-                .copied()
-                .collect::<std::collections::HashSet<u32>>(),
-        ));
-        let weak = mainloop.downgrade();
-        let _warm_listener = registry
-            .add_listener_local()
-            .global(move |g| {
-                if !pending.borrow_mut().remove(&g.id) || !pending.borrow().is_empty() {
-                    return;
-                }
-                if let Some(ml) = weak.upgrade() {
-                    ml.quit();
-                }
-            })
-            .register();
-        let weak = mainloop.downgrade();
-        let warm = mainloop.loop_().add_timer(move |_| {
-            if let Some(ml) = weak.upgrade() {
-                ml.quit();
-            }
-        });
-        warm.update_timer(Some(Duration::from_secs(2)), None);
-        mainloop.run();
-        drop(warm);
-    }
+    // registry only learns about it asynchronously.
+    warm_registry(&mainloop, &core, nodes.iter().copied().collect())?;
 
     let remaining = Rc::new(Cell::new(nodes.len()));
     let mut chans = Vec::with_capacity(nodes.len());
@@ -431,55 +494,7 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
             .context("pw listener")?;
 
         // Offer every layout mutter might use; it picks one via EnumFormat.
-        let formats = [
-            VideoFormat::BGRx,
-            VideoFormat::BGRA,
-            VideoFormat::RGBx,
-            VideoFormat::RGBA,
-            VideoFormat::xRGB,
-            VideoFormat::ARGB,
-            VideoFormat::xBGR,
-            VideoFormat::ABGR,
-        ];
-        let obj = Object {
-            type_: SpaTypes::ObjectParamFormat.as_raw(),
-            id: ParamType::EnumFormat.as_raw(),
-            properties: vec![
-                Property::new(
-                    FormatProperties::MediaType.as_raw(),
-                    Value::Id(Id(MediaType::Video.as_raw())),
-                ),
-                Property::new(
-                    FormatProperties::MediaSubtype.as_raw(),
-                    Value::Id(Id(MediaSubtype::Raw.as_raw())),
-                ),
-                Property::new(
-                    FormatProperties::VideoFormat.as_raw(),
-                    Value::Choice(ChoiceValue::Id(Choice(
-                        ChoiceFlags::empty(),
-                        ChoiceEnum::Enum {
-                            default: Id(formats[0].as_raw()),
-                            alternatives: formats[1..].iter().map(|f| Id(f.as_raw())).collect(),
-                        },
-                    ))),
-                ),
-                Property::new(
-                    FormatProperties::VideoSize.as_raw(),
-                    Value::Rectangle(Rectangle {
-                        width: expect.0,
-                        height: expect.1,
-                    }),
-                ),
-                Property::new(
-                    FormatProperties::VideoFramerate.as_raw(),
-                    Value::Fraction(Fraction { num: 0, denom: 1 }),
-                ),
-            ],
-        };
-        let values = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(obj))
-            .context("serialize EnumFormat")?
-            .0
-            .into_inner();
+        let values = raw_video_enumformat(expect)?;
         let pod = spa::pod::Pod::from_bytes(&values).context("pod bytes")?;
         let mut params = [pod];
         stream
@@ -749,68 +764,6 @@ fn opts<'a>(entries: &'a [(&'a str, Value<'a>)]) -> HashMap<String, Value<'a>> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Real session, no dialog: cargo test -p qs-capture wayland -- --ignored --nocapture
-    #[test]
-    #[ignore]
-    fn mutter_screencast_returns_frames() {
-        let frames = MutterCapture.capture_all().unwrap();
-        assert!(!frames.is_empty());
-        for f in &frames {
-            eprintln!(
-                "frame: logical {}x{} @({},{}) scale {:.2}, pixels {}x{}",
-                f.geometry.size.w,
-                f.geometry.size.h,
-                f.geometry.origin.x,
-                f.geometry.origin.y,
-                f.geometry.scale,
-                f.pixels.width(),
-                f.pixels.height()
-            );
-        }
-    }
-
-    /// Live-stream smoke test — needs a real Wayland session. Records the
-    /// primary monitor for ~3s and dumps received frames; proves the
-    /// repeated-frame path delivers more than one frame.
-    #[test]
-    #[ignore]
-    fn live_stream_delivers_repeated_frames() {
-        let mon = MutterCapture.capture_all().unwrap().remove(0);
-        let g = mon.geometry;
-        let live = record_start(g.logical_rect()).unwrap();
-        let mut n = 0;
-        let mut first = None;
-        while let Ok(img) = live.frames().recv_timeout(std::time::Duration::from_secs(3)) {
-            if first.is_none() {
-                img.save("/tmp/qs-rec-frame0.png").unwrap();
-                first = Some(img.clone());
-            }
-            n += 1;
-            if n >= 30 {
-                break;
-            }
-        }
-        drop(live);
-        eprintln!("live stream delivered {n} frames");
-        assert!(n >= 3, "expected repeated frames, got {n}");
-    }
-
-    // Dump each monitor's frame to /tmp/qs-dump-<i>.png — visual debugging.
-    #[test]
-    #[ignore]
-    fn dump_screen_png() {
-        for (i, f) in MutterCapture.capture_all().unwrap().iter().enumerate() {
-            let p = format!("/tmp/qs-dump-{i}.png");
-            f.pixels.save(&p).unwrap();
-            eprintln!("saved {p}");
-        }
-    }
-}
-
 // ------------------------------------------------------------------ record
 
 /// Live screencast of one monitor — full-monitor RGBA frames arrive on
@@ -948,16 +901,14 @@ fn stream_pump(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     use pw::properties::properties;
-    use spa::param::format::{FormatProperties, MediaSubtype, MediaType};
+    use spa::param::format::{MediaSubtype, MediaType};
     use spa::param::video::{VideoFormat, VideoInfoRaw};
     use spa::param::{format_utils, ParamType};
-    use spa::pod::serialize::PodSerializer;
-    use spa::pod::{ChoiceValue, Object, Property, Value};
-    use spa::utils::{
-        Choice, ChoiceEnum, ChoiceFlags, Direction, Fraction, Id, Rectangle, SpaTypes,
-    };
-    use std::cell::Cell;
-    use std::io::Cursor;
+    
+    
+    use spa::utils::Direction;
+    
+    
     use std::time::Duration;
 
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -967,31 +918,7 @@ fn stream_pump(
     let core = context.connect(None).context("pw connect")?;
 
     // warm the registry so connect() finds the node (same race as grab)
-    {
-        let registry = core.get_registry().context("pw registry")?;
-        let pending = Rc::new(Cell::new(false));
-        let weak = mainloop.downgrade();
-        let _l = registry
-            .add_listener_local()
-            .global(move |g| {
-                if g.id == node {
-                    pending.set(true);
-                    if let Some(ml) = weak.upgrade() {
-                        ml.quit();
-                    }
-                }
-            })
-            .register();
-        let weak = mainloop.downgrade();
-        let warm = mainloop.loop_().add_timer(move |_| {
-            if let Some(ml) = weak.upgrade() {
-                ml.quit();
-            }
-        });
-        warm.update_timer(Some(Duration::from_secs(2)), None);
-        mainloop.run();
-        drop(warm);
-    }
+    warm_registry(&mainloop, &core, [node].into_iter().collect())?;
 
     let stream = Rc::new(
         pw::stream::Stream::new(
@@ -1073,55 +1000,7 @@ fn stream_pump(
         .register()
         .context("pw listener")?;
 
-    let formats = [
-        VideoFormat::BGRx,
-        VideoFormat::BGRA,
-        VideoFormat::RGBx,
-        VideoFormat::RGBA,
-        VideoFormat::xRGB,
-        VideoFormat::ARGB,
-        VideoFormat::xBGR,
-        VideoFormat::ABGR,
-    ];
-    let obj = Object {
-        type_: SpaTypes::ObjectParamFormat.as_raw(),
-        id: ParamType::EnumFormat.as_raw(),
-        properties: vec![
-            Property::new(
-                FormatProperties::MediaType.as_raw(),
-                Value::Id(Id(MediaType::Video.as_raw())),
-            ),
-            Property::new(
-                FormatProperties::MediaSubtype.as_raw(),
-                Value::Id(Id(MediaSubtype::Raw.as_raw())),
-            ),
-            Property::new(
-                FormatProperties::VideoFormat.as_raw(),
-                Value::Choice(ChoiceValue::Id(Choice(
-                    ChoiceFlags::empty(),
-                    ChoiceEnum::Enum {
-                        default: Id(formats[0].as_raw()),
-                        alternatives: formats[1..].iter().map(|f| Id(f.as_raw())).collect(),
-                    },
-                ))),
-            ),
-            Property::new(
-                FormatProperties::VideoSize.as_raw(),
-                Value::Rectangle(Rectangle {
-                    width: expect.0,
-                    height: expect.1,
-                }),
-            ),
-            Property::new(
-                FormatProperties::VideoFramerate.as_raw(),
-                Value::Fraction(Fraction { num: 0, denom: 1 }),
-            ),
-        ],
-    };
-    let values = PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(obj))
-        .context("serialize EnumFormat")?
-        .0
-        .into_inner();
+    let values = raw_video_enumformat(expect)?;
     let pod = spa::pod::Pod::from_bytes(&values).context("pod bytes")?;
     let mut params = [pod];
     stream
@@ -1163,4 +1042,66 @@ fn stream_pump(
     }
     stream.disconnect().ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Real session, no dialog: cargo test -p qs-capture wayland -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn mutter_screencast_returns_frames() {
+        let frames = MutterCapture.capture_all().unwrap();
+        assert!(!frames.is_empty());
+        for f in &frames {
+            eprintln!(
+                "frame: logical {}x{} @({},{}) scale {:.2}, pixels {}x{}",
+                f.geometry.size.w,
+                f.geometry.size.h,
+                f.geometry.origin.x,
+                f.geometry.origin.y,
+                f.geometry.scale,
+                f.pixels.width(),
+                f.pixels.height()
+            );
+        }
+    }
+
+    /// Live-stream smoke test — needs a real Wayland session. Records the
+    /// primary monitor for ~3s and dumps received frames; proves the
+    /// repeated-frame path delivers more than one frame.
+    #[test]
+    #[ignore]
+    fn live_stream_delivers_repeated_frames() {
+        let mon = MutterCapture.capture_all().unwrap().remove(0);
+        let g = mon.geometry;
+        let live = record_start(g.logical_rect()).unwrap();
+        let mut n = 0;
+        let mut first = None;
+        while let Ok(img) = live.frames().recv_timeout(std::time::Duration::from_secs(3)) {
+            if first.is_none() {
+                img.save("/tmp/qs-rec-frame0.png").unwrap();
+                first = Some(img.clone());
+            }
+            n += 1;
+            if n >= 30 {
+                break;
+            }
+        }
+        drop(live);
+        eprintln!("live stream delivered {n} frames");
+        assert!(n >= 3, "expected repeated frames, got {n}");
+    }
+
+    // Dump each monitor's frame to /tmp/qs-dump-<i>.png — visual debugging.
+    #[test]
+    #[ignore]
+    fn dump_screen_png() {
+        for (i, f) in MutterCapture.capture_all().unwrap().iter().enumerate() {
+            let p = format!("/tmp/qs-dump-{i}.png");
+            f.pixels.save(&p).unwrap();
+            eprintln!("saved {p}");
+        }
+    }
 }
