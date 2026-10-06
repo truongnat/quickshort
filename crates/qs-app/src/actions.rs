@@ -88,6 +88,11 @@ pub fn dispatch(
             copy_image_to_clipboard(&img, wait_clipboard);
             Outcome::Copied
         }
+        Action::Scroll => {
+            // the caller handles it — it needs a live capture backend and
+            // a place to report progress, neither of which dispatch owns
+            anyhow::bail!("scrolling capture is driven by host/main, not dispatch")
+        }
         Action::Ocr => {
             let t = qs_ocr::extract_text(&img, ocr_lang)?;
             if t.is_empty() {

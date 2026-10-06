@@ -11,6 +11,7 @@ mod actions;
 mod config;
 mod host;
 mod quick_access;
+mod scroll;
 mod settings;
 mod share;
 mod toast;
@@ -172,6 +173,21 @@ fn run_one_shot(args: Args) -> Result<()> {
     // the next hotkey press
     #[cfg(target_os = "linux")]
     drop(_lock);
+
+    // scrolling capture produces the tall image itself; the card then
+    // offers the same follow-up actions as any other outcome
+    if action == qs_overlay::Action::Scroll {
+        let img = scroll::run(sel)?;
+        let _ = quick_access::standalone(
+            img,
+            "Captured — pick an action",
+            None,
+            cfg.save_dir(),
+            cfg.accent_rgb(),
+            true,
+        );
+        return Ok(());
+    }
 
     let target = match args.out {
         Some(p) => SaveTarget::File(p),

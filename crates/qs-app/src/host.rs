@@ -29,6 +29,8 @@ enum HostEvent {
     Done(Result<Dispatch, String>),
     /// A share upload kicked off from the quick-access card finished.
     QuickShare(Result<crate::share::SharedLink, String>),
+    /// Scroll-capture worker finished — the stitched tall image or error.
+    ScrollDone(Result<image::RgbaImage, String>),
     /// Release check finished — `manual` gates the "up to date" toast.
     UpdateCheck {
         res: Result<Option<Release>, String>,
@@ -563,6 +565,10 @@ impl ApplicationHandler<HostEvent> for Host {
                     Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
                 }
             }
+            HostEvent::ScrollDone(res) => match res {
+                Ok(img) => self.open_card(el, img, "Captured — pick an action", None),
+                Err(e) => self.toast_done(el, format!("Scroll failed: {e}"), false),
+            },
             HostEvent::QuickShare(res) => {
                 let Some(c) = &mut self.card else { return };
                 c.set_sharing(false);
@@ -634,6 +640,24 @@ impl ApplicationHandler<HostEvent> for Host {
             return;
         };
         if let OverlayEvent::Done(sel, action, annots) = out {
+            // scrolling capture drives its own capture loop and reports
+            // the stitched image through ScrollDone
+            if action == qs_overlay::Action::Scroll {
+                match Toast::open(
+                    el,
+                    "Scrolling capture — scroll the page; it ends when it stops",
+                    self.cfg.accent_rgb(),
+                ) {
+                    Ok(t) => self.toast = Some(t),
+                    Err(e) => eprintln!("toast: {e:#}"),
+                }
+                let px = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let res = crate::scroll::run(sel).map_err(|e| e.to_string());
+                    let _ = px.send_event(HostEvent::ScrollDone(res));
+                });
+                return;
+            }
             // slow actions get a live toast while the worker runs
             if self.toast.is_none() {
                 let wait_msg = match action {

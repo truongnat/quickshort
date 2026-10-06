@@ -28,6 +28,7 @@ pub struct Config {
     pub key_copy: String,
     pub key_ocr: String,
     pub key_share: String,
+    pub key_scroll: String,
     /// ⌘+key = undo, ⌘⇧+key = redo — one field drives both.
     pub key_undo: String,
     /// tesseract language list, e.g. "eng", "eng+jpn", "eng+vie".
@@ -60,6 +61,7 @@ impl Default for Config {
             key_copy: "c".into(),
             key_ocr: "t".into(),
             key_share: "l".into(),
+            key_scroll: "g".into(),
             key_undo: "z".into(),
             ocr_lang: "auto".into(),
             last_update_check: 0,
@@ -126,6 +128,7 @@ impl Config {
                 copy: key(&self.key_copy, 'c'),
                 ocr: key(&self.key_ocr, 't'),
                 share: key(&self.key_share, 'l'),
+                scroll: key(&self.key_scroll, 'g'),
                 undo: key(&self.key_undo, 'z'),
             },
         }

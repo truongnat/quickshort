@@ -50,6 +50,8 @@ pub struct Keys {
     pub copy: char,
     pub ocr: char,
     pub share: char,
+    /// scrolling capture — repeated grabs of the selection stitched tall
+    pub scroll: char,
     pub undo: char,
 }
 
@@ -62,6 +64,7 @@ impl Default for Prefs {
                 copy: 'c',
                 ocr: 't',
                 share: 'l',
+                scroll: 'g',
                 undo: 'z',
             },
         }
@@ -1580,6 +1583,8 @@ impl Session {
                             Some(Action::Ocr)
                         } else if ch == k.share {
                             Some(Action::Share)
+                        } else if ch == k.scroll {
+                            Some(Action::Scroll)
                         } else {
                             None
                         };

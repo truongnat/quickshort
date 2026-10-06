@@ -15,6 +15,9 @@ pub enum Action {
     Ocr,
     /// Publish the capture through an SSH tunnel and copy its link
     Share,
+    /// Repeated captures of this rect while the user scrolls, stitched
+    /// into one tall image
+    Scroll,
 }
 
 /// Drawing tools — stay in the overlay and annotate the canvas.
@@ -60,6 +63,7 @@ const MAIN: &[Item] = &[
     Item::Redo,
     Item::Act(Action::Save),
     Item::Act(Action::Copy),
+    Item::Act(Action::Scroll),
     Item::Act(Action::Ocr),
     Item::Act(Action::Share),
 ];
@@ -518,6 +522,17 @@ fn draw_icon(
                 .min(seg_sdf(lx, ly, 0.0, -6.5, -3.0, -3.5))
                 .min(seg_sdf(lx, ly, 0.0, -6.5, 3.0, -3.5));
             let a = stroke(d, STROKE) * fg_a;
+            if a > 0.0 {
+                cv.blend(x, y, FG, a);
+            }
+        }
+        Item::Act(Action::Scroll) => {
+            // tall page outline + down chevron inside
+            let d_page = rrect_sdf(lx, ly, 0.0, 0.0, 4.0, 5.5, 1.2);
+            let d_arrow = seg_sdf(lx, ly, 0.0, -2.5, 0.0, 2.5)
+                .min(seg_sdf(lx, ly, -2.2, 0.3, 0.0, 2.5))
+                .min(seg_sdf(lx, ly, 2.2, 0.3, 0.0, 2.5));
+            let a = stroke(d_page, STROKE).max(stroke(d_arrow, STROKE)) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }
