@@ -10,6 +10,7 @@
 mod actions;
 mod config;
 mod host;
+mod pin;
 mod quick_access;
 mod scroll;
 mod settings;

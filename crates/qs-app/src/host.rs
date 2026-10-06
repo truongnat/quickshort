@@ -14,6 +14,7 @@ use winit::window::WindowId;
 
 use crate::actions::{self, Dispatch, Outcome, SaveTarget};
 use crate::config::Config;
+use crate::pin::Pin;
 use crate::quick_access::{QaAction, QuickAccess};
 use crate::settings::{Settings, SettingsEvent};
 use crate::toast::Toast;
@@ -87,6 +88,8 @@ struct Host {
     toast: Option<Toast>,
     /// Post-capture thumbnail card — owns the image until dismissed.
     card: Option<QuickAccess>,
+    /// Floating always-on-top reference images.
+    pins: Vec<Pin>,
     /// Newer release found, waiting for the user to click Update.
     pending_update: Option<Release>,
     /// Lazy — the listener + ssh tunnel only spawn on the first Share.
@@ -107,6 +110,7 @@ impl Host {
             settings: None,
             toast: None,
             card: None,
+            pins: Vec::new(),
             pending_update: None,
             share: None,
         }
@@ -323,7 +327,7 @@ impl Host {
         saved: Option<PathBuf>,
     ) {
         self.toast = None;
-        match QuickAccess::open(el, img, msg, saved, self.cfg.accent_rgb()) {
+        match QuickAccess::open(el, img, msg, saved, self.cfg.accent_rgb(), true) {
             Ok(c) => self.card = Some(c),
             Err(e) => {
                 eprintln!("card: {e:#}");
@@ -334,12 +338,13 @@ impl Host {
 
     /// A click on the card's action pills — everything runs with the image
     /// the card still owns.
-    fn on_card_action(&mut self, _el: &ActiveEventLoop, act: QaAction) {
+    fn on_card_action(&mut self, el: &ActiveEventLoop, act: QaAction) {
         if matches!(act, QaAction::Close) {
             self.card = None;
             return;
         }
         let mut rebuild = false;
+        let mut pin = false;
         if let Some(c) = &mut self.card {
             match act {
                 QaAction::Copy => {
@@ -362,6 +367,7 @@ impl Host {
                     }
                 }
                 QaAction::Beautify => c.beautify(),
+                QaAction::Pin => pin = true,
                 QaAction::Share => {
                     let sm = self
                         .share
@@ -380,6 +386,14 @@ impl Host {
         }
         if rebuild {
             self.rebuild_menu();
+        }
+        if pin {
+            if let Some(c) = &self.card {
+                match Pin::open(el, c.image()) {
+                    Ok(p) => self.pins.push(p),
+                    Err(e) => eprintln!("pin: {e:#}"),
+                }
+            }
         }
     }
 
@@ -587,6 +601,12 @@ impl ApplicationHandler<HostEvent> for Host {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(i) = self.pins.iter().position(|p| p.win_id() == id) {
+            if self.pins[i].window_event(event) {
+                self.pins.remove(i);
+            }
+            return;
+        }
         if let Some(c) = &mut self.card {
             if c.win_id() == id {
                 if let Some(act) = c.window_event(event) {

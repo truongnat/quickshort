@@ -19,7 +19,7 @@ use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::settings::system_font;
 
-const W: f64 = 384.0;
+const W: f64 = 424.0;
 const H: f64 = 108.0;
 const TTL: Duration = Duration::from_secs(8);
 const THUMB: usize = 80;
@@ -42,6 +42,8 @@ pub enum QaAction {
     Share,
     /// pad + gradient + shadow — mutates the image the card holds
     Beautify,
+    /// float the image in an always-on-top window (resident app only)
+    Pin,
     Close,
 }
 
@@ -50,6 +52,7 @@ enum Btn {
     SaveOrReveal,
     Share,
     Beautify,
+    Pin,
 }
 
 impl Btn {
@@ -59,6 +62,7 @@ impl Btn {
             Btn::SaveOrReveal => (168.0, 66.0, 56.0, 26.0),
             Btn::Share => (232.0, 66.0, 56.0, 26.0),
             Btn::Beautify => (296.0, 66.0, 68.0, 26.0),
+            Btn::Pin => (372.0, 66.0, 44.0, 26.0),
         }
     }
     fn label(&self, saved: bool) -> &'static str {
@@ -73,6 +77,7 @@ impl Btn {
             }
             Btn::Share => "Share",
             Btn::Beautify => "Beautify",
+            Btn::Pin => "Pin",
         }
     }
     fn action(&self, saved: bool) -> QaAction {
@@ -87,11 +92,20 @@ impl Btn {
             }
             Btn::Share => QaAction::Share,
             Btn::Beautify => QaAction::Beautify,
+            Btn::Pin => QaAction::Pin,
         }
     }
 }
 
-const BTNS: [Btn; 4] = [Btn::Copy, Btn::SaveOrReveal, Btn::Share, Btn::Beautify];
+const BTNS_PIN: &[Btn] = &[
+    Btn::Copy,
+    Btn::SaveOrReveal,
+    Btn::Share,
+    Btn::Beautify,
+    Btn::Pin,
+];
+/// one-shot mode: no Pin — the process exits and the window would die
+const BTNS: &[Btn] = &[Btn::Copy, Btn::SaveOrReveal, Btn::Share, Btn::Beautify];
 const CLOSE: (f64, f64, f64) = (W - 26.0, 14.0, 9.0); // cx, cy, r
 
 /// Everything `render` needs — kept apart from the window/surface so
@@ -105,7 +119,9 @@ struct CardState {
     /// a share upload is in flight — Share stays dimmed
     sharing: bool,
     deadline: Instant,
-    hover: Option<usize>, // index into BTNS; 99 = close button
+    /// which pills to show — Pin only exists where the host outlives it
+    btns: &'static [Btn],
+    hover: Option<usize>, // index into btns; 99 = close button
 }
 
 pub struct QuickAccess {
@@ -117,12 +133,15 @@ pub struct QuickAccess {
 
 impl QuickAccess {
     /// Card docked bottom-right of the primary monitor.
+    /// `pin` enables the Pin pill — only the resident host can keep a
+    /// pinned window alive.
     pub fn open(
         el: &ActiveEventLoop,
         img: RgbaImage,
         msg: &str,
         saved: Option<PathBuf>,
         accent: u32,
+        pin: bool,
     ) -> Result<Self> {
         let attrs = Window::default_attributes()
             .with_decorations(false)
@@ -154,6 +173,7 @@ impl QuickAccess {
                 saved,
                 sharing: false,
                 deadline: Instant::now() + TTL,
+                btns: if pin { BTNS_PIN } else { BTNS },
                 hover: None,
             },
             img,
@@ -237,8 +257,8 @@ impl QuickAccess {
             } => match self.st.hover {
                 Some(99) => Some(QaAction::Close),
                 // a share already in flight must not spawn a second upload
-                Some(i) if matches!(BTNS[i], Btn::Share) && self.st.sharing => None,
-                Some(i) => Some(BTNS[i].action(self.st.saved.is_some())),
+                Some(i) if matches!(self.st.btns[i], Btn::Share) && self.st.sharing => None,
+                Some(i) => Some(self.st.btns[i].action(self.st.saved.is_some())),
                 None => None,
             },
             _ => None,
@@ -272,7 +292,7 @@ impl CardState {
         if (x - cx).powi(2) + (y - cy).powi(2) <= r * r {
             return Some(99);
         }
-        BTNS.iter().position(|b| {
+        self.btns.iter().position(|b| {
             let (bx, by, bw, bh) = b.rect();
             x >= bx && x <= bx + bw && y >= by && y <= by + bh
         })
@@ -341,7 +361,7 @@ impl CardState {
         t.draw(&mut cv, 104.0, 40.0, 13.0, &self.msg, FG);
 
         // action pills
-        for (i, b) in BTNS.iter().enumerate() {
+        for (i, b) in self.btns.iter().enumerate() {
             let (bx, by, bw, bh) = b.rect();
             let hot = self.hover == Some(i);
             let dim = matches!(b, Btn::Share) && self.sharing;
@@ -434,7 +454,7 @@ pub fn standalone(
     impl ApplicationHandler<Ev> for Run {
         fn resumed(&mut self, el: &ActiveEventLoop) {
             let img = self.img.take().expect("card opened twice");
-            match QuickAccess::open(el, img, &self.msg, self.saved.take(), self.accent) {
+            match QuickAccess::open(el, img, &self.msg, self.saved.take(), self.accent, false) {
                 Ok(c) => self.card = Some(c),
                 Err(e) => {
                     eprintln!("card: {e:#}");
@@ -474,6 +494,8 @@ pub fn standalone(
                     }
                 }
                 QaAction::Beautify => c.beautify(),
+                // Pin is resident-only — the pill isn't rendered here
+                QaAction::Pin => unreachable!(),
                 QaAction::Share => {
                     let (sm, img, px) = (self.sm.clone(), c.image().clone(), self.proxy.clone());
                     c.set_sharing(true);
@@ -591,6 +613,7 @@ mod tests {
             saved: Some("/tmp/x.png".into()),
             sharing: false,
             deadline: Instant::now() + Duration::from_secs(6),
+            btns: BTNS_PIN,
             hover: Some(0),
         };
         let (w, h) = (W as usize, H as usize);
