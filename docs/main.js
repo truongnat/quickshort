@@ -137,3 +137,53 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
     }
   });
 })();
+
+/* ---------- supporters wall: docs/supporters.json + self-submit ---------- */
+(() => {
+  const names = document.getElementById("supNames");
+  const form = document.getElementById("supForm");
+  if (!names || !form) return;
+  const status = document.getElementById("supStatus");
+  const ENDPOINT = "https://quickshort-report.truongnat.workers.dev";
+
+  const render = async () => {
+    try {
+      const r = await fetch("supporters.json", { cache: "no-store" });
+      const list = r.ok ? (await r.json()).supporters || [] : [];
+      names.innerHTML = list.length
+        ? list
+            .map(
+              (s) =>
+                `<span class="sup-chip" title="${s.via === "vietqr" ? "VietQR" : "GitHub Sponsors"}">${s.name.replace(/[<>&"]/g, "")}</span>`
+            )
+            .join("")
+        : `<span class="sup-empty">${QS_T("sup.empty")}</span>`;
+    } catch {
+      names.innerHTML = `<span class="sup-empty">${QS_T("sup.empty")}</span>`;
+    }
+  };
+  render();
+  document.addEventListener("qs-lang", render);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("supName").value.trim();
+    if (!name) return;
+    status.textContent = QS_T("sup.sending");
+    status.className = "req-status";
+    try {
+      const r = await fetch(ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "supporter", name }),
+      });
+      if (!r.ok) throw new Error(`relay ${r.status}`);
+      status.textContent = QS_T("sup.sent");
+      status.classList.add("ok");
+      form.reset();
+    } catch {
+      status.textContent = QS_T("sup.fail");
+      status.classList.add("err");
+    }
+  });
+})();

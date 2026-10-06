@@ -95,6 +95,15 @@ window.QS_I18N = {
     "donate.gh.b": "Become a sponsor",
     "donate.qr": "Domestic — scan with any banking app, lands straight in the account.",
 
+    "sup.title": "THANKS TO",
+    "sup.empty": "Be the first name on this wall.",
+    "sup.name": "Your name (shown publicly)",
+    "sup.send": "Get on the wall",
+    "sup.sending": "Sending…",
+    "sup.sent": "Got it — see you on the wall",
+    "sup.fail": "Could not send",
+    "sup.hint": "Donated via VietQR? Drop your name — it appears here once the transfer lands.",
+
     "ui.copy": "Copy",
     "ui.copied": "Copied",
     "ui.failed": "Failed",
@@ -195,6 +204,15 @@ window.QS_I18N = {
     "donate.gh": "Quốc tế — thẻ hoặc PayPal. Sponsor cá nhân không mất phí.",
     "donate.gh.b": "Trở thành sponsor",
     "donate.qr": "Trong nước — quét bằng app ngân hàng bất kỳ, tiền vào thẳng tài khoản.",
+
+    "sup.title": "CẢM ƠN",
+    "sup.empty": "Hãy là cái tên đầu tiên trên bảng này.",
+    "sup.name": "Tên của bạn (hiển thị công khai)",
+    "sup.send": "Đưa tôi lên",
+    "sup.sending": "Đang gửi…",
+    "sup.sent": "Đã nhận — hẹn gặp trên bảng",
+    "sup.fail": "Gửi không được",
+    "sup.hint": "Đã chuyển khoản qua VietQR? Để lại tên — tên bạn sẽ lên đây sau khi tiền về.",
 
     "ui.copy": "Chép",
     "ui.copied": "Đã chép",

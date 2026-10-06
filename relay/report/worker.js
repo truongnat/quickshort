@@ -40,7 +40,21 @@ export default {
     }
 
     let title, body, labels;
-    if (str(data.type, 20) === "feature") {
+    if (str(data.type, 20) === "supporter") {
+      // donor self-submit after a VietQR transfer — lands as an issue
+      // the maintainer confirms against the bank record, then the name
+      // is added to docs/supporters.json which the site renders.
+      const name = str(data.name, 80).trim();
+      const contact = str(data.contact, 200).trim();
+      if (!name) {
+        return cors(new Response("missing name", { status: 400 }));
+      }
+      title = `Supporter: ${name}`;
+      body = `Name for the thanks wall: **${name}**\n\n---\n_Donated via VietQR_${
+        contact ? ` · contact: ${contact}` : ""
+      }`;
+      labels = ["supporter"];
+    } else if (str(data.type, 20) === "feature") {
       const ft = str(data.title, 120).trim();
       const note = str(data.note, 8000).trim();
       const contact = str(data.contact, 200).trim();
