@@ -20,6 +20,8 @@ mkdir -p "$PKGDIR/DEBIAN" "$PKGDIR/usr/bin" \
 cp "$BIN" "$PKGDIR/usr/bin/quickshort"
 cp packaging/linux/quickshort.desktop "$PKGDIR/usr/share/applications/quickshort.desktop"
 cp docs/assets/icon.png "$PKGDIR/usr/share/icons/hicolor/1024x1024/apps/quickshort.png"
+# ffmpeg is a Recommends not a Depends: recording (⌘R) needs it, everything
+# else works without — apt installs it anyway unless --no-install-recommends
 cat > "$PKGDIR/DEBIAN/control" <<EOF
 Package: quickshort
 Version: $VER
@@ -28,8 +30,6 @@ Priority: optional
 Architecture: amd64
 Maintainer: truongnat <noreply@github.com>
 Depends: libgtk-3-0, libayatana-appindicator3-1, libpipewire-0.3-0, tesseract-ocr, tesseract-ocr-eng, wl-clipboard, libnotify-bin, openssh-client
-# ffmpeg is a Recommends not a Depends: recording (⌘R) needs it, everything
-# else works without — apt installs it anyway unless --no-install-recommends
 Recommends: tesseract-ocr-jpn, tesseract-ocr-vie, ffmpeg
 Description: Region screenshot tool with annotations and native OCR
  A pure-Rust desktop utility: multi-monitor region capture, annotation
