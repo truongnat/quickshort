@@ -1,24 +1,38 @@
 //! Self-update against GitHub Releases — unsigned build.
 //!
-//! Check hits `releases/latest`; a newer semver downloads the
-//! `*-macos.zip` asset (a zipped `.app`), swaps it over the running bundle,
-//! and relaunches. Downloads go through `ureq`/plain HTTP so no quarantine
-//! xattr is set, and releases are signed with a stable self-signed identity
-//! (`packaging/macos/gen_signing_cert.sh`) so TCC grants survive the swap.
+//! Check hits `releases/latest`; a newer semver downloads the asset for this
+//! platform and swaps it over the running binary:
+//!
+//! - macOS: a zipped `.app` swapped over the bundle, then relaunched via
+//!   `open`. Downloads go through `ureq`/plain HTTP so no quarantine xattr is
+//!   set, and releases are signed with a stable self-signed identity
+//!   (`packaging/macos/gen_signing_cert.sh`) so TCC grants survive the swap.
+//! - Linux: the `.deb` asset is unpacked with `ar`/`tar` (or `dpkg-deb`) and
+//!   the binary atomically renamed over `current_exe` — `pkexec install`
+//!   when the install dir isn't writable. Running as an AppImage replaces
+//!   `$APPIMAGE` instead.
+//! - Windows: the NSIS `*-Setup.exe` is launched and the app exits; the
+//!   installer performs the upgrade.
 //!
 //! All functions block — callers run them on a worker thread.
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const REPO: &str = "truongnat/quickshort";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Release {
     pub version: String,
-    zip_url: String,
-    sha_url: Option<String>,
+    /// asset name → download url
+    assets: Vec<(String, String)>,
+}
+
+impl Release {
+    fn asset(&self, pred: impl Fn(&str) -> bool) -> Option<&(String, String)> {
+        self.assets.iter().find(|(n, _)| pred(n))
+    }
 }
 
 /// `Some` when the latest GitHub release is newer than this binary.
@@ -48,27 +62,88 @@ pub fn check() -> Result<Option<Release>> {
         return Ok(None);
     }
 
-    let assets = body
+    let assets: Vec<(String, String)> = body
         .get("assets")
         .and_then(|v| v.as_array())
-        .context("release reply: no assets")?;
-    let url_of = |name: &dyn Fn(&str) -> bool| {
-        assets.iter().find_map(|a| {
-            let n = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            name(n)
-                .then(|| a.get("browser_download_url").and_then(|v| v.as_str()))
-                .flatten()
-                .map(str::to_string)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    let n = x.get("name")?.as_str()?.to_string();
+                    let u = x.get("browser_download_url")?.as_str()?.to_string();
+                    Some((n, u))
+                })
+                .collect()
         })
-    };
-    let zip_url =
-        url_of(&|n| n.ends_with("-macos.zip")).context("release has no *-macos.zip asset")?;
-    let sha_url = url_of(&|n| n.ends_with("-macos.zip.sha256"));
+        .context("release reply: no assets")?;
+
+    // bail early when this platform's asset is missing — an update we can't
+    // install must not be offered
+    #[cfg(target_os = "macos")]
+    let ok = assets.iter().any(|(n, _)| n.ends_with("-macos.zip"));
+    #[cfg(target_os = "linux")]
+    let ok = assets
+        .iter()
+        .any(|(n, _)| n == "quickshort_amd64.deb" || n.ends_with(".AppImage"));
+    #[cfg(target_os = "windows")]
+    let ok = assets
+        .iter()
+        .any(|(n, _)| n.ends_with("Setup.exe") || n.ends_with("setup.exe"));
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let ok = false;
+    if !ok {
+        bail!("release {ver} has no asset for this platform");
+    }
+
     Ok(Some(Release {
         version: ver.to_string(),
-        zip_url,
-        sha_url,
+        assets,
     }))
+}
+
+fn download(url: &str, dest: &Path) -> Result<()> {
+    let mut resp = ureq::get(url)
+        .header("User-Agent", "quickshort")
+        .call()
+        .context("download failed")?;
+    let mut f = std::fs::File::create(dest)?;
+    std::io::copy(
+        &mut std::io::Read::take(resp.body_mut().as_reader(), 64 * 1024 * 1024),
+        &mut f,
+    )
+    .context("download write failed")?;
+    Ok(())
+}
+
+/// Sha256 the release claims for `asset_name`, pulled from its `.sha256`
+/// asset (`linux.sha256` is a multi-line file covering every linux asset).
+fn expected_sha(rel: &Release, asset_name: &str) -> Result<Option<String>> {
+    let sha_name = if cfg!(target_os = "linux") {
+        "linux.sha256".to_string()
+    } else {
+        format!("{asset_name}.sha256")
+    };
+    let Some((_, url)) = rel.asset(|n| n == sha_name) else {
+        return Ok(None);
+    };
+    let body: String = ureq::get(url)
+        .call()
+        .and_then(|mut r| r.body_mut().read_to_string())
+        .context("sha256 asset fetch failed")?;
+    Ok(body
+        .lines()
+        .find(|l| l.contains(asset_name))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_string))
+}
+
+fn verify(rel: &Release, file: &Path, asset_name: &str) -> Result<()> {
+    if let Some(want) = expected_sha(rel, asset_name)? {
+        let got = sha256(file)?;
+        if !want.is_empty() && want != got {
+            bail!("checksum mismatch: got {got}, want {want}");
+        }
+    }
+    Ok(())
 }
 
 /// Download the release, swap it over the running `.app`, relaunch.
@@ -80,29 +155,12 @@ pub fn install(rel: &Release) -> Result<PathBuf> {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp)?;
 
-    let zip = tmp.join("update.zip");
-    let mut resp = ureq::get(&rel.zip_url)
-        .header("User-Agent", "quickshort")
-        .call()
-        .context("download failed")?;
-    let mut f = std::fs::File::create(&zip)?;
-    std::io::copy(
-        &mut std::io::Read::take(resp.body_mut().as_reader(), 64 * 1024 * 1024),
-        &mut f,
-    )
-    .context("download write failed")?;
-
-    if let Some(sha_url) = &rel.sha_url {
-        let want: String = ureq::get(sha_url)
-            .call()
-            .and_then(|mut r| r.body_mut().read_to_string())
-            .context("sha256 asset fetch failed")?;
-        let want = want.split_whitespace().next().unwrap_or("").to_string();
-        let got = shasum(&zip)?;
-        if !want.is_empty() && want != got {
-            bail!("checksum mismatch: got {got}, want {want}");
-        }
-    }
+    let (name, url) = rel
+        .asset(|n| n.ends_with("-macos.zip"))
+        .context("release has no *-macos.zip asset")?;
+    let zip = tmp.join(name);
+    download(url, &zip)?;
+    verify(rel, &zip, name)?;
 
     if !std::process::Command::new("/usr/bin/ditto")
         .args(["-xk"])
@@ -135,9 +193,117 @@ pub fn install(rel: &Release) -> Result<PathBuf> {
     Ok(app)
 }
 
-/// Relaunch the freshly installed bundle; the current process must exit.
+/// Download the `.deb`, pull out `usr/bin/quickshort`, swap it over the
+/// running binary. AppImage runs replace `$APPIMAGE` instead.
+#[cfg(target_os = "linux")]
+pub fn install(rel: &Release) -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("can't locate current exe")?;
+    let tmp = std::env::temp_dir().join("quickshort-update");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+
+    // AppImage: the whole app is one file — download and replace it
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        let (name, url) = rel
+            .asset(|n| n.ends_with(".AppImage"))
+            .context("release has no AppImage asset")?;
+        let f = tmp.join(name);
+        download(url, &f)?;
+        verify(rel, &f, name)?;
+        set_exec(&f)?;
+        // stage next to the target so rename stays on one filesystem
+        let staged = PathBuf::from(&appimage).with_extension("new");
+        std::fs::copy(&f, &staged).context("can't stage AppImage")?;
+        std::fs::rename(&staged, &appimage).context("can't replace AppImage")?;
+        return Ok(PathBuf::from(appimage));
+    }
+
+    let (name, url) = rel
+        .asset(|n| n == "quickshort_amd64.deb")
+        .context("release has no linux .deb asset")?;
+    let deb = tmp.join(name);
+    download(url, &deb)?;
+    verify(rel, &deb, name)?;
+
+    // extract data.tar payload — dpkg-deb when present, ar+tar otherwise
+    let ok = std::process::Command::new("dpkg-deb")
+        .args(["-x"])
+        .arg(&deb)
+        .arg(&tmp)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        std::process::Command::new("ar")
+            .arg("x")
+            .arg(&deb)
+            .current_dir(&tmp)
+            .status()
+            .context("deb unpack failed (ar)")?;
+        let data = std::fs::read_dir(&tmp)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("data.tar"))
+            })
+            .context("deb has no data.tar")?;
+        if !std::process::Command::new("tar")
+            .arg("xf")
+            .arg(&data)
+            .current_dir(&tmp)
+            .status()
+            .context("deb unpack failed (tar)")?
+            .success()
+        {
+            bail!("deb unpack failed (tar)");
+        }
+    }
+    let new_bin = tmp.join("usr/bin/quickshort");
+    if !new_bin.exists() {
+        bail!("update archive is missing usr/bin/quickshort");
+    }
+    set_exec(&new_bin)?;
+
+    // swap atomically when the install dir is writable; elevated copy
+    // (pkexec → polkit prompt) when it isn't, e.g. /usr/bin from a .deb
+    let staged = exe.with_extension("new");
+    let swapped = std::fs::copy(&new_bin, &staged)
+        .and_then(|_| std::fs::rename(&staged, &exe))
+        .is_ok();
+    if !swapped {
+        let s = std::process::Command::new("pkexec")
+            .args(["install", "-m", "755"])
+            .arg(&new_bin)
+            .arg(&exe)
+            .status()
+            .context("can't replace binary — run the update manually")?;
+        if !s.success() {
+            bail!("pkexec install failed ({s}) — run the update manually");
+        }
+    }
+    Ok(exe)
+}
+
+/// Download the NSIS installer and run it; the caller then exits and the
+/// installer performs the upgrade.
+#[cfg(target_os = "windows")]
+pub fn install(rel: &Release) -> Result<PathBuf> {
+    let (name, url) = rel
+        .asset(|n| n.ends_with("Setup.exe") || n.ends_with("setup.exe"))
+        .context("release has no windows installer asset")?;
+    let setup = std::env::temp_dir().join(name);
+    download(url, &setup)?;
+    verify(rel, &setup, name)?;
+    std::process::Command::new(&setup)
+        .spawn()
+        .context("can't launch installer")?;
+    Ok(std::env::current_exe()?)
+}
+
+/// Relaunch the freshly installed app; the current process must exit.
+/// Windows relaunches itself from the NSIS installer — nothing to do.
 #[cfg(target_os = "macos")]
-pub fn relaunch(app: &std::path::Path) -> Result<()> {
+pub fn relaunch(app: &Path) -> Result<()> {
     std::process::Command::new("open")
         .arg("-n")
         .arg(app)
@@ -146,9 +312,23 @@ pub fn relaunch(app: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn install(_rel: &Release) -> Result<PathBuf> {
-    bail!("auto-update is macOS-only for now — grab the release from GitHub")
+#[cfg(target_os = "linux")]
+pub fn relaunch(exe: &Path) -> Result<()> {
+    std::process::Command::new(exe)
+        .spawn()
+        .context("relaunch failed")?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn relaunch(_exe: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_exec(p: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).context("chmod failed")
 }
 
 /// `/Applications/Quickshort.app` (or wherever the bundle lives), walking up
@@ -162,19 +342,46 @@ fn current_bundle() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn shasum(p: &std::path::Path) -> Result<String> {
+fn sha256(p: &Path) -> Result<String> {
     let out = std::process::Command::new("/usr/bin/shasum")
         .arg("-a")
         .arg("256")
         .arg(p)
         .output()?;
-    String::from_utf8(out.stdout)?
+    first_word(&out.stdout)
+}
+
+#[cfg(target_os = "linux")]
+fn sha256(p: &Path) -> Result<String> {
+    let out = std::process::Command::new("sha256sum").arg(p).output()?;
+    first_word(&out.stdout)
+}
+
+#[cfg(target_os = "windows")]
+fn sha256(p: &Path) -> Result<String> {
+    // certutil prints "<hex>" on its second output line
+    let out = std::process::Command::new("certutil")
+        .args(["-hashfile"])
+        .arg(p)
+        .arg("SHA256")
+        .output()?;
+    let text = String::from_utf8(out.stdout)?;
+    text.lines()
+        .nth(1)
+        .map(|l| l.replace(' ', "").to_lowercase())
+        .context("certutil gave no hash")
+}
+
+#[cfg(unix)]
+fn first_word(stdout: &[u8]) -> Result<String> {
+    String::from_utf8(stdout.to_vec())?
         .split_whitespace()
         .next()
         .map(str::to_string)
-        .context("shasum gave no output")
+        .context("sha256 gave no output")
 }
 
+#[cfg(target_os = "macos")]
 fn unix_ts() -> Result<u64> {
     Ok(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?

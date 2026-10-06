@@ -226,8 +226,7 @@ const REPORT_ENDPOINT: &str = "https://quickshort-report.truongnat.workers.dev";
 /// `issues/new` page.
 pub fn report_issue(cfg: &Config) {
     let diagnostics = diagnostics(cfg);
-    let endpoint = std::env::var("QS_REPORT_URL")
-        .unwrap_or_else(|_| REPORT_ENDPOINT.into());
+    let endpoint = std::env::var("QS_REPORT_URL").unwrap_or_else(|_| REPORT_ENDPOINT.into());
     std::thread::spawn(move || {
         let payload = serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),

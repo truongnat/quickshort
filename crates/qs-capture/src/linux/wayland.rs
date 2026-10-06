@@ -199,10 +199,7 @@ impl DamagePoke {
                 while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
                     dx = if dx == 0 { 6 } else { 0 };
                     for &(w, x, y) in &wins {
-                        let _ = conn.configure_window(
-                            w,
-                            &ConfigureWindowAux::new().x(x + dx).y(y),
-                        );
+                        let _ = conn.configure_window(w, &ConfigureWindowAux::new().x(x + dx).y(y));
                     }
                     let _ = conn.flush();
                     std::thread::sleep(std::time::Duration::from_millis(90));
@@ -302,7 +299,10 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
     {
         let registry = core.get_registry().context("pw registry")?;
         let pending = Rc::new(RefCell::new(
-            nodes.iter().copied().collect::<std::collections::HashSet<u32>>(),
+            nodes
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<u32>>(),
         ));
         let weak = mainloop.downgrade();
         let _warm_listener = registry
@@ -463,8 +463,7 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
                                 if si + w * 4 > s.len() {
                                     break;
                                 }
-                                out[y * w * 4..(y + 1) * w * 4]
-                                    .copy_from_slice(&s[si..si + w * 4]);
+                                out[y * w * 4..(y + 1) * w * 4].copy_from_slice(&s[si..si + w * 4]);
                             }
                             st.borrow_mut().frame = Some(out);
                             got = true;
@@ -555,8 +554,6 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
             )
             .context("pw stream connect")?;
 
-
-
         keepalive.push((stream, listener));
         chans.push(st);
     }
@@ -600,9 +597,7 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
 }
 
 /// Convert collected raw frames to RGBA images.
-fn collect_frames(
-    chans: &[Rc<RefCell<ChanState>>],
-) -> Result<Vec<image::RgbaImage>> {
+fn collect_frames(chans: &[Rc<RefCell<ChanState>>]) -> Result<Vec<image::RgbaImage>> {
     use spa::param::video::VideoFormat;
     let mut out = Vec::with_capacity(chans.len());
     for st in chans {

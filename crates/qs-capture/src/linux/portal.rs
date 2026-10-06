@@ -48,15 +48,16 @@ impl ScreenCapture for PortalCapture {
         let mut opts = Opts::new();
         opts.insert("handle_token".into(), vstr(&req_tok));
         opts.insert("session_handle_token".into(), vstr(&token()));
-        let _: OwnedObjectPath =
-            sc.call("CreateSession", &(opts,)).context("portal CreateSession")?;
+        let _: OwnedObjectPath = sc
+            .call("CreateSession", &(opts,))
+            .context("portal CreateSession")?;
         let results = wait_response(&mut rx, "CreateSession")?;
         let session_path: String = results
             .get("session_handle")
             .and_then(|v| String::try_from(v.clone()).ok())
             .context("CreateSession gave no session_handle")?;
-        let session_obj = OwnedObjectPath::try_from(session_path.clone())
-            .context("bad session_handle")?;
+        let session_obj =
+            OwnedObjectPath::try_from(session_path.clone()).context("bad session_handle")?;
 
         // --- SelectSources --------------------------------------------------
         // returns a Request handle: subscribe first, then wait for its
@@ -69,9 +70,7 @@ impl ScreenCapture for PortalCapture {
         opts.insert("multiple".into(), Value::from(true));
         // a cursor_mode the portal doesn't advertise is a hard
         // InvalidArgument — GNOME reports 0 available modes, so omit it
-        let modes: u32 = sc
-            .get_property("AvailableCursorModes")
-            .unwrap_or(0);
+        let modes: u32 = sc.get_property("AvailableCursorModes").unwrap_or(0);
         if modes != 0 {
             for m in [1u32, 2, 4] {
                 if modes & m != 0 {
@@ -105,9 +104,13 @@ impl ScreenCapture for PortalCapture {
         {
             save_restore_token(&t);
         }
-        let streams: Vec<(u32, Dict)> =
-            Vec::try_from(results.get("streams").context("Start gave no streams")?.clone())
-                .context("parse streams")?;
+        let streams: Vec<(u32, Dict)> = Vec::try_from(
+            results
+                .get("streams")
+                .context("Start gave no streams")?
+                .clone(),
+        )
+        .context("parse streams")?;
 
         let mut nodes = Vec::with_capacity(streams.len());
         let mut logicals = Vec::with_capacity(streams.len());
@@ -119,8 +122,7 @@ impl ScreenCapture for PortalCapture {
                 .and_then(|v| {
                     <(i32, i32)>::try_from(v.clone())
                         .or_else(|_| {
-                            <(u32, u32)>::try_from(v.clone())
-                                .map(|(a, b)| (a as i32, b as i32))
+                            <(u32, u32)>::try_from(v.clone()).map(|(a, b)| (a as i32, b as i32))
                         })
                         .ok()
                 })
@@ -130,8 +132,7 @@ impl ScreenCapture for PortalCapture {
                 .and_then(|v| {
                     <(u32, u32)>::try_from(v.clone())
                         .or_else(|_| {
-                            <(i32, i32)>::try_from(v.clone())
-                                .map(|(a, b)| (a as u32, b as u32))
+                            <(i32, i32)>::try_from(v.clone()).map(|(a, b)| (a as u32, b as u32))
                         })
                         .ok()
                 })

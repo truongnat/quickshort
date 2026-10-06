@@ -27,14 +27,10 @@ impl ShareManager {
             .content_type("image/png")
             .send(&bytes[..])
             .context("share upload failed")?;
-        let v: serde_json::Value = resp
-            .body_mut()
-            .read_json()
-            .context("bad share response")?;
+        let v: serde_json::Value = resp.body_mut().read_json().context("bad share response")?;
         v["url"]
             .as_str()
             .map(str::to_owned)
             .context("share response has no url")
     }
-
 }
