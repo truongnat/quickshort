@@ -359,6 +359,7 @@ impl Host {
                         actions::open_path(&p);
                     }
                 }
+                QaAction::Beautify => c.beautify(),
                 QaAction::Share => {
                     let sm = self
                         .share

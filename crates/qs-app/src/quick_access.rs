@@ -40,6 +40,8 @@ pub enum QaAction {
     /// card shows Open (image is already on disk)
     Reveal,
     Share,
+    /// pad + gradient + shadow — mutates the image the card holds
+    Beautify,
     Close,
 }
 
@@ -47,6 +49,7 @@ enum Btn {
     Copy,
     SaveOrReveal,
     Share,
+    Beautify,
 }
 
 impl Btn {
@@ -55,6 +58,7 @@ impl Btn {
             Btn::Copy => (104.0, 66.0, 56.0, 26.0),
             Btn::SaveOrReveal => (168.0, 66.0, 56.0, 26.0),
             Btn::Share => (232.0, 66.0, 56.0, 26.0),
+            Btn::Beautify => (296.0, 66.0, 68.0, 26.0),
         }
     }
     fn label(&self, saved: bool) -> &'static str {
@@ -68,6 +72,7 @@ impl Btn {
                 }
             }
             Btn::Share => "Share",
+            Btn::Beautify => "Beautify",
         }
     }
     fn action(&self, saved: bool) -> QaAction {
@@ -81,11 +86,12 @@ impl Btn {
                 }
             }
             Btn::Share => QaAction::Share,
+            Btn::Beautify => QaAction::Beautify,
         }
     }
 }
 
-const BTNS: [Btn; 3] = [Btn::Copy, Btn::SaveOrReveal, Btn::Share];
+const BTNS: [Btn; 4] = [Btn::Copy, Btn::SaveOrReveal, Btn::Share, Btn::Beautify];
 const CLOSE: (f64, f64, f64) = (W - 26.0, 14.0, 9.0); // cx, cy, r
 
 /// Everything `render` needs — kept apart from the window/surface so
@@ -173,6 +179,16 @@ impl QuickAccess {
     pub fn set_saved(&mut self, p: PathBuf) {
         self.st.saved = Some(p);
         self.win.request_redraw();
+    }
+
+    /// Apply the backdrop transform in place — the saved file (if any)
+    /// still holds the un-beautified shot, so Save becomes meaningful
+    /// again.
+    pub fn beautify(&mut self) {
+        self.img = qs_core::beautify(&self.img);
+        self.st.thumb = make_thumb(&self.img);
+        self.st.saved = None;
+        self.notify("Background applied — Save to keep it");
     }
 
     /// New status line + a fresh countdown; used for action feedback.
@@ -457,6 +473,7 @@ pub fn standalone(
                         crate::actions::open_path(&p);
                     }
                 }
+                QaAction::Beautify => c.beautify(),
                 QaAction::Share => {
                     let (sm, img, px) = (self.sm.clone(), c.image().clone(), self.proxy.clone());
                     c.set_sharing(true);
