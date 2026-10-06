@@ -22,6 +22,15 @@ cask "quickshort" do
         writable_paths: ["{{appdir}}/Quickshort.app"]
   end
 
+  # screen recording (⌘R) pipes frames into ffmpeg — optional, everything
+  # else works without it, so this is a hint rather than a dependency
+  def caveats
+    <<~EOS
+      Screen recording needs ffmpeg:
+        brew install ffmpeg
+    EOS
+  end
+
   zap trash: [
     "~/.config/quickshort",
     "~/Library/LaunchAgents/ai.quickshort.plist",

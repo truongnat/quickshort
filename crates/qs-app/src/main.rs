@@ -97,43 +97,45 @@ fn main() -> Result<()> {
         );
     }
     if !args.capture_now {
+        // one resident app per user — a second launch (LaunchAgent plus a
+        // manual `open`, etc.) would double-register the global hotkey and
+        // stack two overlays on every press
+        let Some(_guard) = app_lock()? else {
+            return Ok(());
+        };
         return host::run(config::Config::load());
     }
     run_one_shot(args)
 }
 
-/// flock-held for the whole capture: dropped (released) when the process
-/// exits, even on SIGKILL.
-#[cfg(target_os = "linux")]
-fn capture_lock() -> Result<Option<std::fs::File>> {
-    use std::os::unix::io::AsRawFd;
+/// Whole-file lock in the runtime dir: released on process exit, even on
+/// SIGKILL. `try_lock` is flock on Unix, LockFileEx on Windows.
+fn lock_file(name: &str, busy_msg: &str) -> Result<Option<std::fs::File>> {
     let dir = dirs::runtime_dir()
         .or_else(dirs::cache_dir)
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join("quickshort");
     std::fs::create_dir_all(&dir)?;
-    let f = std::fs::File::create(dir.join("capture.lock"))?;
-    // flock fails EWOULDBLOCK iff another quickshort holds it
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        eprintln!("a capture is already in progress");
-        return Ok(None);
+    let f = std::fs::File::create(dir.join(name))?;
+    match f.try_lock() {
+        Ok(()) => Ok(Some(f)),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!("{busy_msg}");
+            Ok(None)
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
     }
-    Ok(Some(f))
 }
 
-/// One-shot mode has no toast — action outcomes would die silently in
-/// the journal. `notify-send` is the only user-visible channel we have.
-#[cfg(target_os = "linux")]
-fn notify(msg: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .args(["-a", "quickshort", "quickshort", msg])
-        .status();
+/// Singleton for the resident tray app, held for the process lifetime.
+fn app_lock() -> Result<Option<std::fs::File>> {
+    lock_file("app.lock", "quickshort is already running")
 }
 
-#[cfg(not(target_os = "linux"))]
-fn notify(msg: &str) {
-    // no libnotify elsewhere — macOS/Windows still get the journal line
-    eprintln!("{msg}");
+/// Held for the duration of a capture — a second --capture while an
+/// overlay is up exits quietly instead of stacking another layer.
+fn capture_lock() -> Result<Option<std::fs::File>> {
+    lock_file("capture.lock", "a capture is already in progress")
 }
 
 /// One-shot pipeline: capture all monitors to RAM -> overlay selection ->
@@ -141,10 +143,8 @@ fn notify(msg: &str) {
 fn run_one_shot(args: Args) -> Result<()> {
     // one capture at a time — a second --capture while an overlay is up
     // exits quietly instead of stacking another fullscreen layer
-    #[cfg(target_os = "linux")]
-    let _lock = match capture_lock() {
-        Ok(Some(l)) => l,
-        Ok(None) => return Ok(()),
+    let lock = match capture_lock() {
+        Ok(l) => l,
         Err(e) => return Err(e),
     };
     if args.delay_secs > 0.0 {
@@ -174,9 +174,5 @@ fn run_one_shot(args: Args) -> Result<()> {
         Some(p) => SaveTarget::File(p),
         None => SaveTarget::Dir(cfg.save_dir()),
     };
-    #[cfg(target_os = "linux")]
-    let lock = Some(_lock);
-    #[cfg(not(target_os = "linux"))]
-    let lock = None;
     oneshot::run(frames, bounds, target, &cfg, lock)
 }

@@ -17,7 +17,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Icon, Window, WindowId};
 
 use crate::actions;
-use crate::config::{Config, ACCENTS};
+use crate::config::{Config, ACCENTS, POPUP_POS};
 use crate::tray;
 
 const W: f64 = 820.0;
@@ -115,6 +115,7 @@ const KEY_ROWS: &[(&str, Rec)] = &[
 enum Drop {
     RecentN,
     KeepDays,
+    PopupPos,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -962,6 +963,13 @@ fn drop_state(cfg: &Config, d: Drop) -> (Vec<&'static str>, usize) {
                 _ => 0,
             },
         ),
+        Drop::PopupPos => (
+            POPUP_POS.iter().map(|(_, l)| *l).collect(),
+            POPUP_POS
+                .iter()
+                .position(|(k, _)| *k == cfg.popup_pos)
+                .unwrap_or(0),
+        ),
     }
 }
 
@@ -1372,6 +1380,33 @@ fn draw_appearance(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect
         "Saved screenshots also go to the clipboard",
         Sw::CopySave,
     );
+
+    section_title(p, cv, 344.0, "Popups", "Where floating cards appear.");
+    let c = card(CX, 378.0, 1);
+    p.card(cv, c);
+    row_label(
+        p,
+        cv,
+        c,
+        Glyph::Drop,
+        "Popup position",
+        "Toasts, capture cards and the REC pill",
+    );
+    let pb = (c.0 + c.2 - 14.0 - 140.0, c.1 + 11.0, 140.0, 30.0);
+    let label = POPUP_POS
+        .iter()
+        .find(|(k, _)| *k == v.cfg.popup_pos)
+        .map(|(_, l)| *l)
+        .unwrap_or(POPUP_POS[0].1);
+    dropdown_btn(
+        p,
+        cv,
+        pb,
+        label,
+        v.drop_open == Some(Drop::PopupPos),
+        v.hover == Some(Hit::Drop(Drop::PopupPos)),
+    );
+    hits.push((pb, Hit::Drop(Drop::PopupPos)));
 }
 
 /// Square checkbox + tick — a checklist control where a switch would
@@ -1791,7 +1826,15 @@ fn key_str(cfg: &Config, r: Rec) -> &str {
 /// binding stays unique — silent duplicates would make one action dead.
 fn set_key(cfg: &mut Config, slot: Rec, ch: char) {
     let old = key_str(cfg, slot).chars().next().unwrap_or(' ');
-    for other in [Rec::Save, Rec::Copy, Rec::Ocr, Rec::Share, Rec::Scroll, Rec::Record, Rec::Undo] {
+    for other in [
+        Rec::Save,
+        Rec::Copy,
+        Rec::Ocr,
+        Rec::Share,
+        Rec::Scroll,
+        Rec::Record,
+        Rec::Undo,
+    ] {
         if other != slot && key_str(cfg, other).chars().next() == Some(ch) {
             *key_mut(cfg, other) = old.to_string();
         }
@@ -1819,6 +1862,13 @@ fn drop_apply(cfg: &mut Config, d: Drop, i: usize) {
             cfg.keep_days = [0u32, 7, 30][i.min(2)];
             // apply the new policy immediately, not just on next launch
             actions::cleanup_captures(&cfg.save_dir(), cfg.keep_days);
+        }
+        Drop::PopupPos => {
+            cfg.popup_pos = POPUP_POS
+                .get(i)
+                .map(|(k, _)| *k)
+                .unwrap_or(POPUP_POS[0].0)
+                .into();
         }
     }
 }

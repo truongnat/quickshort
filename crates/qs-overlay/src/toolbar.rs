@@ -18,7 +18,7 @@ pub enum Action {
     /// Repeated captures of this rect while the user scrolls, stitched
     /// into one tall image
     Scroll,
-    /// PipeWire screencast of this rect, piped to ffmpeg until stopped
+    /// Screencast of this rect, piped to ffmpeg until stopped
     Record,
 }
 

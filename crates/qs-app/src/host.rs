@@ -94,7 +94,10 @@ struct Host {
     pins: Vec<Pin>,
     /// Recording stop card + the flag its worker watches. The window is
     /// dropped on Stop; the flag lives on until the encoder finishes.
-    rec: Option<(crate::recstop::RecStop, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    rec: Option<(
+        crate::recstop::RecStop,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    )>,
     /// Newer release found, waiting for the user to click Update.
     pending_update: Option<Release>,
     /// Lazy — the listener + ssh tunnel only spawn on the first Share.
@@ -148,7 +151,12 @@ impl Host {
             .unwrap_or(0);
         self.cfg.save();
         if manual && self.toast.is_none() {
-            if let Ok(t) = Toast::open(el, "Checking for updates…", self.cfg.accent_rgb()) {
+            if let Ok(t) = Toast::open(
+                el,
+                "Checking for updates…",
+                self.cfg.accent_rgb(),
+                &self.cfg.popup_pos,
+            ) {
                 self.toast = Some(t);
             }
         }
@@ -165,7 +173,7 @@ impl Host {
     fn install_update(&mut self, el: &ActiveEventLoop, rel: Release) {
         if self.toast.is_none() {
             let msg = format!("Updating to v{}…", rel.version);
-            if let Ok(t) = Toast::open(el, &msg, self.cfg.accent_rgb()) {
+            if let Ok(t) = Toast::open(el, &msg, self.cfg.accent_rgb(), &self.cfg.popup_pos) {
                 self.toast = Some(t);
             }
         }
@@ -189,13 +197,7 @@ impl Host {
             Ok(_) => return eprintln!("no monitors captured"),
             Err(e) => {
                 eprintln!("capture failed: {e:#}");
-                if self.toast.is_none() {
-                    if let Ok(t) =
-                        Toast::open(el, &format!("Capture failed: {e:#}"), self.cfg.accent_rgb())
-                    {
-                        self.toast = Some(t);
-                    }
-                }
+                self.toast_done(el, format!("Capture failed: {e:#}"), false);
                 // LSUIElement apps get no TCC prompt — open the pane so the
                 // user can grant Screen Recording manually
                 if cfg!(target_os = "macos") {
@@ -333,7 +335,15 @@ impl Host {
         saved: Option<PathBuf>,
     ) {
         self.toast = None;
-        match QuickAccess::open(el, img, msg, saved, self.cfg.accent_rgb(), true) {
+        match QuickAccess::open(
+            el,
+            img,
+            msg,
+            saved,
+            self.cfg.accent_rgb(),
+            true,
+            &self.cfg.popup_pos,
+        ) {
             Ok(c) => self.card = Some(c),
             Err(e) => {
                 eprintln!("card: {e:#}");
@@ -357,16 +367,14 @@ impl Host {
                     actions::copy_image(c.image(), false);
                     c.notify("Copied to clipboard");
                 }
-                QaAction::SaveNow => {
-                    match actions::save_to_dir(c.image(), &self.cfg.save_dir()) {
-                        Ok(p) => {
-                            c.set_saved(p);
-                            c.notify("Screenshot saved");
-                            rebuild = true;
-                        }
-                        Err(e) => c.notify(&format!("Save failed: {e}")),
+                QaAction::SaveNow => match actions::save_to_dir(c.image(), &self.cfg.save_dir()) {
+                    Ok(p) => {
+                        c.set_saved(p);
+                        c.notify("Screenshot saved");
+                        rebuild = true;
                     }
-                }
+                    Err(e) => c.notify(&format!("Save failed: {e}")),
+                },
                 QaAction::Reveal => {
                     if let Some(p) = c.saved_path() {
                         actions::open_path(&p);
@@ -408,7 +416,7 @@ impl Host {
     fn toast_done(&mut self, el: &ActiveEventLoop, msg: String, ok: bool) {
         match &mut self.toast {
             Some(t) => t.done(msg, ok),
-            None => match Toast::open(el, &msg, self.cfg.accent_rgb()) {
+            None => match Toast::open(el, &msg, self.cfg.accent_rgb(), &self.cfg.popup_pos) {
                 Ok(mut t) => {
                     t.done(msg, ok);
                     self.toast = Some(t);
@@ -567,9 +575,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 .unwrap_or_default();
                             self.open_card(el, d.img, &format!("Saved {name}"), Some(p));
                         }
-                        Outcome::Copied => {
-                            self.open_card(el, d.img, "Copied to clipboard", None)
-                        }
+                        Outcome::Copied => self.open_card(el, d.img, "Copied to clipboard", None),
                         Outcome::Shared(link) => self.toast_done(
                             el,
                             format!("Link copied — expires in {}d", link.expires_s / 86400),
@@ -578,9 +584,7 @@ impl ApplicationHandler<HostEvent> for Host {
                         Outcome::TextCopied(n) => {
                             self.toast_done(el, format!("Copied {n} chars"), true)
                         }
-                        Outcome::NoText => {
-                            self.toast_done(el, "No text found".to_string(), false)
-                        }
+                        Outcome::NoText => self.toast_done(el, "No text found".to_string(), false),
                     },
                     Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
                 }
@@ -592,9 +596,7 @@ impl ApplicationHandler<HostEvent> for Host {
             HostEvent::RecDone(res) => {
                 self.rec = None;
                 match res {
-                    Ok((img, path)) => {
-                        self.open_card(el, img, "Recording saved", Some(path))
-                    }
+                    Ok((img, path)) => self.open_card(el, img, "Recording saved", Some(path)),
                     Err(e) => self.toast_done(el, format!("Recording failed: {e}"), false),
                 }
             }
@@ -691,6 +693,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     el,
                     "Scrolling capture — scroll the page; it ends when it stops",
                     self.cfg.accent_rgb(),
+                    &self.cfg.popup_pos,
                 ) {
                     Ok(t) => self.toast = Some(t),
                     Err(e) => eprintln!("toast: {e:#}"),
@@ -706,10 +709,16 @@ impl ApplicationHandler<HostEvent> for Host {
             // floating RecStop card — RecDone carries (thumb, path)
             if action == qs_overlay::Action::Record {
                 let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                match crate::recstop::RecStop::open(el) {
-                    Ok(r) => self.rec = Some((r, stop.clone())),
-                    Err(e) => eprintln!("rec stop card: {e:#}"),
-                }
+                // without the stop card there'd be no way to end the
+                // recording — refuse to start instead of capturing forever
+                let r = match crate::recstop::RecStop::open(el, &self.cfg.popup_pos) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.toast_done(el, format!("Recording failed: {e:#}"), false);
+                        return;
+                    }
+                };
+                self.rec = Some((r, stop.clone()));
                 let px = self.proxy.clone();
                 let dir = self.cfg.save_dir();
                 let stop2 = stop.clone();
@@ -727,7 +736,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     _ => None,
                 };
                 if let Some(m) = wait_msg {
-                    match Toast::open(el, m, self.cfg.accent_rgb()) {
+                    match Toast::open(el, m, self.cfg.accent_rgb(), &self.cfg.popup_pos) {
                         Ok(t) => self.toast = Some(t),
                         Err(e) => eprintln!("toast: {e:#}"),
                     }

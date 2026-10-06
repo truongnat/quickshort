@@ -52,7 +52,7 @@ pub struct Keys {
     pub share: char,
     /// scrolling capture — repeated grabs of the selection stitched tall
     pub scroll: char,
-    /// screen recording — PipeWire stream → ffmpeg until stopped
+    /// screen recording — live frames → ffmpeg until stopped
     pub record: char,
     pub undo: char,
 }

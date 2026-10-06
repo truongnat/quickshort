@@ -133,9 +133,9 @@ pub struct QuickAccess {
 }
 
 impl QuickAccess {
-    /// Card docked bottom-right of the primary monitor.
-    /// `pin` enables the Pin pill — only the resident host can keep a
-    /// pinned window alive.
+    /// Card docked at `pos` (a `config::POPUP_POS` key) on the primary
+    /// monitor. `pin` enables the Pin pill — only the resident host can
+    /// keep a pinned window alive.
     pub fn open(
         el: &ActiveEventLoop,
         img: RgbaImage,
@@ -143,6 +143,7 @@ impl QuickAccess {
         saved: Option<PathBuf>,
         accent: u32,
         pin: bool,
+        pos: &str,
     ) -> Result<Self> {
         let attrs = Window::default_attributes()
             .with_decorations(false)
@@ -151,16 +152,9 @@ impl QuickAccess {
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_inner_size(LogicalSize::new(W, H));
         let win = Rc::new(el.create_window(attrs).context("card window")?);
-        if let Some(m) = el
-            .primary_monitor()
-            .or_else(|| el.available_monitors().next())
-        {
-            let sf = m.scale_factor();
-            let p = m.position();
-            let s = m.size();
-            let x = p.x as f64 + s.width as f64 - (W + 20.0) * sf;
-            let y = p.y as f64 + s.height as f64 - (H + 20.0) * sf;
-            win.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        crate::widgets::round_window(&win, 11.0);
+        if let Some(m) = crate::widgets::popup_monitor(el) {
+            win.set_outer_position(crate::widgets::dock_pos(pos, &m, W, H));
         }
         let surf = SbContext::new(win.clone())
             .and_then(|c| Surface::new(&c, win.clone()))
@@ -302,7 +296,12 @@ impl CardState {
     /// Paints the whole card into an ARGB buffer — split from `draw` so a
     /// test can render to a file without a window.
     fn render(&self, buf: &mut [u32], sw: usize, sh: usize, scale: f64) {
-        let mut cv = Canvas { buf, w: sw, h: sh, scale };
+        let mut cv = Canvas {
+            buf,
+            w: sw,
+            h: sh,
+            scale,
+        };
 
         // card body + fake shadow fringe (same trick as the toast)
         card_chrome(&mut cv, W, H, 11.0, CARD, BORDER, FRINGE);
@@ -345,7 +344,13 @@ impl CardState {
             let (bx, by, bw, bh) = b.rect();
             let hot = self.hover == Some(i);
             let dim = matches!(b, Btn::Share) && self.sharing;
-            let alpha = if dim { 0.5 } else if hot { 1.0 } else { 0.95 };
+            let alpha = if dim {
+                0.5
+            } else if hot {
+                1.0
+            } else {
+                0.95
+            };
             pill(
                 &mut cv,
                 (bx, by, bw, bh),
@@ -354,7 +359,11 @@ impl CardState {
                 BORDER,
                 alpha,
             );
-            let label = if dim { "…" } else { b.label(self.saved.is_some()) };
+            let label = if dim {
+                "…"
+            } else {
+                b.label(self.saved.is_some())
+            };
             let tw = t.width(11.0, label);
             t.draw(&mut cv, bx + (bw - tw) / 2.0, by + 17.5, 11.0, label, FG);
         }
@@ -368,7 +377,12 @@ impl CardState {
                 let d = qs_overlay::sdf::ellipse_sdf(lx, ly, cx, cy, r, r);
                 if d <= 0.0 {
                     let hot = self.hover == Some(99);
-                    cv.blend(px, py, if hot { BTN_HOT } else { BTN_BG }, fill_cov(d, scale));
+                    cv.blend(
+                        px,
+                        py,
+                        if hot { BTN_HOT } else { BTN_BG },
+                        fill_cov(d, scale),
+                    );
                 }
             }
         }
@@ -416,7 +430,15 @@ pub fn standalone(
     impl ApplicationHandler<Ev> for Run {
         fn resumed(&mut self, el: &ActiveEventLoop) {
             let img = self.img.take().expect("card opened twice");
-            match QuickAccess::open(el, img, &self.msg, self.saved.take(), self.accent, false) {
+            match QuickAccess::open(
+                el,
+                img,
+                &self.msg,
+                self.saved.take(),
+                self.accent,
+                false,
+                "top-right",
+            ) {
                 Ok(c) => self.card = Some(c),
                 Err(e) => {
                     eprintln!("card: {e:#}");
@@ -441,15 +463,13 @@ pub fn standalone(
                     crate::actions::copy_image(c.image(), self.wait);
                     c.notify("Copied to clipboard");
                 }
-                QaAction::SaveNow => {
-                    match crate::actions::save_to_dir(c.image(), &self.save_dir) {
-                        Ok(p) => {
-                            c.set_saved(p);
-                            c.notify("Screenshot saved");
-                        }
-                        Err(e) => c.notify(&format!("Save failed: {e}")),
+                QaAction::SaveNow => match crate::actions::save_to_dir(c.image(), &self.save_dir) {
+                    Ok(p) => {
+                        c.set_saved(p);
+                        c.notify("Screenshot saved");
                     }
-                }
+                    Err(e) => c.notify(&format!("Save failed: {e}")),
+                },
                 QaAction::Reveal => {
                     if let Some(p) = c.saved_path() {
                         crate::actions::open_path(&p);
@@ -476,7 +496,10 @@ pub fn standalone(
             match res {
                 Ok(l) => {
                     crate::actions::copy_text(&l.url, self.wait);
-                    c.notify(&format!("Link copied — expires in {}d", l.expires_s / 86400));
+                    c.notify(&format!(
+                        "Link copied — expires in {}d",
+                        l.expires_s / 86400
+                    ));
                 }
                 Err(e) => c.notify(&format!("Share failed: {e}")),
             }
@@ -509,7 +532,10 @@ pub fn standalone(
 fn make_thumb(img: &RgbaImage) -> Vec<u32> {
     let (iw, ih) = (img.width() as usize, img.height() as usize);
     let s = iw.max(ih) as f64 / THUMB as f64;
-    let (ox, oy) = ((iw as f64 - THUMB as f64 * s).max(0.0) / 2.0, (ih as f64 - THUMB as f64 * s).max(0.0) / 2.0);
+    let (ox, oy) = (
+        (iw as f64 - THUMB as f64 * s).max(0.0) / 2.0,
+        (ih as f64 - THUMB as f64 * s).max(0.0) / 2.0,
+    );
     let mut t = vec![0u32; THUMB * THUMB];
     for y in 0..THUMB {
         for x in 0..THUMB {

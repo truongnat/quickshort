@@ -375,11 +375,10 @@ fn grab_frames_once(nodes: &[u32], expects: &[(u32, u32)]) -> Result<Vec<image::
     use spa::param::format::{MediaSubtype, MediaType};
     use spa::param::video::{VideoFormat, VideoInfoRaw};
     use spa::param::{format_utils, ParamType};
-    
-    
+
     use spa::utils::Direction;
     use std::cell::Cell;
-    
+
     use std::time::Duration;
 
     let mainloop = pw::main_loop::MainLoop::new(None).context("pw mainloop")?;
@@ -882,12 +881,10 @@ pub fn record_start(sel: Rect) -> Result<LiveStream> {
         session,
         handle: Some(handle),
         stop,
-        _poke: DamagePoke::start(vec![
-            (
-                m.logical.x + m.logical.w as i32 / 2,
-                m.logical.y + m.logical.h as i32 / 2,
-            ),
-        ]),
+        _poke: DamagePoke::start(vec![(
+            m.logical.x + m.logical.w as i32 / 2,
+            m.logical.y + m.logical.h as i32 / 2,
+        )]),
     })
 }
 
@@ -904,11 +901,9 @@ fn stream_pump(
     use spa::param::format::{MediaSubtype, MediaType};
     use spa::param::video::{VideoFormat, VideoInfoRaw};
     use spa::param::{format_utils, ParamType};
-    
-    
+
     use spa::utils::Direction;
-    
-    
+
     use std::time::Duration;
 
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -1079,7 +1074,10 @@ mod tests {
         let live = record_start(g.logical_rect()).unwrap();
         let mut n = 0;
         let mut first = None;
-        while let Ok(img) = live.frames().recv_timeout(std::time::Duration::from_secs(3)) {
+        while let Ok(img) = live
+            .frames()
+            .recv_timeout(std::time::Duration::from_secs(3))
+        {
             if first.is_none() {
                 img.save("/tmp/qs-rec-frame0.png").unwrap();
                 first = Some(img.clone());

@@ -2,19 +2,35 @@
 //! Windows = GDI, macOS = ScreenCaptureKit, Linux/X11 = xcb (x11rb),
 //! Linux/Wayland = xdg-desktop-portal (+ wlr-layer-shell for the overlay).
 
-use anyhow::Result;
-use qs_core::CapturedFrame;
+use anyhow::{Context, Result};
+use qs_core::{CapturedFrame, Rect};
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod poll;
 #[cfg(target_os = "windows")]
 mod windows;
 
 /// Capture every monitor's raw pixels together with its virtual-space geometry.
 pub trait ScreenCapture {
     fn capture_all(&self) -> Result<Vec<CapturedFrame>>;
+
+    /// The monitor frame overlapping `sel` the most — the recording loop
+    /// calls this every tick, so backends may capture just that display
+    /// instead of the whole set.
+    fn capture_monitor(&self, sel: Rect) -> Result<CapturedFrame> {
+        self.capture_all()?
+            .into_iter()
+            .max_by_key(|f| {
+                sel.intersection(&f.geometry.logical_rect())
+                    .map(|r| r.w as i64 * r.h as i64)
+                    .unwrap_or(0)
+            })
+            .context("no monitor overlaps the selection")
+    }
 }
 
 /// Process-wide platform init — must run before both capture and the overlay
@@ -24,9 +40,12 @@ pub fn platform_init() {
     windows::enable_dpi_awareness();
 }
 
-/// Live one-monitor screencast — GNOME/Wayland only for now.
+/// Live one-monitor screencast — a PipeWire push stream on Wayland, a
+/// re-capture polling loop where the OS has no push API wired in.
 #[cfg(target_os = "linux")]
 pub use linux::wayland::{record_start, LiveStream};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub use poll::{record_start, PollStream};
 
 /// Pick the right backend for the current platform/session.
 pub fn backend() -> Result<Box<dyn ScreenCapture>> {

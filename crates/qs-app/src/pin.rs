@@ -167,8 +167,14 @@ impl Pin {
             for px in ((cx - 5.0) * scale) as i32..((cx + 5.0) * scale) as i32 {
                 let lx = px as f64 / scale;
                 let ly = py as f64 / scale;
-                let d = seg_sdf(lx, ly, cx - 3.0, cy - 3.0, cx + 3.0, cy + 3.0)
-                    .min(seg_sdf(lx, ly, cx - 3.0, cy + 3.0, cx + 3.0, cy - 3.0));
+                let d = seg_sdf(lx, ly, cx - 3.0, cy - 3.0, cx + 3.0, cy + 3.0).min(seg_sdf(
+                    lx,
+                    ly,
+                    cx - 3.0,
+                    cy + 3.0,
+                    cx + 3.0,
+                    cy - 3.0,
+                ));
                 let a = stroke_cov(d, 1.4, scale);
                 if a > 0.0 {
                     cv.blend(px, py, X_FG, a);

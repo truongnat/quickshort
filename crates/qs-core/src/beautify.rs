@@ -59,7 +59,15 @@ pub fn beautify_opts(img: &RgbaImage, o: Beautify) -> RgbaImage {
     let (scx, scy) = ((pad + iw / 2) as f64, (pad + o.dy as usize + ih / 2) as f64);
     for y in 0..h {
         for x in 0..w {
-            let d = rrect(x as f64, y as f64, scx, scy, iw as f64 / 2.0, ih as f64 / 2.0, r);
+            let d = rrect(
+                x as f64,
+                y as f64,
+                scx,
+                scy,
+                iw as f64 / 2.0,
+                ih as f64 / 2.0,
+                r,
+            );
             a[y * w + x] = (-d).clamp(0.0, 1.0) as f32;
         }
     }

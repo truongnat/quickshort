@@ -59,6 +59,14 @@ Section "Install"
     "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" \
     "NoRepair" 1
+
+  ; screen recording pipes frames into ffmpeg — warn now if it isn't on
+  ; PATH so the Record button doesn't fail silently later
+  SearchPath $0 "ffmpeg.exe"
+  StrCmp $0 "" 0 ffmpeg_found
+    MessageBox MB_ICONINFORMATION "Screen recording (the Record action) uses ffmpeg, \
+which wasn't found on PATH.$\r$\n$\r$\nInstall it to enable recording:$\r$\n  winget install ffmpeg"
+  ffmpeg_found:
 SectionEnd
 
 Section "Uninstall"

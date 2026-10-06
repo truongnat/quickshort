@@ -49,8 +49,10 @@ pub struct Toast {
 }
 
 impl Toast {
-    /// Floating card, bottom-center of the focused monitor.
-    pub fn open(el: &ActiveEventLoop, msg: &str, accent: u32) -> Result<Self> {
+    /// Floating card docked at `pos` (a `config::POPUP_POS` key) on the
+    /// primary monitor — winit exposes no global cursor position, so the
+    /// dock can't chase the monitor the user is actually on.
+    pub fn open(el: &ActiveEventLoop, msg: &str, accent: u32, pos: &str) -> Result<Self> {
         let attrs = Window::default_attributes()
             .with_decorations(false)
             .with_transparent(true)
@@ -58,17 +60,9 @@ impl Toast {
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_inner_size(LogicalSize::new(W, H));
         let win = Rc::new(el.create_window(attrs).context("toast window")?);
-        // bottom-center of the primary monitor
-        if let Some(m) = el
-            .primary_monitor()
-            .or_else(|| el.available_monitors().next())
-        {
-            let sf = m.scale_factor();
-            let p = m.position();
-            let s = m.size();
-            let x = p.x as f64 + (s.width as f64 - W * sf) / 2.0;
-            let y = p.y as f64 + s.height as f64 - (H + 96.0) * sf;
-            win.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        crate::widgets::round_window(&win, 11.0);
+        if let Some(m) = crate::widgets::popup_monitor(el) {
+            win.set_outer_position(crate::widgets::dock_pos(pos, &m, W, H));
         }
         let surf = SbContext::new(win.clone())
             .and_then(|c| Surface::new(&c, win.clone()))
@@ -178,17 +172,19 @@ impl Toast {
             }
         }
 
-        // message
+        // message — the card is fixed-width, so long text must be
+        // ellipsized or it spills past the right edge
         let t = Txt {
             font: &self.font,
             scale,
         };
+        let msg = ellipsize(&t, 13.0, &self.msg, W - 50.0 - 14.0);
         t.draw(
             &mut cv,
             50.0,
             H / 2.0 + 4.0,
             13.0,
-            &self.msg,
+            &msg,
             if working { FG_DIM } else { FG },
         );
 
@@ -221,7 +217,8 @@ pub fn standalone() -> Result<()> {
     }
     impl ApplicationHandler for Run {
         fn resumed(&mut self, el: &ActiveEventLoop) {
-            match Toast::open(el, "Extracting text…", 0x1677DF) {
+            let cfg = crate::config::Config::load();
+            match Toast::open(el, "Extracting text…", cfg.accent_rgb(), &cfg.popup_pos) {
                 Ok(t) => self.t = Some(t),
                 Err(e) => {
                     eprintln!("toast: {e:#}");
@@ -261,6 +258,21 @@ pub fn standalone() -> Result<()> {
 }
 
 // --- tiny SDF helpers (logical coords, self-contained) ----------------------
+
+/// Trim `s` with a trailing "…" until it fits `max_w` logical px.
+fn ellipsize(t: &Txt, size: f64, s: &str, max_w: f64) -> String {
+    if t.width(size, s) <= max_w {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    for ch in s.chars() {
+        if t.width(size, &format!("{out}{ch}…")) > max_w {
+            break;
+        }
+        out.push(ch);
+    }
+    format!("{out}…")
+}
 
 fn fill_circle(cv: &mut Canvas, cx: f64, cy: f64, r: f64, rgb: u32, a: f64, s: f64) {
     for py in ((cy - r) * s) as i32..((cy + r) * s) as i32 {

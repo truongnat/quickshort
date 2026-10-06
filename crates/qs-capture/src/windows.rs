@@ -9,7 +9,7 @@ use std::mem::size_of;
 
 use anyhow::{bail, Context, Result};
 use image::RgbaImage;
-use qs_core::{CapturedFrame, MonitorGeometry, Point, Size};
+use qs_core::{CapturedFrame, MonitorGeometry, Point, Rect, Size};
 use windows::core::BOOL;
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -63,23 +63,70 @@ unsafe extern "system" fn enum_proc(
     BOOL(1)
 }
 
+/// `m.rect` (physical px) → the monitor's logical rect.
+fn logical_rect(m: &Monitor) -> Rect {
+    let s = m.scale;
+    Rect::new(
+        (m.rect.left as f64 / s).round() as i32,
+        (m.rect.top as f64 / s).round() as i32,
+        ((m.rect.right - m.rect.left) as f64 / s).round() as u32,
+        ((m.rect.bottom - m.rect.top) as f64 / s).round() as u32,
+    )
+}
+
+fn enum_monitors() -> Result<Vec<Monitor>> {
+    let mut monitors: Vec<Monitor> = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(enum_proc),
+            LPARAM(&raw mut monitors as isize),
+        )
+        .ok()
+        .context("EnumDisplayMonitors")?;
+    }
+    Ok(monitors)
+}
+
 impl ScreenCapture for GdiCapture {
     fn capture_all(&self) -> Result<Vec<CapturedFrame>> {
-        let mut monitors: Vec<Monitor> = Vec::new();
+        let monitors = enum_monitors()?;
         unsafe {
-            EnumDisplayMonitors(
-                None,
-                None,
-                Some(enum_proc),
-                LPARAM(&raw mut monitors as isize),
-            )
-            .ok()
-            .context("EnumDisplayMonitors")?;
             let screen = GetDC(None);
             if screen.is_invalid() {
                 bail!("GetDC failed");
             }
             let r = capture_monitors(screen, &monitors);
+            ReleaseDC(None, screen);
+            r
+        }
+    }
+
+    /// Recording polls this ~15x/s — BitBlt only the monitor the
+    /// selection sits on instead of the whole desktop.
+    fn capture_monitor(&self, sel: Rect) -> Result<CapturedFrame> {
+        let monitors = enum_monitors()?;
+        let m = monitors
+            .iter()
+            .max_by_key(|m| {
+                sel.intersection(&logical_rect(m))
+                    .map(|r| r.w as i64 * r.h as i64)
+                    .unwrap_or(0)
+            })
+            .context("no monitor overlaps the selection")?;
+        unsafe {
+            let screen = GetDC(None);
+            if screen.is_invalid() {
+                bail!("GetDC failed");
+            }
+            let mem = CreateCompatibleDC(Some(screen));
+            let r = if mem.is_invalid() {
+                Err(anyhow::anyhow!("CreateCompatibleDC failed"))
+            } else {
+                capture_one(screen, mem, m)
+            };
+            let _ = DeleteDC(mem);
             ReleaseDC(None, screen);
             r
         }
@@ -92,12 +139,24 @@ fn capture_monitors(screen: HDC, monitors: &[Monitor]) -> Result<Vec<CapturedFra
         if mem.is_invalid() {
             bail!("CreateCompatibleDC failed");
         }
-        let mut frames = Vec::with_capacity(monitors.len());
-        for m in monitors {
-            let w = (m.rect.right - m.rect.left) as u32;
-            let h = (m.rect.bottom - m.rect.top) as u32;
-            let bmp = CreateCompatibleBitmap(screen, w as i32, h as i32);
-            let old = SelectObject(mem, HGDIOBJ(bmp.0));
+        let r = monitors
+            .iter()
+            .map(|m| capture_one(screen, mem, m))
+            .collect();
+        let _ = DeleteDC(mem);
+        r
+    }
+}
+
+unsafe fn capture_one(screen: HDC, mem: HDC, m: &Monitor) -> Result<CapturedFrame> {
+    unsafe {
+        let w = (m.rect.right - m.rect.left) as u32;
+        let h = (m.rect.bottom - m.rect.top) as u32;
+        let bmp = CreateCompatibleBitmap(screen, w as i32, h as i32);
+        let old = SelectObject(mem, HGDIOBJ(bmp.0));
+        // errors must not escape past the deselect/delete — the bitmap
+        // would leak a GDI handle on every failed poll otherwise
+        let res = (|| -> Result<()> {
             BitBlt(
                 mem,
                 0,
@@ -111,20 +170,22 @@ fn capture_monitors(screen: HDC, monitors: &[Monitor]) -> Result<Vec<CapturedFra
             )
             .ok()
             .context("BitBlt")?;
-
-            let mut bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: w as i32,
-                    biHeight: -(h as i32), // negative -> top-down rows
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                },
+            Ok(())
+        })();
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w as i32,
+                biHeight: -(h as i32), // negative -> top-down rows
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
                 ..Default::default()
-            };
-            let mut data = vec![0u8; (w * h * 4) as usize];
+            },
+            ..Default::default()
+        };
+        let mut data = vec![0u8; (w * h * 4) as usize];
+        let res = res.and_then(|()| {
             if GetDIBits(
                 mem,
                 bmp,
@@ -137,27 +198,27 @@ fn capture_monitors(screen: HDC, monitors: &[Monitor]) -> Result<Vec<CapturedFra
             {
                 bail!("GetDIBits failed");
             }
-            SelectObject(mem, old);
-            let _ = DeleteObject(HGDIOBJ(bmp.0));
+            Ok(())
+        });
+        SelectObject(mem, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        res?;
 
-            for px in data.chunks_exact_mut(4) {
-                px.swap(0, 2); // BGRA -> RGBA
-                px[3] = 255; // GDI leaves alpha zero
-            }
-            let s = m.scale;
-            frames.push(CapturedFrame {
-                geometry: MonitorGeometry {
-                    origin: Point::new(
-                        (m.rect.left as f64 / s).round() as i32,
-                        (m.rect.top as f64 / s).round() as i32,
-                    ),
-                    size: Size::new((w as f64 / s).round() as u32, (h as f64 / s).round() as u32),
-                    scale: s,
-                },
-                pixels: RgbaImage::from_raw(w, h, data).context("capture size mismatch")?,
-            });
+        for px in data.chunks_exact_mut(4) {
+            px.swap(0, 2); // BGRA -> RGBA
+            px[3] = 255; // GDI leaves alpha zero
         }
-        let _ = DeleteDC(mem);
-        Ok(frames)
+        let s = m.scale;
+        Ok(CapturedFrame {
+            geometry: MonitorGeometry {
+                origin: Point::new(
+                    (m.rect.left as f64 / s).round() as i32,
+                    (m.rect.top as f64 / s).round() as i32,
+                ),
+                size: Size::new((w as f64 / s).round() as u32, (h as f64 / s).round() as u32),
+                scale: s,
+            },
+            pixels: RgbaImage::from_raw(w, h, data).context("capture size mismatch")?,
+        })
     }
 }

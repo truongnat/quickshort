@@ -39,8 +39,9 @@ pub struct RecStop {
 }
 
 impl RecStop {
-    /// Top-center of the primary monitor — visible but out of the way.
-    pub fn open(el: &ActiveEventLoop) -> Result<Self> {
+    /// Docked at `pos` (a `config::POPUP_POS` key) on the primary monitor —
+    /// visible but out of the way.
+    pub fn open(el: &ActiveEventLoop, pos: &str) -> Result<Self> {
         let attrs = Window::default_attributes()
             .with_decorations(false)
             .with_transparent(true)
@@ -48,16 +49,9 @@ impl RecStop {
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_inner_size(LogicalSize::new(W, H));
         let win = Rc::new(el.create_window(attrs).context("rec window")?);
-        if let Some(m) = el
-            .primary_monitor()
-            .or_else(|| el.available_monitors().next())
-        {
-            let sf = m.scale_factor();
-            let p = m.position();
-            let s = m.size();
-            let x = p.x as f64 + (s.width as f64 - W * sf) / 2.0;
-            let y = p.y as f64 + 16.0 * sf;
-            win.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        crate::widgets::round_window(&win, 11.0);
+        if let Some(m) = crate::widgets::popup_monitor(el) {
+            win.set_outer_position(crate::widgets::dock_pos(pos, &m, W, H));
         }
         let surf = SbContext::new(win.clone())
             .and_then(|c| Surface::new(&c, win.clone()))
@@ -137,7 +131,14 @@ impl RecStop {
         let pulse = 0.55 + 0.45 * (self.t0.elapsed().as_secs_f64() * 3.0).sin().abs();
         for py in ((H / 2.0 - 5.0) * scale) as i32..((H / 2.0 + 5.0) * scale) as i32 {
             for px in (9.0 * scale) as i32..(19.0 * scale) as i32 {
-                let d = ellipse_sdf(px as f64 / scale, py as f64 / scale, 14.0, H / 2.0, 5.0, 5.0);
+                let d = ellipse_sdf(
+                    px as f64 / scale,
+                    py as f64 / scale,
+                    14.0,
+                    H / 2.0,
+                    5.0,
+                    5.0,
+                );
                 let cov = fill_cov(d, scale) * pulse;
                 if cov > 0.0 {
                     cv.blend(px, py, RED, cov);

@@ -33,6 +33,7 @@ struct Run {
     proxy: EventLoopProxy<Ev>,
     save_dir: PathBuf,
     accent: u32,
+    popup_pos: String,
     target: SaveTarget,
     copy_after_save: bool,
     ocr_lang: String,
@@ -115,7 +116,7 @@ impl ApplicationHandler<Ev> for Run {
                 self.workers -= 1;
                 match res {
                     Ok(d) => self.on_done(el, d),
-                    Err(e) => crate::notify(&e),
+                    Err(e) => self.notify(el, &e, false),
                 }
             }
             Ev::ScrollDone(res) => {
@@ -123,7 +124,7 @@ impl ApplicationHandler<Ev> for Run {
                 self.toast = None;
                 match res {
                     Ok(img) => self.open_card(el, img, "Captured — pick an action", None),
-                    Err(e) => crate::notify(&format!("Scroll failed: {e}")),
+                    Err(e) => self.notify(el, &format!("Scroll failed: {e}"), false),
                 }
             }
             Ev::RecDone(res) => {
@@ -131,7 +132,7 @@ impl ApplicationHandler<Ev> for Run {
                 self.rec = None;
                 match res {
                     Ok((img, path)) => self.open_card(el, img, "Recording saved", Some(path)),
-                    Err(e) => crate::notify(&format!("Recording failed: {e}")),
+                    Err(e) => self.notify(el, &format!("Recording failed: {e}"), false),
                 }
             }
             Ev::ShareDone(res) => {
@@ -140,7 +141,10 @@ impl ApplicationHandler<Ev> for Run {
                 match res {
                     Ok(l) => {
                         actions::copy_text(&l.url, true);
-                        c.notify(&format!("Link copied — expires in {}d", l.expires_s / 86400));
+                        c.notify(&format!(
+                            "Link copied — expires in {}d",
+                            l.expires_s / 86400
+                        ));
                     }
                     Err(e) => c.notify(&format!("Share failed: {e}")),
                 }
@@ -196,7 +200,13 @@ impl Run {
         self.frames.is_none()
     }
 
-    fn start_action(&mut self, el: &ActiveEventLoop, sel: Rect, action: Action, annots: Vec<Annotation>) {
+    fn start_action(
+        &mut self,
+        el: &ActiveEventLoop,
+        sel: Rect,
+        action: Action,
+        annots: Vec<Annotation>,
+    ) {
         // frames are only needed by dispatch — drop them either way so
         // the exit check can fire and the memory is freed early
         let frames = self.frames.take();
@@ -206,6 +216,7 @@ impl Run {
                     el,
                     "Scrolling capture — scroll the page; it ends when it stops",
                     self.accent,
+                    &self.popup_pos,
                 ) {
                     Ok(t) => self.toast = Some(t),
                     Err(e) => eprintln!("toast: {e:#}"),
@@ -218,10 +229,16 @@ impl Run {
                 });
             }
             Action::Record => {
-                match RecStop::open(el) {
-                    Ok(r) => self.rec = Some(r),
-                    Err(e) => eprintln!("rec: {e:#}"),
-                }
+                // without the stop card there'd be no way to end the
+                // recording — refuse to start instead of capturing forever
+                let r = match RecStop::open(el, &self.popup_pos) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.notify(el, &format!("Recording failed: {e:#}"), false);
+                        return;
+                    }
+                };
+                self.rec = Some(r);
                 let px = self.proxy.clone();
                 let dir = self.save_dir.clone();
                 let stop = self.stop.clone();
@@ -249,6 +266,21 @@ impl Run {
         }
     }
 
+    /// Errors and plain-text outcomes land on a toast — one-shot mode
+    /// has no tray, and an eprintln dies unseen in a GUI session.
+    fn notify(&mut self, el: &ActiveEventLoop, msg: &str, ok: bool) {
+        match &mut self.toast {
+            Some(t) => t.done(msg.to_string(), ok),
+            None => match Toast::open(el, msg, self.accent, &self.popup_pos) {
+                Ok(mut t) => {
+                    t.done(msg.to_string(), ok);
+                    self.toast = Some(t);
+                }
+                Err(e) => eprintln!("toast: {e:#}"),
+            },
+        }
+    }
+
     fn on_done(&mut self, el: &ActiveEventLoop, d: Dispatch) {
         let (msg, saved) = match &d.outcome {
             Outcome::Saved(p) => (
@@ -262,31 +294,41 @@ impl Run {
             ),
             Outcome::Copied => ("Copied to clipboard".to_string(), None),
             Outcome::Shared(l) => {
-                crate::notify(&format!(
-                    "shared — link copied (expires in {}d)\n{}",
-                    l.expires_s / 86400,
-                    l.url
-                ));
+                self.notify(
+                    el,
+                    &format!(
+                        "shared — link copied (expires in {}d)\n{}",
+                        l.expires_s / 86400,
+                        l.url
+                    ),
+                    true,
+                );
                 return;
             }
             Outcome::TextCopied(n) => {
-                crate::notify(&format!("copied {n} chars"));
+                self.notify(el, &format!("copied {n} chars"), true);
                 return;
             }
             Outcome::NoText => {
-                crate::notify("No text found");
+                self.notify(el, "No text found", false);
                 return;
             }
         };
         self.open_card(el, d.img, &msg, saved);
     }
 
-    fn open_card(&mut self, el: &ActiveEventLoop, img: RgbaImage, msg: &str, saved: Option<PathBuf>) {
-        match QuickAccess::open(el, img, msg, saved, self.accent, false) {
+    fn open_card(
+        &mut self,
+        el: &ActiveEventLoop,
+        img: RgbaImage,
+        msg: &str,
+        saved: Option<PathBuf>,
+    ) {
+        match QuickAccess::open(el, img, msg, saved, self.accent, false, &self.popup_pos) {
             Ok(c) => self.card = Some(c),
             Err(e) => {
                 eprintln!("card: {e:#}");
-                crate::notify(msg);
+                self.notify(el, msg, true);
             }
         }
     }
@@ -346,6 +388,7 @@ pub fn run(
         proxy: el.create_proxy(),
         save_dir: cfg.save_dir(),
         accent: cfg.accent_rgb(),
+        popup_pos: cfg.popup_pos.clone(),
         target,
         copy_after_save: cfg.copy_after_save,
         ocr_lang: cfg.ocr_lang.clone(),

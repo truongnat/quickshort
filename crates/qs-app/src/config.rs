@@ -34,6 +34,9 @@ pub struct Config {
     pub key_undo: String,
     /// tesseract language list, e.g. "eng", "eng+jpn", "eng+vie".
     pub ocr_lang: String,
+    /// Where floating popups (toast, capture card, REC pill) dock —
+    /// a key from `POPUP_POS`, e.g. "top-right".
+    pub popup_pos: String,
     /// Unix ts of the last update check (auto-checks once a day).
     #[serde(default)]
     pub last_update_check: u64,
@@ -66,6 +69,7 @@ impl Default for Config {
             key_record: "r".into(),
             key_undo: "z".into(),
             ocr_lang: "auto".into(),
+            popup_pos: "top-right".into(),
             last_update_check: 0,
         }
     }
@@ -137,6 +141,17 @@ impl Config {
         }
     }
 }
+
+/// Popup dock positions offered by the Appearance page — (key, label).
+/// Unknown keys fall back to the first entry.
+pub const POPUP_POS: &[(&str, &str)] = &[
+    ("top-right", "Top right"),
+    ("top-left", "Top left"),
+    ("top-center", "Top center"),
+    ("bottom-right", "Bottom right"),
+    ("bottom-left", "Bottom left"),
+    ("bottom-center", "Bottom center"),
+];
 
 /// Accent presets offered by the Appearance page — (name, rgb).
 pub const ACCENTS: &[(&str, u32)] = &[

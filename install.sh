@@ -18,7 +18,7 @@ done
 
 # --- system deps (Debian/Ubuntu) ----------------------------------------
 # build:  pkg-config libpipewire-0.3-dev libspa-0.2-dev clang libdbus-1-dev
-# run:    pipewire x11-utils tesseract-ocr wl-clipboard libnotify-bin
+# run:    pipewire x11-utils tesseract-ocr wl-clipboard libnotify-bin ffmpeg
 # ocr:    tesseract-ocr-<lang> for each in QS_OCR_LANGS
 if command -v apt-get >/dev/null 2>&1; then
     PKGS=()
@@ -34,6 +34,7 @@ if command -v apt-get >/dev/null 2>&1; then
     need tesseract tesseract-ocr
     need wl-copy wl-clipboard
     need notify-send libnotify-bin
+    need ffmpeg ffmpeg  # screen recording encodes through it
     for l in ${QS_OCR_LANGS:-eng jpn vie}; do
         tesseract --list-langs 2>/dev/null | grep -qx "$l" || PKGS+=("tesseract-ocr-$l")
     done
@@ -42,7 +43,7 @@ if command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update -qq && sudo apt-get install -y "${PKGS[@]}"
     fi
 else
-    echo "note: ensure pipewire dev headers, tesseract-ocr, wl-clipboard, libnotify are installed" >&2
+    echo "note: ensure pipewire dev headers, tesseract-ocr, wl-clipboard, libnotify and ffmpeg are installed" >&2
 fi
 
 if [ "$SKIP_BUILD" = 0 ]; then
