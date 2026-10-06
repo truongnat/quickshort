@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, stroke_cov, Canvas};
+use qs_overlay::sdf::{ellipse_sdf, fill_cov, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -16,6 +16,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::settings::system_font;
+use crate::widgets::{card_chrome, pill, Txt};
 
 const W: f64 = 172.0;
 const H: f64 = 46.0;
@@ -130,29 +131,7 @@ impl RecStop {
             scale,
         };
 
-        // dark card + fringe (same trick as the toast/card)
-        for py in 0..sh as i32 {
-            for px in 0..sw as i32 {
-                let d = rrect_sdf(
-                    px as f64 / scale,
-                    py as f64 / scale,
-                    W / 2.0,
-                    H / 2.0,
-                    W / 2.0,
-                    H / 2.0,
-                    11.0,
-                );
-                if d > 0.0 {
-                    cv.blend(px, py, FRINGE, 0.35 * (1.0 - d / 2.5).clamp(0.0, 1.0));
-                    continue;
-                }
-                cv.blend(px, py, CARD, fill_cov(d, scale));
-                let rim = stroke_cov(d, 0.7, scale);
-                if rim > 0.0 {
-                    cv.blend(px, py, BORDER, rim);
-                }
-            }
-        }
+        card_chrome(&mut cv, W, H, 11.0, CARD, BORDER, FRINGE);
 
         // pulsing record dot
         let pulse = 0.55 + 0.45 * (self.t0.elapsed().as_secs_f64() * 3.0).sin().abs();
@@ -176,112 +155,18 @@ impl RecStop {
         t.draw(&mut cv, 26.0, H / 2.0 + 4.5, 12.0, &label, FG);
 
         // Stop pill
-        let (bx, by, bw, bh) = STOP;
-        for py in (by * scale) as i32..((by + bh) * scale) as i32 {
-            for px in (bx * scale) as i32..((bx + bw) * scale) as i32 {
-                let d = rrect_sdf(
-                    px as f64 / scale,
-                    py as f64 / scale,
-                    bx + bw / 2.0,
-                    by + bh / 2.0,
-                    bw / 2.0,
-                    bh / 2.0,
-                    7.0,
-                );
-                if d <= 0.0 {
-                    cv.blend(
-                        px,
-                        py,
-                        if self.hover_stop { STOP_HOT } else { STOP_BG },
-                        fill_cov(d, scale),
-                    );
-                    let rim = stroke_cov(d, 0.7, scale);
-                    if rim > 0.0 {
-                        cv.blend(px, py, BORDER, rim);
-                    }
-                }
-            }
-        }
-        let tw = text_width(&self.font, scale, 11.0, "Stop");
+        let (bx, by, bw, _bh) = STOP;
+        pill(
+            &mut cv,
+            STOP,
+            7.0,
+            if self.hover_stop { STOP_HOT } else { STOP_BG },
+            BORDER,
+            1.0,
+        );
+        let tw = t.width(11.0, "Stop");
         t.draw(&mut cv, bx + (bw - tw) / 2.0, by + 17.5, 11.0, "Stop", FG);
 
         let _ = buf.present();
-    }
-}
-
-fn text_width(font: &Font, scale: f64, size: f64, s: &str) -> f64 {
-    let px = (size * scale) as f32;
-    s.chars().map(|c| font.metrics(c, px).advance_width).sum::<f32>() as f64 / scale
-}
-
-/// One-shot runner: blocks with the stop card on screen until the user
-/// clicks Stop, then flips `stop` and returns — the caller's worker
-/// finalizes the encode.
-pub fn standalone(stop: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<()> {
-    use winit::application::ApplicationHandler;
-    use winit::event_loop::{ControlFlow, EventLoop};
-
-    struct Run {
-        rec: Option<RecStop>,
-        wake: Instant,
-        done: bool,
-    }
-    impl ApplicationHandler<()> for Run {
-        fn resumed(&mut self, el: &ActiveEventLoop) {
-            self.rec = RecStop::open(el).map_err(|e| eprintln!("rec: {e:#}")).ok();
-        }
-        fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
-            let Some(r) = &mut self.rec else { return };
-            if r.win_id() == id && r.window_event(ev) {
-                self.rec = None;
-                self.done = true;
-                el.exit();
-            }
-        }
-        fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-            if let Some(r) = &mut self.rec {
-                self.wake = r.pump();
-            }
-            el.set_control_flow(ControlFlow::WaitUntil(self.wake));
-        }
-    }
-
-    let el = EventLoop::<()>::with_user_event().build()?;
-    let mut run = Run {
-        rec: None,
-        wake: Instant::now() + Duration::from_millis(500),
-        done: false,
-    };
-    el.run_app(&mut run)?;
-    if run.done {
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    Ok(())
-}
-
-struct Txt<'a> {
-    font: &'a Font,
-    scale: f64,
-}
-
-impl Txt<'_> {
-    fn draw(&self, cv: &mut Canvas, x: f64, y: f64, size: f64, s: &str, rgb: u32) {
-        let px = size * self.scale;
-        let mut pen = x * self.scale;
-        let baseline = y * self.scale;
-        for ch in s.chars() {
-            let (m, bmp) = self.font.rasterize(ch, px as f32);
-            let gx = (pen + m.xmin as f64) as i32;
-            let gy = (baseline - m.height as f64 - m.ymin as f64) as i32;
-            for row in 0..m.height {
-                for col in 0..m.width {
-                    let a = bmp[row * m.width + col] as f64 / 255.0;
-                    if a > 0.0 {
-                        cv.blend(gx + col as i32, gy + row as i32, rgb, a);
-                    }
-                }
-            }
-            pen += m.advance_width as f64;
-        }
     }
 }

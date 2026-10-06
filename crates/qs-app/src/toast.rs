@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, seg_sdf, stroke_cov, Canvas};
+use qs_overlay::sdf::{ellipse_sdf, fill_cov, seg_sdf, stroke_cov, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -14,6 +14,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::settings::system_font;
+use crate::widgets::{card_chrome, Txt};
 
 const W: f64 = 272.0;
 const H: f64 = 58.0;
@@ -157,26 +158,7 @@ impl Toast {
 
         // softbuffer ignores per-pixel alpha — the card must fill the whole
         // window or the uncovered corners render as an opaque black frame.
-        // Outside the rounded corners we paint a soft fringe standing in for
-        // the drop shadow the transparent window cannot show.
-        let card_rad = 11.0;
-        for py in 0..sh as i32 {
-            for px in 0..sw as i32 {
-                let lx = px as f64 / scale;
-                let ly = py as f64 / scale;
-                let d = rrect_sdf(lx, ly, W / 2.0, H / 2.0, W / 2.0, H / 2.0, card_rad);
-                if d > 0.0 {
-                    let a = 0.35 * (1.0 - d / 2.5).clamp(0.0, 1.0);
-                    cv.blend(px, py, FRINGE, a);
-                    continue;
-                }
-                cv.blend(px, py, CARD, fill_cov(d, scale));
-                let rim = stroke_cov(d, 0.7, scale);
-                if rim > 0.0 {
-                    cv.blend(px, py, BORDER, rim);
-                }
-            }
-        }
+        card_chrome(&mut cv, W, H, 11.0, CARD, BORDER, FRINGE);
 
         // state icon: filled circle, glyph inside
         let (cx, cy, rad) = (28.0, H / 2.0 - 1.5, 11.0);
@@ -342,33 +324,6 @@ fn cross(cv: &mut Canvas, cx: f64, cy: f64, s: f64) {
             if c > 0.0 {
                 cv.blend(px, py, 0xFFFFFF, c);
             }
-        }
-    }
-}
-
-struct Txt<'a> {
-    font: &'a Font,
-    scale: f64,
-}
-
-impl Txt<'_> {
-    fn draw(&self, cv: &mut Canvas, x: f64, y: f64, size: f64, s: &str, rgb: u32) {
-        let px = size * self.scale;
-        let mut pen = x * self.scale;
-        let baseline = y * self.scale;
-        for ch in s.chars() {
-            let (m, bmp) = self.font.rasterize(ch, px as f32);
-            let gx = (pen + m.xmin as f64) as i32;
-            let gy = (baseline - m.height as f64 - m.ymin as f64) as i32;
-            for row in 0..m.height {
-                for col in 0..m.width {
-                    let a = bmp[row * m.width + col] as f64 / 255.0;
-                    if a > 0.0 {
-                        cv.blend(gx + col as i32, gy + row as i32, rgb, a);
-                    }
-                }
-            }
-            pen += m.advance_width as f64;
         }
     }
 }

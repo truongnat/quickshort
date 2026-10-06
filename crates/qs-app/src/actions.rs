@@ -10,6 +10,7 @@ use crate::config::Config;
 
 /// Where a `Save` lands: an explicit output file (`--out`) or the default
 /// screenshots dir with an auto-generated timestamped name.
+#[derive(Clone)]
 pub enum SaveTarget {
     File(PathBuf),
     Dir(PathBuf),

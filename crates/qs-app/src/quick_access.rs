@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use fontdue::Font;
 use image::RgbaImage;
-use qs_overlay::sdf::{fill_cov, rrect_sdf, stroke_cov, Canvas};
+use qs_overlay::sdf::{fill_cov, rrect_sdf, Canvas};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -18,6 +18,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::settings::system_font;
+use crate::widgets::{card_chrome, pill, Txt};
 
 const W: f64 = 424.0;
 const H: f64 = 108.0;
@@ -304,28 +305,7 @@ impl CardState {
         let mut cv = Canvas { buf, w: sw, h: sh, scale };
 
         // card body + fake shadow fringe (same trick as the toast)
-        for py in 0..sh as i32 {
-            for px in 0..sw as i32 {
-                let d = rrect_sdf(
-                    px as f64 / scale,
-                    py as f64 / scale,
-                    W / 2.0,
-                    H / 2.0,
-                    W / 2.0,
-                    H / 2.0,
-                    11.0,
-                );
-                if d > 0.0 {
-                    cv.blend(px, py, FRINGE, 0.35 * (1.0 - d / 2.5).clamp(0.0, 1.0));
-                    continue;
-                }
-                cv.blend(px, py, CARD, fill_cov(d, scale));
-                let rim = stroke_cov(d, 0.7, scale);
-                if rim > 0.0 {
-                    cv.blend(px, py, BORDER, rim);
-                }
-            }
-        }
+        card_chrome(&mut cv, W, H, 11.0, CARD, BORDER, FRINGE);
 
         // thumbnail: cover-cropped square with rounded corners
         let (tx, ty, tr) = (12.0_f64, (H - THUMB as f64) / 2.0, 8.0_f64);
@@ -365,35 +345,17 @@ impl CardState {
             let (bx, by, bw, bh) = b.rect();
             let hot = self.hover == Some(i);
             let dim = matches!(b, Btn::Share) && self.sharing;
-            for py in (by * scale) as i32..((by + bh) * scale) as i32 {
-                for px in (bx * scale) as i32..((bx + bw) * scale) as i32 {
-                    let d = rrect_sdf(
-                        px as f64 / scale,
-                        py as f64 / scale,
-                        bx + bw / 2.0,
-                        by + bh / 2.0,
-                        bw / 2.0,
-                        bh / 2.0,
-                        7.0,
-                    );
-                    if d <= 0.0 {
-                        let c = if dim {
-                            0.5
-                        } else if hot {
-                            1.0
-                        } else {
-                            0.95
-                        };
-                        cv.blend(px, py, if hot { BTN_HOT } else { BTN_BG }, fill_cov(d, scale) * c);
-                        let rim = stroke_cov(d, 0.7, scale);
-                        if rim > 0.0 {
-                            cv.blend(px, py, BORDER, rim);
-                        }
-                    }
-                }
-            }
+            let alpha = if dim { 0.5 } else if hot { 1.0 } else { 0.95 };
+            pill(
+                &mut cv,
+                (bx, by, bw, bh),
+                7.0,
+                if hot { BTN_HOT } else { BTN_BG },
+                BORDER,
+                alpha,
+            );
             let label = if dim { "…" } else { b.label(self.saved.is_some()) };
-            let tw = text_width(&self.font, scale, 11.0, label);
+            let tw = t.width(11.0, label);
             t.draw(&mut cv, bx + (bw - tw) / 2.0, by + 17.5, 11.0, label, FG);
         }
 
@@ -559,38 +521,6 @@ fn make_thumb(img: &RgbaImage) -> Vec<u32> {
         }
     }
     t
-}
-
-fn text_width(font: &Font, scale: f64, size: f64, s: &str) -> f64 {
-    let px = (size * scale) as f32;
-    s.chars().map(|c| font.metrics(c, px).advance_width).sum::<f32>() as f64 / scale
-}
-
-struct Txt<'a> {
-    font: &'a Font,
-    scale: f64,
-}
-
-impl Txt<'_> {
-    fn draw(&self, cv: &mut Canvas, x: f64, y: f64, size: f64, s: &str, rgb: u32) {
-        let px = size * self.scale;
-        let mut pen = x * self.scale;
-        let baseline = y * self.scale;
-        for ch in s.chars() {
-            let (m, bmp) = self.font.rasterize(ch, px as f32);
-            let gx = (pen + m.xmin as f64) as i32;
-            let gy = (baseline - m.height as f64 - m.ymin as f64) as i32;
-            for row in 0..m.height {
-                for col in 0..m.width {
-                    let a = bmp[row * m.width + col] as f64 / 255.0;
-                    if a > 0.0 {
-                        cv.blend(gx + col as i32, gy + row as i32, rgb, a);
-                    }
-                }
-            }
-            pen += m.advance_width as f64;
-        }
-    }
 }
 
 #[cfg(test)]

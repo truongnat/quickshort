@@ -10,6 +10,7 @@
 mod actions;
 mod config;
 mod host;
+mod oneshot;
 mod pin;
 mod quick_access;
 mod record;
@@ -20,6 +21,7 @@ mod share;
 mod toast;
 mod tray;
 mod update;
+mod widgets;
 
 use actions::SaveTarget;
 use anyhow::{Context, Result};
@@ -164,115 +166,17 @@ fn run_one_shot(args: Args) -> Result<()> {
     );
 
     let cfg = config::Config::load();
-    let Some((sel, action, annots)) =
-        qs_overlay::select_region(&frames, bounds, &cfg.overlay_prefs())?
-    else {
-        eprintln!("cancelled");
-        return Ok(());
-    };
 
-    // selection done — release before dispatch: the Copy action may keep
-    // this process alive serving the clipboard, and that must not block
-    // the next hotkey press
-    #[cfg(target_os = "linux")]
-    drop(_lock);
-
-    // scrolling capture produces the tall image itself; the card then
-    // offers the same follow-up actions as any other outcome
-    if action == qs_overlay::Action::Scroll {
-        let img = scroll::run(sel)?;
-        let _ = quick_access::standalone(
-            img,
-            "Captured — pick an action",
-            None,
-            cfg.save_dir(),
-            cfg.accent_rgb(),
-            true,
-        );
-        return Ok(());
-    }
-
-    // recording: worker encodes while the stop card blocks the main loop;
-    // stop click flips the flag, join() then delivers (thumb, mp4)
-    if action == qs_overlay::Action::Record {
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let dir = cfg.save_dir();
-        let stop2 = stop.clone();
-        let worker = std::thread::spawn(move || record::run(sel, &dir, stop2));
-        let _ = recstop::standalone(stop);
-        match worker.join().map_err(|_| anyhow::anyhow!("record worker panicked"))? {
-            Ok((img, path)) => {
-                let _ = quick_access::standalone(
-                    img,
-                    "Recording saved",
-                    Some(path),
-                    cfg.save_dir(),
-                    cfg.accent_rgb(),
-                    true,
-                );
-            }
-            Err(e) => notify(&format!("recording failed: {e:#}")),
-        }
-        return Ok(());
-    }
-
+    // winit permits one event loop per process, so overlay + action
+    // workers + result card all share the oneshot loop; the capture
+    // lock rides along and drops when the overlay closes
     let target = match args.out {
         Some(p) => SaveTarget::File(p),
         None => SaveTarget::Dir(cfg.save_dir()),
     };
-    // a ShareManager is cheap until share() spawns its server/tunnel
-    let sm = share::ShareManager::new();
-    let outcome = actions::dispatch(
-        frames,
-        sel,
-        action,
-        &annots,
-        &target,
-        true,
-        Some(sm.clone()),
-        cfg.copy_after_save,
-        &cfg.ocr_lang,
-    );
-    match &outcome {
-        Err(e) => notify(&format!("{e:#}")),
-        Ok(d) => match &d.outcome {
-            actions::Outcome::Shared(link) => notify(&format!(
-                "shared — link copied (expires in {}d)\n{}",
-                link.expires_s / 86400,
-                link.url
-            )),
-            actions::Outcome::TextCopied(n) => notify(&format!("copied {n} chars")),
-            _ => {}
-        },
-    }
-    let outcome = outcome?;
-    // shared links are hosted on the worker — nothing to keep alive here
-    if let actions::Outcome::Shared(link) = &outcome.outcome {
-        eprintln!("shared {} (expires in {}s)", link.url, link.expires_s);
-    }
-
-    // image outcomes get the quick-access card, same as the resident app;
-    // its private event loop keeps this process alive until dismissed
-    let (msg, saved) = match &outcome.outcome {
-        actions::Outcome::Saved(p) => (
-            format!(
-                "Saved {}",
-                p.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            ),
-            Some(p.clone()),
-        ),
-        actions::Outcome::Copied => ("Copied to clipboard".to_string(), None),
-        _ => return Ok(()),
-    };
-    let _ = quick_access::standalone(
-        outcome.img,
-        &msg,
-        saved,
-        cfg.save_dir(),
-        cfg.accent_rgb(),
-        true,
-    );
-    Ok(())
+    #[cfg(target_os = "linux")]
+    let lock = Some(_lock);
+    #[cfg(not(target_os = "linux"))]
+    let lock = None;
+    oneshot::run(frames, bounds, target, &cfg, lock)
 }
