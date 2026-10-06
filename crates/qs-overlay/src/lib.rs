@@ -10,10 +10,9 @@ use qs_core::{CapturedFrame, Point, Rect};
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::monitor::MonitorHandle;
 #[cfg(not(target_os = "macos"))]
@@ -132,6 +131,55 @@ fn frame_rect(
     }
 }
 
+/// W×H badge above the selection's top-right corner — flips inside
+/// the top edge when there's no headroom on this monitor. Coords are
+/// virtual-logical; the badge only lands on the monitor containing it.
+fn dims_badge(buf: &mut [u32], sw: usize, sh: usize, sel: Rect, vrect: Rect, scale: f64) {
+    let label = format!("{}×{}", sel.w, sel.h);
+    let (tw, th) = annotate::text_extent(&label, 11.0, false);
+    let (bw, bh) = (tw + 14.0, th + 8.0);
+    let bx = sel.right() as f64 - bw;
+    let mut by = sel.y as f64 - bh - 4.0;
+    if by < vrect.y as f64 {
+        by = sel.y as f64 + 4.0;
+    }
+    let mut cv = sdf::Canvas {
+        buf,
+        w: sw,
+        h: sh,
+        scale,
+    };
+    let (pcx, pcy) = (bx + bw / 2.0, by + bh / 2.0);
+    for py in (((by - vrect.y as f64) * scale).floor() as i32)
+        ..(((by + bh - vrect.y as f64) * scale).ceil() as i32)
+    {
+        for px in (((bx - vrect.x as f64) * scale).floor() as i32)
+            ..(((bx + bw - vrect.x as f64) * scale).ceil() as i32)
+        {
+            let (lx, ly) = (
+                px as f64 / scale + vrect.x as f64,
+                py as f64 / scale + vrect.y as f64,
+            );
+            let a = sdf::fill_cov(
+                sdf::rrect_sdf(lx, ly, pcx, pcy, bw / 2.0, bh / 2.0, bh / 2.0),
+                scale,
+            );
+            if a > 0.0 {
+                cv.blend(px, py, 0x1C1C1E, a * 0.9);
+            }
+        }
+    }
+    annotate::draw_label(
+        &mut cv,
+        Point::new((bx + 7.0).round() as i32, (by + 4.0).round() as i32),
+        &label,
+        11.0,
+        0xFFFFFF,
+        vrect,
+        scale,
+    );
+}
+
 /// Outcome of a finished overlay session.
 pub enum OverlayEvent {
     /// User picked an action on `sel`; annotations ride along for baking.
@@ -184,61 +232,6 @@ impl Overlay {
             self.s.redraw_all();
         }
     }
-}
-
-/// Show the overlay one-shot: own event loop, blocks until the session ends.
-/// Used by `--capture` CLI mode. `bounds` = virtual screen bounds.
-pub fn select_region(
-    frames: &[CapturedFrame],
-    bounds: Rect,
-    prefs: &Prefs,
-) -> Result<Option<(Rect, Action, Vec<Annotation>)>> {
-    struct CliRunner<'a> {
-        frames: &'a [CapturedFrame],
-        bounds: Rect,
-        prefs: &'a Prefs,
-        ov: Option<Overlay>,
-        out: Option<Option<(Rect, Action, Vec<Annotation>)>>,
-    }
-    impl ApplicationHandler for CliRunner<'_> {
-        fn resumed(&mut self, el: &ActiveEventLoop) {
-            match Overlay::spawn(el, self.frames, self.bounds, self.prefs) {
-                Ok(ov) => self.ov = Some(ov),
-                Err(e) => {
-                    eprintln!("overlay failed: {e:#}");
-                    el.exit();
-                }
-            }
-        }
-        fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-            if let Some(ov) = &mut self.ov {
-                if let Some(ev) = ov.window_event(id, event) {
-                    self.out = Some(match ev {
-                        OverlayEvent::Done(r, a, an) => Some((r, a, an)),
-                        OverlayEvent::Cancelled => None,
-                    });
-                    el.exit();
-                }
-            }
-        }
-        fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
-            if let Some(ov) = &mut self.ov {
-                ov.about_to_wait();
-            }
-        }
-    }
-
-    let el = EventLoop::new()?;
-    el.set_control_flow(ControlFlow::Wait);
-    let mut runner = CliRunner {
-        frames,
-        bounds,
-        prefs,
-        ov: None,
-        out: None,
-    };
-    el.run_app(&mut runner)?;
-    Ok(runner.out.flatten())
 }
 
 /// Blit all frames into one virtual-space canvas (0xRRGGBB) at the densest
@@ -953,6 +946,7 @@ impl Session {
                 );
                 frame_rect(&mut buf, sw, sh, lx0, ly0, lx1, ly1, b, self.prefs.accent);
             }
+            dims_badge(&mut buf, sw, sh, sel, wctx.vrect, scale);
         }
         // committed annotation layer (physical-res ARGB, 1:1 with buf) —
         // clip compositing to the strokes' union bbox
@@ -1288,6 +1282,7 @@ impl Session {
                             }
                             Item::Undo => self.undo(),
                             Item::Redo => self.redo(),
+                            Item::Sep => {}
                             Item::Size(s) => {
                                 self.size = s;
                                 if let Some(tb) = &mut self.toolbar {
@@ -1445,7 +1440,8 @@ impl Session {
                     if sel.w >= MIN_SELECT && sel.h >= MIN_SELECT {
                         let mr = self.sel_monitor(sel);
                         self.sel = Some(sel);
-                        let mut tb = toolbar::Toolbar::new(sel, mr, false);
+                        let mut tb =
+                            toolbar::Toolbar::new(sel, mr, false, self.prefs.keys.clone());
                         tb.accent = self.prefs.accent;
                         self.toolbar = Some(tb);
                         self.dirty = true;
@@ -1562,14 +1558,18 @@ impl Session {
                     self.finish(None);
                     return;
                 }
-                // ⌘/Ctrl shortcuts in the toolbar phase — same actions as
-                // the buttons. Keys come from prefs; undo's ⇧-variant = redo.
-                if self.sel.is_some() && (self.mods.super_key() || self.mods.control_key()) {
+                // toolbar-phase shortcuts — bare letters or ⌘/Ctrl; only
+                // undo/redo stay modded so a stray z can't nuke a stroke.
+                // Reaching here means no Text draft owns the keyboard
+                // (it returned above), so bare keys are safe.
+                if self.sel.is_some() {
                     if let Key::Character(c) = &event.logical_key {
                         let Some(ch) = c.chars().next().map(|c| c.to_ascii_lowercase()) else {
                             return;
                         };
-                        if ch == self.prefs.keys.undo {
+                        if (self.mods.super_key() || self.mods.control_key())
+                            && ch == self.prefs.keys.undo
+                        {
                             if self.mods.shift_key() {
                                 self.redo();
                             } else {
@@ -1623,5 +1623,58 @@ mod tests {
         assert_eq!(next_boundary(s, 2), 5);
         assert_eq!(next_boundary(s, s.len()), s.len());
         assert_eq!(prev_boundary(s, 0), 0);
+    }
+
+    /// Visual check — toolbar groups/separators, hover hint, dims badge.
+    /// `cargo test -p qs-overlay toolbar_png -- --ignored`
+    #[test]
+    #[ignore = "writes /tmp/quickshort-toolbar.png"]
+    fn toolbar_png() {
+        let sel = Rect::new(140, 100, 420, 220);
+        let mr = Rect::new(0, 0, 780, 430);
+        let mut tb = toolbar::Toolbar::new(sel, mr, false, Prefs::default().keys);
+        tb.accent = ACCENT;
+        tb.hover = tb
+            .buttons
+            .iter()
+            .position(|(it, _)| matches!(it, Item::Act(Action::Record)));
+        let (w, h) = (mr.w as usize, mr.h as usize);
+        let mut buf = vec![0x303030u32; w * h];
+        for py in sel.y..sel.bottom() {
+            for px in sel.x..sel.right() {
+                buf[py as usize * w + px as usize] = 0x909090;
+            }
+        }
+        tb.paint(&mut buf, w, h, mr, 1.0);
+        dims_badge(&mut buf, w, h, sel, mr, 1.0);
+        // zoom pass: bar repainted at 3x into its own strip for icon review
+        let z = 5.0f64;
+        let zr = Rect::new(
+            0,
+            0,
+            (tb.rect.w as f64 * z) as u32,
+            ((tb.rect.h as f64 + 40.0) * z) as u32,
+        );
+        let (zw, zh) = (zr.w as usize, zr.h as usize);
+        let mut zbuf = vec![0x202020u32; zw * zh];
+        tb.paint(&mut zbuf, zw, zh, tb.rect, z);
+        let mut zout = image::RgbaImage::new(zw as u32, zh as u32);
+        for (i, px) in zbuf.iter().enumerate() {
+            zout.put_pixel(
+                (i % zw) as u32,
+                (i / zw) as u32,
+                image::Rgba([(px >> 16) as u8, (px >> 8) as u8, *px as u8, 255]),
+            );
+        }
+        zout.save("/tmp/quickshort-toolbar-zoom.png").unwrap();
+        let mut out = image::RgbaImage::new(w as u32, h as u32);
+        for (i, px) in buf.iter().enumerate() {
+            out.put_pixel(
+                (i % w) as u32,
+                (i / w) as u32,
+                image::Rgba([(px >> 16) as u8, (px >> 8) as u8, *px as u8, 255]),
+            );
+        }
+        out.save("/tmp/quickshort-toolbar.png").unwrap();
     }
 }

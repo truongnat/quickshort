@@ -9,7 +9,10 @@
 
 mod actions;
 mod config;
+mod gallery;
 mod host;
+#[cfg(unix)]
+mod ipc;
 mod oneshot;
 mod pin;
 mod quick_access;
@@ -29,6 +32,8 @@ use anyhow::{Context, Result};
 /// quickshort [--capture] [--delay SECS] [--out FILE.png] [--settings]
 struct Args {
     capture_now: bool,
+    /// Ask the resident host to open the capture gallery.
+    gallery: bool,
     settings_only: bool,
     toast_demo: bool,
     card_demo: bool,
@@ -39,6 +44,7 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut args = Args {
         capture_now: false,
+        gallery: false,
         settings_only: false,
         toast_demo: false,
         card_demo: false,
@@ -49,6 +55,7 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--capture" => args.capture_now = true,
+            "--gallery" => args.gallery = true,
             "--settings" => args.settings_only = true,
             "--toast" => args.toast_demo = true,
             "--card" => args.card_demo = true,
@@ -96,6 +103,13 @@ fn main() -> Result<()> {
             false,
         );
     }
+    if args.gallery {
+        // gallery lives in the resident host — nothing to fall back to
+        if ipc::delegate("gallery") {
+            return Ok(());
+        }
+        anyhow::bail!("no resident quickshort running");
+    }
     if !args.capture_now {
         return host::run(config::Config::load());
     }
@@ -139,6 +153,13 @@ fn notify(msg: &str) {
 /// One-shot pipeline: capture all monitors to RAM -> overlay selection ->
 /// worker-thread stitch -> action.
 fn run_one_shot(args: Args) -> Result<()> {
+    // a running resident owns the tray and the full UX — hand plain
+    // --capture calls to it so keybindings get the resident flow;
+    // explicit --out/--delay invocations keep the standalone path
+    #[cfg(unix)]
+    if args.out.is_none() && args.delay_secs == 0.0 && ipc::delegate("capture") {
+        return Ok(());
+    }
     // one capture at a time — a second --capture while an overlay is up
     // exits quietly instead of stacking another fullscreen layer
     #[cfg(target_os = "linux")]

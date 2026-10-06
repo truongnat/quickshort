@@ -14,15 +14,18 @@ use winit::window::WindowId;
 
 use crate::actions::{self, Dispatch, Outcome, SaveTarget};
 use crate::config::Config;
+use crate::gallery::{Gallery, GalleryEvent, Pump};
 use crate::pin::Pin;
-use crate::quick_access::{QaAction, QuickAccess};
+use crate::quick_access::{CardPost, QaAction, QuickAccess};
 use crate::settings::{Settings, SettingsEvent};
 use crate::toast::Toast;
 use crate::tray;
 use crate::update::{self, Release};
 
 /// Everything that wakes the loop besides window events.
-enum HostEvent {
+/// Crate-internal — the gallery layer thread needs the type name for
+/// its EventLoopProxy.
+pub(crate) enum HostEvent {
     /// Tray "Capture Region" or the global hotkey.
     Trigger,
     Menu(MenuId),
@@ -41,6 +44,14 @@ enum HostEvent {
     },
     /// Update install finished — relaunch on success.
     UpdateInstall(Result<PathBuf, String>),
+    /// Gallery thumbnails decoded — open the surface.
+    GalleryData(Vec<crate::gallery::CellData>),
+    /// An action arrived from the layer-shell gallery thread.
+    Gallery(crate::gallery::GalleryEvent),
+    /// IPC `--gallery` — same path as the tray item.
+    GalleryOpen,
+    /// A gallery image finished decoding for Pin.
+    GalleryImg(Result<image::RgbaImage, String>),
 }
 
 /// Run the resident tray app. Blocks until Quit.
@@ -65,6 +76,23 @@ pub fn run(cfg: Config) -> Result<()> {
             let _ = px.send_event(HostEvent::Trigger);
         }
     })));
+    // `--capture` processes delegate here — on Wayland the GNOME
+    // keybinding is the trigger that actually reaches the app, so this
+    // socket is the real capture entry point
+    #[cfg(unix)]
+    {
+        let px = proxy.clone();
+        crate::ipc::listen(move |cmd| {
+            let ev = match cmd.as_str() {
+                "capture" => Some(HostEvent::Trigger),
+                "gallery" => Some(HostEvent::GalleryOpen),
+                _ => None,
+            };
+            if let Some(ev) = ev {
+                let _ = px.send_event(ev);
+            }
+        });
+    }
 
     let mut host = Host::new(cfg, proxy);
     el.run_app(&mut host)?;
@@ -90,15 +118,19 @@ struct Host {
     toast: Option<Toast>,
     /// Post-capture thumbnail card — owns the image until dismissed.
     card: Option<QuickAccess>,
+    /// the overlay's selection — the card docks on its monitor
+    card_sel: Option<qs_core::Rect>,
     /// Floating always-on-top reference images.
     pins: Vec<Pin>,
-    /// Recording stop card + the flag its worker watches. The window is
-    /// dropped on Stop; the flag lives on until the encoder finishes.
-    rec: Option<(crate::recstop::RecStop, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    /// Recording stop flag — the tray's red dot + Stop item are the UI;
+    /// the flag lives until the encoder finishes and RecDone arrives.
+    rec: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Newer release found, waiting for the user to click Update.
     pending_update: Option<Release>,
     /// Lazy — the listener + ssh tunnel only spawn on the first Share.
     share: Option<std::sync::Arc<crate::share::ShareManager>>,
+    /// Capture-history gallery window.
+    gallery: Option<Gallery>,
 }
 
 impl Host {
@@ -115,19 +147,22 @@ impl Host {
             settings: None,
             toast: None,
             card: None,
+            card_sel: None,
             pins: Vec::new(),
             rec: None,
             pending_update: None,
             share: None,
+            gallery: None,
         }
     }
 
     fn rebuild_menu(&self) {
         let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
         let update = self.pending_update.as_ref().map(|r| r.version.clone());
+        let recording = self.rec.is_some();
         #[cfg(target_os = "linux")]
         if let Some(t) = &self.tray {
-            t.set_menu(self.cfg.clone(), recents, update);
+            t.set_menu(self.cfg.clone(), recents, update, recording);
         }
         #[cfg(not(target_os = "linux"))]
         if let Some(t) = &self.tray {
@@ -135,8 +170,23 @@ impl Host {
                 &self.cfg,
                 &recents,
                 update.as_deref(),
+                recording,
             ))));
         }
+    }
+
+    /// Stop-click from the tray's Stop item — the red dot goes away
+    /// immediately; a toast covers the finalize gap until RecDone swaps
+    /// in the result card.
+    fn stop_recording(&mut self, el: &ActiveEventLoop) {
+        if let Some(stop) = self.rec.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        match Toast::open(el, "Saving recording…", self.cfg.accent_rgb()) {
+            Ok(t) => self.toast = Some(t),
+            Err(e) => eprintln!("toast: {e:#}"),
+        }
+        self.rebuild_menu();
     }
 
     /// Hit GitHub Releases on a worker; `manual` shows a busy toast now and
@@ -221,6 +271,8 @@ impl Host {
         let id = id.0.as_str();
         match id {
             tray::ID_CAPTURE => self.trigger(el),
+            tray::ID_STOP_REC => self.stop_recording(el),
+            tray::ID_GALLERY => self.open_gallery(),
             tray::ID_OPEN_DIR => actions::open_path(&self.cfg.save_dir()),
             tray::ID_QUIT => el.exit(),
             tray::ID_DONATE => actions::open_path(std::path::Path::new(
@@ -259,11 +311,51 @@ impl Host {
                 self.cfg.save();
                 self.rebuild_menu();
             }
-            _ => {
-                if let Some(p) = id.strip_prefix(tray::ID_RECENT_PREFIX) {
-                    actions::open_path(&PathBuf::from(p));
-                }
+            _ => {}
+        }
+    }
+
+    /// Tray item and `--gallery` share this — decode + thumbnails off
+    /// the UI thread; the surface opens when GalleryData lands.
+    fn open_gallery(&self) {
+        let (dir, n, px) = (
+            self.cfg.save_dir(),
+            self.cfg.recent_max as usize,
+            self.proxy.clone(),
+        );
+        std::thread::spawn(move || {
+            let cells = crate::gallery::load(&dir, n);
+            let _ = px.send_event(HostEvent::GalleryData(cells));
+        });
+    }
+
+    /// Gallery cell actions — every variant carries the file it hit.
+    /// Pin's decode lands back here as GalleryImg, which owns `el`.
+    fn on_gallery(&mut self, ev: GalleryEvent) {
+        match ev {
+            GalleryEvent::Open(p) => actions::open_path(&p),
+            GalleryEvent::Copy(p) => {
+                // decode + clipboard off-thread; resident keeps it alive
+                std::thread::spawn(move || {
+                    if let Ok(img) = image::open(&p).map(|i| i.to_rgba8()) {
+                        actions::copy_image_to_clipboard(&img, false);
+                    }
+                });
             }
+            GalleryEvent::Pin(p) => {
+                let px = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let res = image::open(&p).map(|i| i.to_rgba8()).map_err(|e| e.to_string());
+                    let _ = px.send_event(HostEvent::GalleryImg(res));
+                });
+            }
+            GalleryEvent::Delete(p) => {
+                if let Err(e) = std::fs::remove_file(&p) {
+                    eprintln!("gallery delete {}: {e:#}", p.display());
+                }
+                self.rebuild_menu();
+            }
+            GalleryEvent::Closed => self.gallery = None,
         }
     }
 
@@ -333,7 +425,7 @@ impl Host {
         saved: Option<PathBuf>,
     ) {
         self.toast = None;
-        match QuickAccess::open(el, img, msg, saved, self.cfg.accent_rgb(), true) {
+        match QuickAccess::open(el, img, msg, saved, self.cfg.accent_rgb(), true, self.card_sel) {
             Ok(c) => self.card = Some(c),
             Err(e) => {
                 eprintln!("card: {e:#}");
@@ -345,61 +437,34 @@ impl Host {
     /// A click on the card's action pills — everything runs with the image
     /// the card still owns.
     fn on_card_action(&mut self, el: &ActiveEventLoop, act: QaAction) {
-        if matches!(act, QaAction::Close) {
-            self.card = None;
-            return;
-        }
-        let mut rebuild = false;
-        let mut pin = false;
-        if let Some(c) = &mut self.card {
-            match act {
-                QaAction::Copy => {
-                    actions::copy_image(c.image(), false);
-                    c.notify("Copied to clipboard");
-                }
-                QaAction::SaveNow => {
-                    match actions::save_to_dir(c.image(), &self.cfg.save_dir()) {
-                        Ok(p) => {
-                            c.set_saved(p);
-                            c.notify("Screenshot saved");
-                            rebuild = true;
-                        }
-                        Err(e) => c.notify(&format!("Save failed: {e}")),
+        let dir = self.cfg.save_dir();
+        let share = self
+            .share
+            .get_or_insert_with(crate::share::ShareManager::new)
+            .clone();
+        let proxy = self.proxy.clone();
+        let post = self.card.as_mut().and_then(|c| {
+            crate::quick_access::CardEnv {
+                save_dir: &dir,
+                copy_wait: false,
+                share: &share,
+                proxy: &proxy,
+                share_done: HostEvent::QuickShare,
+            }
+            .action(c, act)
+        });
+        match post {
+            Some(CardPost::Closed) => self.card = None,
+            Some(CardPost::Saved) => self.rebuild_menu(),
+            Some(CardPost::Pin) => {
+                if let Some(c) = &self.card {
+                    match Pin::open(el, c.image()) {
+                        Ok(p) => self.pins.push(p),
+                        Err(e) => eprintln!("pin: {e:#}"),
                     }
                 }
-                QaAction::Reveal => {
-                    if let Some(p) = c.saved_path() {
-                        actions::open_path(&p);
-                    }
-                }
-                QaAction::Beautify => c.beautify(),
-                QaAction::Pin => pin = true,
-                QaAction::Share => {
-                    let sm = self
-                        .share
-                        .get_or_insert_with(crate::share::ShareManager::new)
-                        .clone();
-                    let img = c.image().clone();
-                    let px = self.proxy.clone();
-                    c.set_sharing(true);
-                    std::thread::spawn(move || {
-                        let res = sm.share(&img).map_err(|e| e.to_string());
-                        let _ = px.send_event(HostEvent::QuickShare(res));
-                    });
-                }
-                QaAction::Close => unreachable!(),
             }
-        }
-        if rebuild {
-            self.rebuild_menu();
-        }
-        if pin {
-            if let Some(c) = &self.card {
-                match Pin::open(el, c.image()) {
-                    Ok(p) => self.pins.push(p),
-                    Err(e) => eprintln!("pin: {e:#}"),
-                }
-            }
+            None => {}
         }
     }
 
@@ -591,6 +656,7 @@ impl ApplicationHandler<HostEvent> for Host {
             },
             HostEvent::RecDone(res) => {
                 self.rec = None;
+                self.rebuild_menu();
                 match res {
                     Ok((img, path)) => {
                         self.open_card(el, img, "Recording saved", Some(path))
@@ -599,23 +665,39 @@ impl ApplicationHandler<HostEvent> for Host {
                 }
             }
             HostEvent::QuickShare(res) => {
-                let Some(c) = &mut self.card else { return };
-                c.set_sharing(false);
-                match res {
-                    Ok(link) => {
-                        actions::copy_text(&link.url, false);
-                        c.notify(&format!(
-                            "Link copied — expires in {}d",
-                            link.expires_s / 86400
-                        ));
-                    }
-                    Err(e) => c.notify(&format!("Share failed: {e}")),
+                if let Some(c) = &mut self.card {
+                    crate::quick_access::share_finished(c, res, false);
                 }
             }
+            HostEvent::GalleryData(cells) => {
+                self.gallery = None; // replace a still-open gallery
+                let accent = self.cfg.accent_rgb();
+                match Gallery::open(el, cells, accent, self.proxy.clone()) {
+                    Ok(g) => self.gallery = Some(g),
+                    Err(e) => eprintln!("gallery: {e:#}"),
+                }
+            }
+            HostEvent::Gallery(ev) => self.on_gallery(ev),
+            HostEvent::GalleryOpen => self.open_gallery(),
+            HostEvent::GalleryImg(res) => match res {
+                Ok(img) => match Pin::open(el, &img) {
+                    Ok(p) => self.pins.push(p),
+                    Err(e) => eprintln!("pin: {e:#}"),
+                },
+                Err(e) => self.toast_done(el, format!("Pin failed: {e}"), false),
+            },
         }
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(g) = &mut self.gallery {
+            if g.win_id() == Some(id) {
+                if let Some(ev) = g.window_event(event) {
+                    self.on_gallery(ev);
+                }
+                return;
+            }
+        }
         if let Some(i) = self.pins.iter().position(|p| p.win_id() == id) {
             if self.pins[i].window_event(event) {
                 self.pins.remove(i);
@@ -638,15 +720,7 @@ impl ApplicationHandler<HostEvent> for Host {
                 return;
             }
         }
-        if let Some((r, stop)) = &mut self.rec {
-            if r.win_id() == id {
-                if r.window_event(event) {
-                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                    self.rec = None; // encoder finalizes → RecDone follows
-                }
-                return;
-            }
-        }
+        // no floating rec window in resident mode — the tray owns stop
         let is_settings = self.settings.as_ref().is_some_and(|s| s.win_id() == id);
         if is_settings {
             let s = self.settings.as_mut().unwrap();
@@ -684,6 +758,7 @@ impl ApplicationHandler<HostEvent> for Host {
             return;
         };
         if let OverlayEvent::Done(sel, action, annots) = out {
+            self.card_sel = Some(sel);
             // scrolling capture drives its own capture loop and reports
             // the stitched image through ScrollDone
             if action == qs_overlay::Action::Scroll {
@@ -703,13 +778,11 @@ impl ApplicationHandler<HostEvent> for Host {
                 return;
             }
             // recording keeps its own stream open and stops via the
-            // floating RecStop card — RecDone carries (thumb, path)
+            // tray's Stop item — RecDone carries (thumb, path)
             if action == qs_overlay::Action::Record {
                 let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                match crate::recstop::RecStop::open(el) {
-                    Ok(r) => self.rec = Some((r, stop.clone())),
-                    Err(e) => eprintln!("rec stop card: {e:#}"),
-                }
+                self.rec = Some(stop.clone());
+                self.rebuild_menu(); // red tray dot + Stop item
                 let px = self.proxy.clone();
                 let dir = self.cfg.save_dir();
                 let stop2 = stop.clone();
@@ -778,9 +851,12 @@ impl ApplicationHandler<HostEvent> for Host {
                 None => self.card = None,
             }
         }
-        if let Some((r, _)) = &mut self.rec {
-            let w = r.pump();
-            wake = Some(wake.map_or(w, |x| x.min(w)));
+        if let Some(g) = &mut self.gallery {
+            match g.pump() {
+                Pump::Wake(w) => wake = Some(wake.map_or(w, |x| x.min(w))),
+                Pump::Idle => {}
+                Pump::Dead => self.gallery = None,
+            }
         }
         el.set_control_flow(match wake {
             Some(w) => ControlFlow::WaitUntil(w),

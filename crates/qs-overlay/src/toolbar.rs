@@ -3,7 +3,7 @@
 //! selection's bottom-right corner. Rendered straight into the softbuffer
 //! surface via SDF primitives at physical resolution (crisp on HiDPI).
 
-use crate::annotate::PALETTE;
+use crate::annotate::{self, PALETTE};
 use crate::sdf::{ellipse_sdf, fill_cov, rrect_sdf, seg_sdf, stroke_cov, Canvas};
 use qs_core::{Point, Rect};
 
@@ -50,6 +50,9 @@ pub enum Item {
     Bold,
     /// Font size preset index into annotate::TEXT_SIZES — text tool only
     FontSize(u8),
+    /// hairline divider between button groups — occupies a narrow slot,
+    /// never clickable
+    Sep,
 }
 
 const MAIN: &[Item] = &[
@@ -61,8 +64,10 @@ const MAIN: &[Item] = &[
     Item::Tool(Tool::Marker),
     Item::Tool(Tool::Text),
     Item::Tool(Tool::Pixelate),
+    Item::Sep,
     Item::Undo,
     Item::Redo,
+    Item::Sep,
     Item::Act(Action::Save),
     Item::Act(Action::Copy),
     Item::Act(Action::Scroll),
@@ -116,12 +121,18 @@ pub struct Toolbar {
     pub has_redo: bool,
     /// active-chip color — the configured accent
     pub accent: u32,
+    /// configured shortcut keys — shown in the hover hints
+    pub keys: crate::Keys,
+    /// monitor holding the selection — hint placement clamps to it
+    mon: Rect,
+    /// bar runs down the selection edge rather than across it
+    vert: bool,
 }
 
 impl Toolbar {
     /// `mr` = logical rect of the monitor holding the selection.
     /// `opts` shows the second row (size + color) when a tool is armed.
-    pub fn new(sel: Rect, mr: Rect, opts: bool) -> Self {
+    pub fn new(sel: Rect, mr: Rect, opts: bool, keys: crate::Keys) -> Self {
         let mut tb = Self {
             rect: Rect::default(),
             buttons: Vec::new(),
@@ -134,6 +145,9 @@ impl Toolbar {
             can_undo: false,
             has_redo: false,
             accent: crate::ACCENT,
+            keys,
+            mon: mr,
+            vert: false,
         };
         tb.layout(sel, mr, opts);
         tb
@@ -156,9 +170,12 @@ impl Toolbar {
         };
         let on = opts_row.len() as f64;
         let rows = if opts { 2.0 } else { 1.0 };
+        // separators take a narrow slot; the row width is the slot sum
+        let slot = |it: &Item| if matches!(it, Item::Sep) { d * 0.45 } else { d };
+        let main_w = MAIN.iter().map(|it| slot(it)).sum::<f64>() + GAP * (n - 1.0);
         // second row aligns under the main row, slightly narrower
         let (hw, hh) = (
-            PAD * 2.0 + n.max(on) * d + (n.max(on) - 1.0) * GAP,
+            PAD * 2.0 + main_w.max(on * d + (on - 1.0) * GAP).max(d),
             PAD * 2.0 + rows * d + (rows - 1.0) * GAP * 0.5,
         );
         let (vw, vh) = (hh, hw);
@@ -204,6 +221,8 @@ impl Toolbar {
         ];
 
         let (x, y, vertical, _) = candidates.iter().find(|c| c.3).copied().unwrap();
+        self.mon = mr;
+        self.vert = vertical;
         self.rect = Rect::new(
             x.round() as i32,
             y.round() as i32,
@@ -212,25 +231,27 @@ impl Toolbar {
         );
         let row_step = d + GAP * 0.5;
         let place = |items: &[Item], second: bool, buttons: &mut Vec<(Item, Rect)>| {
-            for (i, it) in items.iter().enumerate() {
-                let off = PAD + i as f64 * (d + GAP);
+            let mut off = PAD;
+            for it in items {
+                let w = slot(it);
                 let off2 = PAD + if second { row_step } else { 0.0 };
                 let r = if vertical {
                     Rect::new(
                         self.rect.x + off2.round() as i32,
                         self.rect.y + off.round() as i32,
                         d as u32,
-                        d as u32,
+                        w.round().max(1.0) as u32,
                     )
                 } else {
                     Rect::new(
                         self.rect.x + off.round() as i32,
                         self.rect.y + off2.round() as i32,
-                        d as u32,
+                        w.round().max(1.0) as u32,
                         d as u32,
                     )
                 };
                 buttons.push((*it, r));
+                off += w + GAP;
             }
         };
         self.buttons.clear();
@@ -240,11 +261,54 @@ impl Toolbar {
         }
     }
 
-    /// Index of the button under `p`, or `None`.
+    /// Index of the button under `p`, or `None` — separators are gaps.
     pub fn hit(&self, p: Point) -> Option<usize> {
-        self.buttons
-            .iter()
-            .position(|(_, r)| p.x >= r.x && p.x < r.right() && p.y >= r.y && p.y < r.bottom())
+        self.buttons.iter().position(|(it, r)| {
+            !matches!(it, Item::Sep)
+                && p.x >= r.x
+                && p.x < r.right()
+                && p.y >= r.y
+                && p.y < r.bottom()
+        })
+    }
+
+    /// Hover label for an item — action names carry their configured
+    /// shortcut so the bindings stay discoverable. None where a label
+    /// adds nothing (separator, color swatch).
+    fn hint(&self, item: Item) -> Option<String> {
+        Some(match item {
+            Item::Tool(t) => match t {
+                Tool::Select => "Select",
+                Tool::Pen => "Pen",
+                Tool::Arrow => "Arrow",
+                Tool::Rect => "Rectangle",
+                Tool::Ellipse => "Ellipse",
+                Tool::Marker => "Highlight",
+                Tool::Text => "Text",
+                Tool::Pixelate => "Pixelate",
+            }
+            .into(),
+            Item::Undo => "Undo".into(),
+            Item::Redo => "Redo".into(),
+            Item::Act(a) => {
+                let k = &self.keys;
+                let (name, key) = match a {
+                    Action::Save => ("Save", k.save),
+                    Action::Copy => ("Copy", k.copy),
+                    Action::Ocr => ("OCR", k.ocr),
+                    Action::Share => ("Share", k.share),
+                    Action::Scroll => ("Scroll capture", k.scroll),
+                    Action::Record => ("Record", k.record),
+                };
+                format!("{name} · {}", key.to_ascii_uppercase())
+            }
+            Item::Size(s) => format!("Size {}", s + 1),
+            Item::Bold => "Bold".into(),
+            Item::FontSize(i) => {
+                format!("Text size {}", annotate::TEXT_SIZES[i as usize].0 as i32)
+            }
+            Item::Color(_) | Item::Sep => return None,
+        })
     }
 
     /// `p` inside the toolbar box (incl. padding) — clicks there should not
@@ -264,6 +328,27 @@ impl Toolbar {
             scale,
         };
         for (i, (item, r)) in self.buttons.iter().enumerate() {
+            if matches!(item, Item::Sep) {
+                // hairline between groups, inset from the bar's edges —
+                // vertical line in a horizontal bar, horizontal when docked
+                let ((x0, y0), (x1, y1)) = if self.vert {
+                    (
+                        ((r.x as f64 + 7.0 - vrect.x as f64) * scale, (r.y as f64 + r.h as f64 / 2.0 - vrect.y as f64) * scale),
+                        ((r.right() as f64 - 7.0 - vrect.x as f64) * scale, (r.y as f64 + r.h as f64 / 2.0 - vrect.y as f64) * scale),
+                    )
+                } else {
+                    (
+                        ((r.x as f64 + r.w as f64 / 2.0 - vrect.x as f64) * scale, (r.y as f64 + 7.0 - vrect.y as f64) * scale),
+                        ((r.x as f64 + r.w as f64 / 2.0 - vrect.x as f64) * scale, (r.bottom() as f64 - 7.0 - vrect.y as f64) * scale),
+                    )
+                };
+                for y in y0.round() as i32..=y1.round() as i32 {
+                    for x in x0.round() as i32..=x1.round() as i32 {
+                        cv.blend(x, y, FG, 0.16);
+                    }
+                }
+                continue;
+            }
             let cx = (r.x as f64 + r.w as f64 / 2.0 - vrect.x as f64) * scale;
             let cy = (r.y as f64 + r.h as f64 / 2.0 - vrect.y as f64) * scale;
             let active = matches!(item, Item::Tool(t) if self.tool == Some(*t))
@@ -287,6 +372,52 @@ impl Toolbar {
                 *item,
                 self.accent,
             );
+        }
+        // hover hint — "Record · R" pinned under the hovered button;
+        // flips above the bar when it would run off the monitor
+        if let Some((item, br)) = self.hover.and_then(|i| self.buttons.get(i).copied()) {
+            if let Some(text) = self.hint(item) {
+                let (tw, th) = annotate::text_extent(&text, 10.5, false);
+                let (bw, bh) = (tw + 12.0, th + 7.0);
+                let mx0 = self.mon.x as f64 + 2.0;
+                let bx = (br.x as f64 + br.w as f64 / 2.0 - bw / 2.0)
+                    .clamp(mx0, (self.mon.right() as f64 - bw - 2.0).max(mx0));
+                let below = self.rect.bottom() as f64 + 5.0;
+                let by = if below + bh <= self.mon.bottom() as f64 {
+                    below
+                } else {
+                    (self.rect.y as f64 - bh - 5.0).max(self.mon.y as f64 + 2.0)
+                };
+                let (pcx, pcy) = (bx + bw / 2.0, by + bh / 2.0);
+                for py in (((by - vrect.y as f64) * scale).floor() as i32)
+                    ..(((by + bh - vrect.y as f64) * scale).ceil() as i32)
+                {
+                    for px in (((bx - vrect.x as f64) * scale).floor() as i32)
+                        ..(((bx + bw - vrect.x as f64) * scale).ceil() as i32)
+                    {
+                        let (lx, ly) = (
+                            px as f64 / scale + vrect.x as f64,
+                            py as f64 / scale + vrect.y as f64,
+                        );
+                        let a = fill_cov(
+                            rrect_sdf(lx, ly, pcx, pcy, bw / 2.0, bh / 2.0, bh / 2.0),
+                            scale,
+                        );
+                        if a > 0.0 {
+                            cv.blend(px, py, SHADOW, a * 0.85);
+                        }
+                    }
+                }
+                annotate::draw_label(
+                    &mut cv,
+                    Point::new((bx + 6.0).round() as i32, (by + 3.5).round() as i32),
+                    &text,
+                    10.5,
+                    FG,
+                    vrect,
+                    scale,
+                );
+            }
         }
     }
 }
@@ -381,10 +512,15 @@ fn draw_icon(
             }
         }
         Item::Tool(Tool::Pen) => {
-            // pencil: body + pointed nib
-            let d =
-                seg_sdf(lx, ly, -4.6, 4.6, 1.4, -1.4).min(seg_sdf(lx, ly, 1.4, -1.4, 4.6, -4.4));
-            let a = stroke(d, 2.4) * fg_a;
+            // pencil outline at 45°: parallel body edges + cap + pointed
+            // nib converging to one tip + the body/nib joint line
+            let d = seg_sdf(lx, ly, -3.6, 5.2, 2.4, -0.8)
+                .min(seg_sdf(lx, ly, -5.2, 3.6, 0.8, -2.4))
+                .min(seg_sdf(lx, ly, -3.6, 5.2, -5.2, 3.6))
+                .min(seg_sdf(lx, ly, 2.4, -0.8, 5.2, -4.6))
+                .min(seg_sdf(lx, ly, 0.8, -2.4, 5.2, -4.6))
+                .min(seg_sdf(lx, ly, 2.4, -0.8, 0.8, -2.4));
+            let a = stroke(d, STROKE) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }
@@ -412,26 +548,29 @@ fn draw_icon(
             }
         }
         Item::Tool(Tool::Marker) => {
-            // highlighter: wide body + thin nib
-            let d = seg_sdf(lx, ly, -4.8, 4.4, 1.6, -2.0);
-            let a = stroke(d, 3.4) * fg_a;
-            if a > 0.0 {
-                cv.blend(x, y, FG, a);
-            }
-            let d2 = seg_sdf(lx, ly, 1.6, -2.0, 4.8, -5.2);
-            let a = stroke(d2, STROKE) * fg_a;
+            // highlighter: same family as the pencil but a flat chisel tip
+            // and a thin underline — the line it "highlighted"
+            let d = seg_sdf(lx, ly, -3.1, 4.0, 2.5, -1.6)
+                .min(seg_sdf(lx, ly, -4.7, 2.4, 0.9, -3.2))
+                .min(seg_sdf(lx, ly, -3.1, 4.0, -4.7, 2.4))
+                .min(seg_sdf(lx, ly, 2.5, -1.6, 4.7, -2.4))
+                .min(seg_sdf(lx, ly, 0.9, -3.2, 3.1, -4.0))
+                .min(seg_sdf(lx, ly, 4.7, -2.4, 3.1, -4.0))
+                .min(seg_sdf(lx, ly, 2.5, -1.6, 0.9, -3.2))
+                .min(seg_sdf(lx, ly, -3.5, 5.6, 4.1, 5.6));
+            let a = stroke(d, STROKE) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }
         }
         Item::Tool(Tool::Text) | Item::Bold | Item::FontSize(_) => {
             // real font glyphs — rasterized once into coverage grids
-            let (lbl, b) = match item {
-                Item::Bold => ("B", true),
-                Item::FontSize(i) => (crate::annotate::TEXT_SIZES[i as usize].1, false),
-                _ => ("T", false),
+            let lbl = match item {
+                Item::Bold => "B",
+                Item::FontSize(i) => crate::annotate::TEXT_SIZES[i as usize].1,
+                _ => "T",
             };
-            let m = crate::annotate::label_mask(lbl, b);
+            let m = crate::annotate::label_mask(lbl);
             let n = crate::annotate::ICON_MASK_N;
             let gx = ((lx + 8.0) / 16.0 * n as f64) as i32;
             let gy = ((ly + 8.0) / 16.0 * n as f64) as i32;
@@ -445,11 +584,12 @@ fn draw_icon(
             }
         }
         Item::Tool(Tool::Pixelate) => {
-            // 2x2 checkerboard of filled squares
-            let d = rrect_sdf(lx, ly, -2.9, -2.9, 1.7, 1.7, 0.4)
-                .min(rrect_sdf(lx, ly, 2.9, -2.9, 1.7, 1.7, 0.4))
-                .min(rrect_sdf(lx, ly, -2.9, 2.9, 1.7, 1.7, 0.4))
-                .min(rrect_sdf(lx, ly, 2.9, 2.9, 1.7, 1.7, 0.4));
+            // mosaic: one large cell + three small ones — reads "pixelated",
+            // not a plain grid
+            let d = rrect_sdf(lx, ly, -2.6, -2.6, 2.5, 2.5, 0.5)
+                .min(rrect_sdf(lx, ly, 3.2, -3.2, 1.5, 1.5, 0.4))
+                .min(rrect_sdf(lx, ly, -3.2, 3.2, 1.5, 1.5, 0.4))
+                .min(rrect_sdf(lx, ly, 3.2, 3.2, 1.5, 1.5, 0.4));
             let a = fill_cov(d, scale) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
@@ -495,8 +635,8 @@ fn draw_icon(
             }
         }
         Item::Act(Action::Copy) => {
-            let d_back = rrect_sdf(lx, ly, -3.5, -3.5, 4.5, 4.5, 1.4);
-            let d_front = rrect_sdf(lx, ly, 3.5, 3.5, 4.5, 4.5, 1.4);
+            let d_back = rrect_sdf(lx, ly, -3.2, -3.2, 4.0, 4.0, 1.3);
+            let d_front = rrect_sdf(lx, ly, 3.2, 3.2, 4.0, 4.0, 1.3);
             let fill = fill_cov(d_front, scale);
             if fill > 0.0 {
                 cv.blend(x, y, bg, fill); // occlude back square
@@ -530,27 +670,29 @@ fn draw_icon(
             }
         }
         Item::Act(Action::Scroll) => {
-            // tall page outline + down chevron inside
-            let d_page = rrect_sdf(lx, ly, 0.0, 0.0, 4.0, 5.5, 1.2);
-            let d_arrow = seg_sdf(lx, ly, 0.0, -2.5, 0.0, 2.5)
-                .min(seg_sdf(lx, ly, -2.2, 0.3, 0.0, 2.5))
-                .min(seg_sdf(lx, ly, 2.2, 0.3, 0.0, 2.5));
+            // scrolling capture: tall page with a full ↓ arrow inside —
+            // "keep scrolling, we stitch it"
+            let d_page = rrect_sdf(lx, ly, 0.0, 0.0, 4.2, 5.8, 1.2);
+            let d_arrow = seg_sdf(lx, ly, 0.0, -3.0, 0.0, 2.8)
+                .min(seg_sdf(lx, ly, -2.0, 0.6, 0.0, 2.8))
+                .min(seg_sdf(lx, ly, 2.0, 0.6, 0.0, 2.8));
             let a = stroke(d_page, STROKE).max(stroke(d_arrow, STROKE)) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }
         }
         Item::Act(Action::Record) => {
-            // video camera: body rect + lens wedge on the right
-            let d_body = rrect_sdf(lx, ly, -1.2, 0.0, 4.8, 3.6, 1.4);
-            let d_lens = seg_sdf(lx, ly, 3.8, -2.4, 6.4, -3.6)
-                .min(seg_sdf(lx, ly, 6.4, -3.6, 6.4, 3.6))
-                .min(seg_sdf(lx, ly, 6.4, 3.6, 3.8, 2.4));
+            // video camera: body + lens wedge, centred in the button
+            let d_body = rrect_sdf(lx, ly, -1.6, 0.0, 4.6, 3.4, 1.2);
+            let d_lens = seg_sdf(lx, ly, 3.2, -2.0, 5.8, -3.4)
+                .min(seg_sdf(lx, ly, 5.8, -3.4, 5.8, 3.4))
+                .min(seg_sdf(lx, ly, 5.8, 3.4, 3.2, 2.0));
             let a = stroke(d_body.min(d_lens), STROKE) * fg_a;
             if a > 0.0 {
                 cv.blend(x, y, FG, a);
             }
         }
+        Item::Sep => {}
         Item::Act(Action::Save) => {
             // tray: U shape open at top; arrow dips into it
             let d = seg_sdf(lx, ly, -5.75, -0.5, -5.75, 5.5)

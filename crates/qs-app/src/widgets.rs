@@ -1,7 +1,7 @@
 //! Shared softbuffer widgets for the small always-on-top windows
-//! (toast, quick-access card, recording stop). fontdue rasterization
-//! and the card/pill SDF shapes live here once — every popup draws
-//! itself on top of these.
+//! (toast, quick-access card, recording stop). fontdue rasterization,
+//! the card/pill SDF shapes, and monitor placement live here once —
+//! every popup draws itself on top of these.
 
 use fontdue::Font;
 use qs_overlay::sdf::{fill_cov, rrect_sdf, stroke_cov, Canvas};
@@ -108,4 +108,33 @@ pub fn pill(
             }
         }
     }
+}
+
+/// Multiply 0xRRGGBB channels — hover shade for a filled accent pill.
+pub fn shade(rgb: u32, f: f64) -> u32 {
+    let c = |sh: u32| (((rgb >> sh) & 0xFF) as f64 * f) as u32;
+    (c(16) << 16) | (c(8) << 8) | c(0)
+}
+
+/// Monitor containing `anchor`'s centre — popups dock on the screen
+/// that was captured, not always the primary. Fallback: primary → first.
+pub fn monitor_of(
+    el: &winit::event_loop::ActiveEventLoop,
+    anchor: Option<qs_core::Rect>,
+) -> Option<winit::monitor::MonitorHandle> {
+    let m = anchor.and_then(|a| {
+        let (cx, cy) = (a.x as f64 + a.w as f64 / 2.0, a.y as f64 + a.h as f64 / 2.0);
+        el.available_monitors().find(|m| {
+            let sf = m.scale_factor();
+            let p = m.position();
+            let s = m.size();
+            let (x, y) = (p.x as f64 / sf, p.y as f64 / sf);
+            let (w, h) = (s.width as f64 / sf, s.height as f64 / sf);
+            cx >= x && cx < x + w && cy >= y && cy < y + h
+        })
+    });
+    m.or_else(|| {
+        el.primary_monitor()
+            .or_else(|| el.available_monitors().next())
+    })
 }

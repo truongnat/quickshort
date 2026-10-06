@@ -600,6 +600,20 @@ pub fn text_extent(text: &str, px: f64, bold: bool) -> (f64, f64) {
     })
 }
 
+/// One-line label into the blend target — selection badge and toolbar
+/// hints. `pos` = top-left in virtual logical coords.
+pub fn draw_label(
+    t: &mut impl Blend,
+    pos: Point,
+    text: &str,
+    px: f64,
+    rgb: u32,
+    vrect: Rect,
+    scale: f64,
+) {
+    render_text(t, pos, text, px, false, rgb, vrect, scale);
+}
+
 /// Rasterize text at physical res into the blend target. `pos` is the
 /// top-left in logical coords; the baseline sits at `pos.y + ascent`.
 #[allow(clippy::too_many_arguments)]
@@ -651,17 +665,19 @@ pub(crate) const ICON_MASK_N: usize = 56;
 
 /// Text-label coverage grid for the toolbar icons — the real font instead
 /// of hand-drawn SDF glyphs, so "T", "B" and the size numbers stay legible.
-pub(crate) fn label_mask(label: &'static str, bold: bool) -> &'static [f32] {
-    static MASKS: OnceLock<HashMap<(&'static str, bool), Vec<f32>>> = OnceLock::new();
+/// All labels rasterize at wght 700 — regular weight loses stem coverage
+/// in the 56px grid and reads faded next to SDF strokes.
+pub(crate) fn label_mask(label: &'static str) -> &'static [f32] {
+    static MASKS: OnceLock<HashMap<&'static str, Vec<f32>>> = OnceLock::new();
     &MASKS.get_or_init(|| {
         let mut m = HashMap::new();
-        m.insert(("T", false), raster_label("T", false));
-        m.insert(("B", true), raster_label("B", true));
+        m.insert("T", raster_label("T", true));
+        m.insert("B", raster_label("B", true));
         for (_, lbl) in TEXT_SIZES {
-            m.insert((lbl, false), raster_label(lbl, false));
+            m.insert(lbl, raster_label(lbl, true));
         }
         m
-    })[&(label, bold)]
+    })[label]
 }
 
 fn raster_label(label: &str, bold: bool) -> Vec<f32> {
@@ -747,8 +763,8 @@ mod tests {
         let (w, h) = text_extent("Quick", 28.0, false);
         assert!(w > 40.0 && h > 20.0, "extent {w}x{h}");
         // toolbar label masks (digits + letters) must contain real ink
-        for (lbl, b) in [("T", false), ("B", true), ("14", false), ("48", false)] {
-            let m = label_mask(lbl, b);
+        for lbl in ["T", "B", "14", "48"] {
+            let m = label_mask(lbl);
             assert!(m.iter().any(|&v| v > 0.5), "label mask {lbl:?} has no ink");
         }
     }

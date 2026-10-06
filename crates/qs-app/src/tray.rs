@@ -2,7 +2,7 @@
 //! launch-at-login toggling per OS.
 
 use anyhow::{Context, Result};
-use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use std::path::PathBuf;
 use tray_icon::Icon;
 
@@ -13,36 +13,43 @@ pub const ID_OPEN_DIR: &str = "open_dir";
 pub const ID_SETTINGS: &str = "settings";
 pub const ID_LOGIN: &str = "launch_at_login";
 pub const ID_QUIT: &str = "quit";
-/// Recent-capture items carry `recent:<abs path>` as their id.
-pub const ID_RECENT_PREFIX: &str = "recent:";
+/// Opens the capture-history gallery window.
+pub const ID_GALLERY: &str = "gallery";
 pub const ID_UPDATE: &str = "update";
 pub const ID_DONATE: &str = "donate";
+pub const ID_STOP_REC: &str = "stop_rec";
 
 /// Rebuild the tray menu. `recents` = newest-first saved PNGs;
 /// `pending_update` = version waiting to be installed (changes the
-/// "Check for Updates…" item into a one-click updater).
-pub fn build_menu(cfg: &Config, recents: &[PathBuf], pending_update: Option<&str>) -> Menu {
+/// "Check for Updates…" item into a one-click updater). While
+/// `recording`, Stop leads the menu and capture is disabled — a second
+/// PipeWire session would fight the in-flight one.
+pub fn build_menu(
+    cfg: &Config,
+    recents: &[PathBuf],
+    pending_update: Option<&str>,
+    recording: bool,
+) -> Menu {
     let menu = Menu::new();
+    if recording {
+        let stop = MenuItem::with_id(ID_STOP_REC, "■ Stop Recording", true, None);
+        let _ = menu.append(&stop);
+        let _ = menu.append(&PredefinedMenuItem::separator());
+    }
     let capture = MenuItem::with_id(
         ID_CAPTURE,
         format!("Capture Region    {}", cfg.hotkey),
-        true,
+        !recording,
         None,
     );
-    let recent = Submenu::new("Recent Captures", !recents.is_empty());
-    for p in recents {
-        let name = p
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| p.display().to_string());
-        let item = MenuItem::with_id(
-            format!("{ID_RECENT_PREFIX}{}", p.display()),
-            name,
-            true,
-            None,
-        );
-        let _ = recent.append(&item);
-    }
+    // one item opens the gallery window — the submenu-of-filenames it
+    // replaces couldn't carry actions anyway
+    let gallery = MenuItem::with_id(
+        ID_GALLERY,
+        "Recent Captures…",
+        !recents.is_empty() && !recording,
+        None,
+    );
     let open = MenuItem::with_id(ID_OPEN_DIR, "Open Screenshots Folder", true, None);
     let login =
         CheckMenuItem::with_id(ID_LOGIN, "Launch at Login", true, cfg.launch_at_login, None);
@@ -60,7 +67,7 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf], pending_update: Option<&str
     let quit = MenuItem::with_id(ID_QUIT, "Quit Quickshort", true, None);
     let _ = menu.append_items(&[
         &capture,
-        &recent,
+        &gallery,
         &PredefinedMenuItem::separator(),
         &open,
         &settings,
@@ -124,6 +131,30 @@ pub fn tray_icon(size: u32) -> Icon {
     Icon::from_rgba(rgba, size, size).expect("tray icon rgba")
 }
 
+/// Solid red dot — tray state while a recording is in flight, the same
+/// signal the macOS menu bar gives for QuickTime/OBS.
+pub fn rec_icon(size: u32) -> Icon {
+    let s = size as f64;
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    let (cx, cy, r) = (s / 2.0, s / 2.0, s * 0.30);
+    for y in 0..size as i32 {
+        for x in 0..size as i32 {
+            let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+            let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - r;
+            let a = (0.75 - d).clamp(0.0, 1.0);
+            if a <= 0.0 {
+                continue;
+            }
+            let i = ((y * size as i32 + x) * 4) as usize;
+            rgba[i] = (229.0 * a) as u8;
+            rgba[i + 1] = (34.0 * a) as u8;
+            rgba[i + 2] = (40.0 * a) as u8;
+            rgba[i + 3] = (255.0 * a) as u8;
+        }
+    }
+    Icon::from_rgba(rgba, size, size).expect("rec icon rgba")
+}
+
 // ---------- Linux: the tray lives on a dedicated gtk thread ----------
 //
 // tray-icon/muda call gtk, which is single-threaded but not bound to
@@ -143,6 +174,7 @@ pub mod linux_tray {
             cfg: Config,
             recents: Vec<PathBuf>,
             update: Option<String>,
+            recording: bool,
         },
         Quit,
     }
@@ -170,7 +202,7 @@ pub mod linux_tray {
             }
             let built = tray_icon::TrayIcon::builder()
                 .with_tooltip("Quickshort — region screenshot")
-                .with_menu(Box::new(build_menu(&cfg, &recents, None)))
+                .with_menu(Box::new(build_menu(&cfg, &recents, None, false)))
                 .with_icon(tray_icon(44))
                 .build();
             match built {
@@ -202,12 +234,21 @@ pub mod linux_tray {
                         cfg,
                         recents,
                         update,
+                        recording,
                     } => TRAY.with(|t| {
                         if let Some(t) = t.borrow().as_ref() {
+                            // icon and menu travel together so the red
+                            // dot and the Stop item can't drift apart
+                            let _ = t.set_icon(Some(if recording {
+                                rec_icon(44)
+                            } else {
+                                tray_icon(44)
+                            }));
                             t.set_menu(Some(Box::new(build_menu(
                                 &cfg,
                                 &recents,
                                 update.as_deref(),
+                                recording,
                             ))));
                         }
                     }),
@@ -227,11 +268,18 @@ pub mod linux_tray {
     }
 
     impl TrayHandle {
-        pub fn set_menu(&self, cfg: Config, recents: Vec<PathBuf>, update: Option<String>) {
+        pub fn set_menu(
+            &self,
+            cfg: Config,
+            recents: Vec<PathBuf>,
+            update: Option<String>,
+            recording: bool,
+        ) {
             let _ = self.tx.send(TrayMsg::Menu {
                 cfg,
                 recents,
                 update,
+                recording,
             });
             wake();
         }

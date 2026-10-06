@@ -16,7 +16,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId, WindowLevel};
 
 use crate::settings::system_font;
-use crate::widgets::{card_chrome, pill, Txt};
+use crate::widgets::{card_chrome, monitor_of, pill, Txt};
 
 const W: f64 = 172.0;
 const H: f64 = 46.0;
@@ -39,8 +39,9 @@ pub struct RecStop {
 }
 
 impl RecStop {
-    /// Top-center of the primary monitor — visible but out of the way.
-    pub fn open(el: &ActiveEventLoop) -> Result<Self> {
+    /// Top-center of the monitor holding `anchor` (the region being
+    /// recorded) — visible but out of the way, GNOME-indicator style.
+    pub fn open(el: &ActiveEventLoop, anchor: Option<qs_core::Rect>) -> Result<Self> {
         let attrs = Window::default_attributes()
             .with_decorations(false)
             .with_transparent(true)
@@ -48,10 +49,7 @@ impl RecStop {
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_inner_size(LogicalSize::new(W, H));
         let win = Rc::new(el.create_window(attrs).context("rec window")?);
-        if let Some(m) = el
-            .primary_monitor()
-            .or_else(|| el.available_monitors().next())
-        {
+        if let Some(m) = monitor_of(el, anchor) {
             let sf = m.scale_factor();
             let p = m.position();
             let s = m.size();

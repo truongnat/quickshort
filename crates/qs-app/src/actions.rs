@@ -441,7 +441,7 @@ fn wl_copy(mime: &str, data: &[u8]) -> bool {
 
 /// On Wayland the clipboard dies with the owning process — `set().wait()`
 /// keeps us alive serving paste requests until another app takes over.
-fn copy_image_to_clipboard(img: &RgbaImage, wait: bool) {
+pub(crate) fn copy_image_to_clipboard(img: &RgbaImage, wait: bool) {
     #[cfg(target_os = "linux")]
     if wait {
         let mut png = std::io::Cursor::new(Vec::new());

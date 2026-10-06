@@ -18,7 +18,7 @@ use winit::window::WindowId;
 
 use crate::actions::{self, Dispatch, Outcome, SaveTarget};
 use crate::config::Config;
-use crate::quick_access::{QaAction, QuickAccess};
+use crate::quick_access::{CardEnv, CardPost, QaAction, QuickAccess};
 use crate::recstop::RecStop;
 use crate::toast::Toast;
 
@@ -39,12 +39,14 @@ struct Run {
     // capture-session inputs
     overlay: Option<Overlay>,
     frames: Option<Vec<CapturedFrame>>,
-    bounds: Option<Rect>,
+    bounds: Rect,
     prefs: qs_overlay::Prefs,
     /// held until the overlay closes so a second --capture can't stack
     lock: Option<std::fs::File>,
     // live windows
     card: Option<QuickAccess>,
+    /// the overlay's selection — the card docks on its monitor
+    sel: Option<Rect>,
     rec: Option<RecStop>,
     toast: Option<Toast>,
     stop: Arc<AtomicBool>,
@@ -81,6 +83,10 @@ impl ApplicationHandler<Ev> for Run {
                 if r.window_event(ev) {
                     self.stop.store(true, Ordering::Relaxed);
                     self.rec = None;
+                    // cover the encoder's finalize gap until RecDone
+                    if let Ok(t) = Toast::open(el, "Saving recording…", self.accent) {
+                        self.toast = Some(t);
+                    }
                 }
                 return;
             }
@@ -96,8 +102,8 @@ impl ApplicationHandler<Ev> for Run {
         if self.overlay.is_some() || self.frames.is_none() {
             return;
         }
-        let res = match self.frames.as_ref().zip(self.bounds) {
-            Some((f, b)) => Overlay::spawn(el, f, b, &self.prefs),
+        let res = match self.frames.as_ref() {
+            Some(f) => Overlay::spawn(el, f, self.bounds, &self.prefs),
             None => return,
         };
         match res {
@@ -135,14 +141,8 @@ impl ApplicationHandler<Ev> for Run {
                 }
             }
             Ev::ShareDone(res) => {
-                let Some(c) = &mut self.card else { return };
-                c.set_sharing(false);
-                match res {
-                    Ok(l) => {
-                        actions::copy_text(&l.url, true);
-                        c.notify(&format!("Link copied — expires in {}d", l.expires_s / 86400));
-                    }
-                    Err(e) => c.notify(&format!("Share failed: {e}")),
+                if let Some(c) = &mut self.card {
+                    crate::quick_access::share_finished(c, res, true);
                 }
             }
         }
@@ -171,8 +171,10 @@ impl ApplicationHandler<Ev> for Run {
         }
         // the session is over once nothing is on screen and no worker
         // is still out — card countdown, esc-cancel and plain outcomes
-        // (Shared/Ocr) all funnel through here
-        if self.frames_consumed()
+        // (Shared/Ocr) all funnel through here. `frames` stays Some
+        // until the overlay consumed them, so it doubles as the
+        // "has the session started yet" guard.
+        if self.frames.is_none()
             && self.overlay.is_none()
             && self.card.is_none()
             && self.rec.is_none()
@@ -190,13 +192,8 @@ impl ApplicationHandler<Ev> for Run {
 }
 
 impl Run {
-    /// `frames` is Some until the overlay consumed them into a dispatch
-    /// worker — before that, the exit check must wait for `resumed`.
-    fn frames_consumed(&self) -> bool {
-        self.frames.is_none()
-    }
-
     fn start_action(&mut self, el: &ActiveEventLoop, sel: Rect, action: Action, annots: Vec<Annotation>) {
+        self.sel = Some(sel);
         // frames are only needed by dispatch — drop them either way so
         // the exit check can fire and the memory is freed early
         let frames = self.frames.take();
@@ -218,7 +215,7 @@ impl Run {
                 });
             }
             Action::Record => {
-                match RecStop::open(el) {
+                match RecStop::open(el, Some(sel)) {
                     Ok(r) => self.rec = Some(r),
                     Err(e) => eprintln!("rec: {e:#}"),
                 }
@@ -282,7 +279,8 @@ impl Run {
     }
 
     fn open_card(&mut self, el: &ActiveEventLoop, img: RgbaImage, msg: &str, saved: Option<PathBuf>) {
-        match QuickAccess::open(el, img, msg, saved, self.accent, false) {
+        self.toast = None; // result card replaces any in-flight toast
+        match QuickAccess::open(el, img, msg, saved, self.accent, false, self.sel) {
             Ok(c) => self.card = Some(c),
             Err(e) => {
                 eprintln!("card: {e:#}");
@@ -291,42 +289,21 @@ impl Run {
         }
     }
 
-    /// Card pill clicks — same semantics as `quick_access::standalone`
-    /// (blocking clipboard variant, no Pin in one-shot).
+    /// Card pill clicks — blocking clipboard variant, no Pin in one-shot
+    /// (that pill isn't rendered without the resident app).
     fn on_card_action(&mut self, act: QaAction) {
-        if matches!(act, QaAction::Close) {
+        let post = self.card.as_mut().and_then(|c| {
+            CardEnv {
+                save_dir: &self.save_dir,
+                copy_wait: true,
+                share: &self.sm,
+                proxy: &self.proxy,
+                share_done: Ev::ShareDone,
+            }
+            .action(c, act)
+        });
+        if post == Some(CardPost::Closed) {
             self.card = None;
-            return;
-        }
-        let Some(c) = &mut self.card else { return };
-        match act {
-            QaAction::Copy => {
-                actions::copy_image(c.image(), true);
-                c.notify("Copied to clipboard");
-            }
-            QaAction::SaveNow => match actions::save_to_dir(c.image(), &self.save_dir) {
-                Ok(p) => {
-                    c.set_saved(p);
-                    c.notify("Screenshot saved");
-                }
-                Err(e) => c.notify(&format!("Save failed: {e}")),
-            },
-            QaAction::Reveal => {
-                if let Some(p) = c.saved_path() {
-                    actions::open_path(&p);
-                }
-            }
-            QaAction::Beautify => c.beautify(),
-            QaAction::Pin => unreachable!(),
-            QaAction::Share => {
-                let (sm, img, px) = (self.sm.clone(), c.image().clone(), self.proxy.clone());
-                c.set_sharing(true);
-                std::thread::spawn(move || {
-                    let res = sm.share(&img).map_err(|e| e.to_string());
-                    let _ = px.send_event(Ev::ShareDone(res));
-                });
-            }
-            QaAction::Close => unreachable!(),
         }
     }
 }
@@ -351,10 +328,11 @@ pub fn run(
         ocr_lang: cfg.ocr_lang.clone(),
         overlay: None,
         frames: Some(frames),
-        bounds: Some(bounds),
+        bounds,
         prefs: cfg.overlay_prefs(),
         lock,
         card: None,
+        sel: None,
         rec: None,
         toast: None,
         stop: Arc::new(AtomicBool::new(false)),
