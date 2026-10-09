@@ -30,11 +30,13 @@ pub enum Outcome {
 }
 
 /// `dispatch` output: the outcome plus the image it was produced from —
-/// the resident app's quick-access card needs the pixels for its
-/// thumbnail and for follow-up actions (copy/save/share/pin).
+/// the resident app's post-capture UI (chrome stack, or the quick-access
+/// card fallback) needs the pixels for its thumbnail, the selection for
+/// the fly-in animation, and follow-up actions (copy/save/share/pin).
 pub struct Dispatch {
     pub outcome: Outcome,
     pub img: RgbaImage,
+    pub sel: qs_core::Rect,
 }
 
 /// Stitch the selection, bake annotations, run the action. `wait_clipboard`:
@@ -106,7 +108,7 @@ pub fn dispatch(
             }
         }
     };
-    Ok(Dispatch { outcome, img })
+    Ok(Dispatch { outcome, img, sel })
 }
 
 fn save(img: &RgbaImage, target: &SaveTarget) -> Result<PathBuf> {

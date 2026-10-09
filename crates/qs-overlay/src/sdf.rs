@@ -119,4 +119,28 @@ impl Canvas<'_> {
             | mix((rgb >> 8) as u8, (d >> 8) as u8) << 8
             | mix(rgb as u8, d as u8);
     }
+
+    /// Source-over onto a **premultiplied-alpha** destination — the chrome
+    /// layer's pixel format. `buf` holds `A<<24 | B<<16 | G<<8 | R` so the
+    /// little-endian byte order is R,G,B,A (what NSBitmapImageRep/wl_shm
+    /// ARGB8888 want); `rgb` is a straight 0xRRGGBB color at coverage `a`.
+    /// Chrome surfaces must start fully transparent (`buf` = 0).
+    #[inline]
+    pub fn blend_over(&mut self, x: i32, y: i32, rgb: u32, a: f64) {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 || a <= 0.0 {
+            return;
+        }
+        let a = a.min(1.0);
+        let i = y as usize * self.w + x as usize;
+        let d = self.buf[i];
+        let ia = 1.0 - a;
+        let oa = a * 255.0 + (d >> 24) as f64 * ia;
+        let or_ = ((rgb >> 16) & 0xFF) as f64 * a + (d & 0xFF) as f64 * ia;
+        let og = ((rgb >> 8) & 0xFF) as f64 * a + ((d >> 8) & 0xFF) as f64 * ia;
+        let ob = (rgb & 0xFF) as f64 * a + ((d >> 16) & 0xFF) as f64 * ia;
+        self.buf[i] = (oa.round() as u32) << 24
+            | (ob.round() as u32) << 16
+            | (og.round() as u32) << 8
+            | or_.round() as u32;
+    }
 }

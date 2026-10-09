@@ -13,6 +13,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::actions::{self, Dispatch, Outcome, SaveTarget};
+use crate::chrome::{self, Chrome, ChromeCmd, ChromeEv, Land, ShotKind};
 use crate::config::Config;
 use crate::pin::Pin;
 use crate::quick_access::{QaAction, QuickAccess};
@@ -30,10 +31,12 @@ enum HostEvent {
     Done(Result<Dispatch, String>),
     /// A share upload kicked off from the quick-access card finished.
     QuickShare(Result<crate::share::SharedLink, String>),
-    /// Scroll-capture worker finished — the stitched tall image or error.
-    ScrollDone(Result<image::RgbaImage, String>),
-    /// Recording worker finished — (first frame, mp4 path) or error.
-    RecDone(Result<(image::RgbaImage, std::path::PathBuf), String>),
+    /// Scroll-capture worker finished — the stitched tall image or error,
+    /// plus the selection for the fly-in origin.
+    ScrollDone(Result<image::RgbaImage, String>, qs_core::Rect),
+    /// Recording worker finished — (first frame, mp4 path) or error, plus
+    /// the selection.
+    RecDone(Result<(image::RgbaImage, std::path::PathBuf), String>, qs_core::Rect),
     /// Release check finished — `manual` gates the "up to date" toast.
     UpdateCheck {
         res: Result<Option<Release>, String>,
@@ -41,6 +44,8 @@ enum HostEvent {
     },
     /// Update install finished — relaunch on success.
     UpdateInstall(Result<PathBuf, String>),
+    /// Input raised by a chrome-layer view (stack hover/clicks/keys).
+    Chrome(WindowId, ChromeEv),
 }
 
 /// Run the resident tray app. Blocks until Quit.
@@ -88,8 +93,13 @@ struct Host {
     hotkey_suspended: bool,
     settings: Option<Settings>,
     toast: Option<Toast>,
-    /// Post-capture thumbnail card — owns the image until dismissed.
+    /// Post-capture thumbnail card — fallback where the chrome layer
+    /// isn't implemented yet (Windows/Linux until their backends land).
     card: Option<QuickAccess>,
+    /// Album stack surfaces — one transparent window per monitor.
+    chrome: Chrome,
+    /// (window, thumb index) the chrome context menu is open for.
+    chrome_ctx: Option<(WindowId, usize)>,
     /// Floating always-on-top reference images.
     pins: Vec<Pin>,
     /// Recording stop card + the flag its worker watches. The window is
@@ -106,6 +116,17 @@ struct Host {
 
 impl Host {
     fn new(cfg: Config, proxy: EventLoopProxy<HostEvent>) -> Self {
+        let px = proxy.clone();
+        let chrome = Chrome::new(
+            cfg.accent_rgb(),
+            &cfg.popup_pos,
+            Box::new(move |wid| {
+                let px = px.clone();
+                std::rc::Rc::new(move |ev| {
+                    let _ = px.send_event(HostEvent::Chrome(wid, ev));
+                })
+            }),
+        );
         Self {
             cfg,
             proxy,
@@ -118,6 +139,8 @@ impl Host {
             settings: None,
             toast: None,
             card: None,
+            chrome,
+            chrome_ctx: None,
             pins: Vec::new(),
             rec: None,
             pending_update: None,
@@ -221,6 +244,10 @@ impl Host {
 
     fn on_menu(&mut self, el: &ActiveEventLoop, id: MenuId) {
         let id = id.0.as_str();
+        if id.starts_with("qs-chrome.") {
+            self.on_chrome_menu(el, id);
+            return;
+        }
         match id {
             tray::ID_CAPTURE => self.trigger(el),
             tray::ID_OPEN_DIR => actions::open_path(&self.cfg.save_dir()),
@@ -323,6 +350,134 @@ impl Host {
             }
         }
         self.rebuild_menu();
+    }
+
+    /// Fly the shot into the corner album; where the chrome layer can't
+    /// take it (unsupported platform or a window failure) the quick-access
+    /// card keeps working as the fallback completion surface.
+    fn land_shot(
+        &mut self,
+        el: &ActiveEventLoop,
+        sel: Option<qs_core::Rect>,
+        img: image::RgbaImage,
+        kind: ShotKind,
+        saved: Option<PathBuf>,
+        msg: &str,
+    ) {
+        self.toast = None;
+        if sel.is_some() {
+            let l = Land {
+                img,
+                kind,
+                path: saved,
+                sel,
+                instant: false,
+            };
+            match self.chrome.land(el, l) {
+                Ok(()) => return,
+                Err(l) => {
+                    self.open_card(el, l.img, msg, l.path);
+                    return;
+                }
+            }
+        }
+        self.open_card(el, img, msg, saved);
+    }
+
+    /// muda context menu over a stack thumb — Reveal/Copy/Pin/Delete.
+    fn chrome_menu(&mut self, id: WindowId, idx: usize, x: f64, y: f64) {
+        use muda::{ContextMenu, Menu, MenuItem};
+        self.chrome_ctx = Some((id, idx));
+        let has_path = self
+            .chrome
+            .shot(id, idx)
+            .is_some_and(|s| s.path.is_some());
+        let menu = Menu::new();
+        let _ = menu.append(&MenuItem::with_id(
+            chrome::MENU_REVEAL,
+            "Reveal in Finder",
+            has_path,
+            None,
+        ));
+        let _ = menu.append(&MenuItem::with_id(
+            chrome::MENU_SAVE,
+            "Save to Screenshots",
+            !has_path,
+            None,
+        ));
+        let _ = menu.append(&MenuItem::with_id(chrome::MENU_COPY, "Copy Image", true, None));
+        let _ = menu.append(&MenuItem::with_id(chrome::MENU_PIN, "Pin", true, None));
+        let _ = menu.append(&muda::PredefinedMenuItem::separator());
+        let _ = menu.append(&MenuItem::with_id(chrome::MENU_DEL, "Delete", true, None));
+        let view = self
+            .chrome
+            .wins
+            .iter()
+            .find(|w| w.id() == id)
+            .map(|w| w.view_ptr());
+        #[cfg(target_os = "macos")]
+        if let Some(v) = view {
+            unsafe {
+                menu.show_context_menu_for_nsview(
+                    v,
+                    Some(winit::dpi::Position::Logical(
+                        winit::dpi::LogicalPosition::new(x, y),
+                    )),
+                );
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = view;
+    }
+
+    /// Run a chrome context-menu command against the stored thumb target.
+    fn on_chrome_menu(&mut self, el: &ActiveEventLoop, id: &str) {
+        let Some((wid, idx)) = self.chrome_ctx else { return };
+        match id {
+            chrome::MENU_REVEAL => {
+                if let Some(p) = self.chrome.shot(wid, idx).and_then(|s| s.path.clone()) {
+                    actions::open_path(&p);
+                }
+            }
+            chrome::MENU_COPY => {
+                if let Some(img) = self.chrome.shot(wid, idx).map(|s| s.img.clone()) {
+                    actions::copy_image(&img, false);
+                }
+            }
+            chrome::MENU_SAVE => {
+                let img = self.chrome.shot(wid, idx).map(|s| s.img.clone());
+                if let Some(img) = img {
+                    match actions::save_to_dir(&img, &self.cfg.save_dir()) {
+                        Ok(p) => {
+                            if let Some(w) =
+                                self.chrome.wins.iter_mut().find(|w| w.id() == wid)
+                            {
+                                if let Some(s) = w.stack_mut().shot_mut(idx) {
+                                    s.path = Some(p);
+                                }
+                            }
+                            self.rebuild_menu();
+                            self.toast_done(el, "Screenshot saved".to_string(), true);
+                        }
+                        Err(e) => self.toast_done(el, format!("Save failed: {e}"), false),
+                    }
+                }
+            }
+            chrome::MENU_PIN => {
+                if let Some(img) = self.chrome.shot(wid, idx).map(|s| s.img.clone()) {
+                    match Pin::open(el, &img) {
+                        Ok(p) => self.pins.push(p),
+                        Err(e) => eprintln!("pin: {e:#}"),
+                    }
+                }
+            }
+            chrome::MENU_DEL => {
+                self.chrome.remove(wid, idx);
+                self.chrome.sweep();
+            }
+            _ => {}
+        }
+        self.chrome_ctx = None;
     }
 
     /// Open the post-capture thumbnail card; falls back to the plain toast
@@ -452,6 +607,24 @@ impl ApplicationHandler<HostEvent> for Host {
         }
 
         let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
+        // rehydrate the album from disk — recents are newest-first, so
+        // land the tail five oldest→newest to end with the newest on top;
+        // `instant` skips the fly-in
+        #[cfg(target_os = "macos")]
+        for p in recents.iter().take(5).rev() {
+            if let Ok(img) = image::open(p) {
+                let _ = self.chrome.land(
+                    _el,
+                    Land {
+                        img: img.to_rgba8(),
+                        kind: ShotKind::Saved,
+                        path: Some(p.clone()),
+                        sel: None,
+                        instant: true,
+                    },
+                );
+            }
+        }
         #[cfg(target_os = "linux")]
         match tray::linux_tray::spawn(&self.cfg, &recents) {
             Ok(t) => self.tray = Some(t),
@@ -564,8 +737,8 @@ impl ApplicationHandler<HostEvent> for Host {
             HostEvent::Done(res) => {
                 eprintln!("done: {:?}", res.as_ref().map(|d| &d.outcome));
                 match res {
-                    // image outcomes get the thumbnail card; the rest is
-                    // text-only feedback that still fits a plain toast
+                    // image outcomes fly to the album stack; text-only
+                    // feedback still rides the toast
                     Ok(d) => match d.outcome {
                         Outcome::Saved(p) => {
                             self.rebuild_menu();
@@ -573,30 +746,86 @@ impl ApplicationHandler<HostEvent> for Host {
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_default();
-                            self.open_card(el, d.img, &format!("Saved {name}"), Some(p));
+                            self.land_shot(
+                                el,
+                                Some(d.sel),
+                                d.img,
+                                ShotKind::Saved,
+                                Some(p),
+                                &format!("Saved {name}"),
+                            );
                         }
-                        Outcome::Copied => self.open_card(el, d.img, "Copied to clipboard", None),
-                        Outcome::Shared(link) => self.toast_done(
+                        Outcome::Copied => self.land_shot(
                             el,
-                            format!("Link copied — expires in {}d", link.expires_s / 86400),
-                            true,
+                            Some(d.sel),
+                            d.img,
+                            ShotKind::Copied,
+                            None,
+                            "Copied to clipboard",
                         ),
-                        Outcome::TextCopied(n) => {
-                            self.toast_done(el, format!("Copied {n} chars"), true)
+                        Outcome::Shared(link) => {
+                            self.land_shot(
+                                el,
+                                Some(d.sel),
+                                d.img,
+                                ShotKind::Shared,
+                                None,
+                                "Shared",
+                            );
+                            self.toast_done(
+                                el,
+                                format!("Link copied — expires in {}d", link.expires_s / 86400),
+                                true,
+                            );
                         }
-                        Outcome::NoText => self.toast_done(el, "No text found".to_string(), false),
+                        Outcome::TextCopied(n) => {
+                            self.land_shot(
+                                el,
+                                Some(d.sel),
+                                d.img,
+                                ShotKind::Ocr,
+                                None,
+                                &format!("Copied {n} chars"),
+                            );
+                            self.toast_done(el, format!("Copied {n} chars"), true);
+                        }
+                        Outcome::NoText => {
+                            self.land_shot(
+                                el,
+                                Some(d.sel),
+                                d.img,
+                                ShotKind::Ocr,
+                                None,
+                                "No text found",
+                            );
+                            self.toast_done(el, "No text found".to_string(), false);
+                        }
                     },
                     Err(e) => self.toast_done(el, format!("Failed: {e}"), false),
                 }
             }
-            HostEvent::ScrollDone(res) => match res {
-                Ok(img) => self.open_card(el, img, "Captured — pick an action", None),
+            HostEvent::ScrollDone(res, sel) => match res {
+                Ok(img) => self.land_shot(
+                    el,
+                    Some(sel),
+                    img,
+                    ShotKind::Scroll,
+                    None,
+                    "Captured — pick an action",
+                ),
                 Err(e) => self.toast_done(el, format!("Scroll failed: {e}"), false),
             },
-            HostEvent::RecDone(res) => {
+            HostEvent::RecDone(res, sel) => {
                 self.rec = None;
                 match res {
-                    Ok((img, path)) => self.open_card(el, img, "Recording saved", Some(path)),
+                    Ok((img, path)) => self.land_shot(
+                        el,
+                        Some(sel),
+                        img,
+                        ShotKind::Record,
+                        Some(path),
+                        "Recording saved",
+                    ),
                     Err(e) => self.toast_done(el, format!("Recording failed: {e}"), false),
                 }
             }
@@ -614,10 +843,26 @@ impl ApplicationHandler<HostEvent> for Host {
                     Err(e) => c.notify(&format!("Share failed: {e}")),
                 }
             }
+            HostEvent::Chrome(id, ev) => {
+                let Some((wid, cmd)) = self.chrome.event(id, ev) else {
+                    return;
+                };
+                match cmd {
+                    ChromeCmd::Menu { idx, x, y } => self.chrome_menu(wid, idx, x, y),
+                    ChromeCmd::Remove(i) => {
+                        self.chrome.remove(wid, i);
+                        self.chrome.sweep();
+                    }
+                    ChromeCmd::Redraw => {} // handled inside Chrome::event
+                }
+            }
         }
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.chrome.window_event(id, &event) {
+            return;
+        }
         if let Some(i) = self.pins.iter().position(|p| p.win_id() == id) {
             if self.pins[i].window_event(event) {
                 self.pins.remove(i);
@@ -701,7 +946,7 @@ impl ApplicationHandler<HostEvent> for Host {
                 let px = self.proxy.clone();
                 std::thread::spawn(move || {
                     let res = crate::scroll::run(sel).map_err(|e| e.to_string());
-                    let _ = px.send_event(HostEvent::ScrollDone(res));
+                    let _ = px.send_event(HostEvent::ScrollDone(res, sel));
                 });
                 return;
             }
@@ -724,7 +969,7 @@ impl ApplicationHandler<HostEvent> for Host {
                 let stop2 = stop.clone();
                 std::thread::spawn(move || {
                     let res = crate::record::run(sel, &dir, stop2).map_err(|e| e.to_string());
-                    let _ = px.send_event(HostEvent::RecDone(res));
+                    let _ = px.send_event(HostEvent::RecDone(res, sel));
                 });
                 return;
             }
@@ -789,6 +1034,9 @@ impl ApplicationHandler<HostEvent> for Host {
         }
         if let Some((r, _)) = &mut self.rec {
             let w = r.pump();
+            wake = Some(wake.map_or(w, |x| x.min(w)));
+        }
+        if let Some(w) = self.chrome.pump() {
             wake = Some(wake.map_or(w, |x| x.min(w)));
         }
         el.set_control_flow(match wake {

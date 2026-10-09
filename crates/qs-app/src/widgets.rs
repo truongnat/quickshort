@@ -139,6 +139,28 @@ impl Txt<'_> {
             .sum::<f32>() as f64
             / self.scale
     }
+
+    /// Same as `draw` but composites onto a premultiplied-alpha surface
+    /// (the chrome layer) — see `Canvas::blend_over`.
+    pub fn draw_over(&self, cv: &mut Canvas, x: f64, y: f64, size: f64, s: &str, rgb: u32) {
+        let px = size * self.scale;
+        let mut pen = x * self.scale;
+        let baseline = y * self.scale;
+        for ch in s.chars() {
+            let (m, bmp) = self.font.rasterize(ch, px as f32);
+            let gx = (pen + m.xmin as f64) as i32;
+            let gy = (baseline - m.height as f64 - m.ymin as f64) as i32;
+            for row in 0..m.height {
+                for col in 0..m.width {
+                    let a = bmp[row * m.width + col] as f64 / 255.0;
+                    if a > 0.0 {
+                        cv.blend_over(gx + col as i32, gy + row as i32, rgb, a);
+                    }
+                }
+            }
+            pen += m.advance_width as f64;
+        }
+    }
 }
 
 /// Window-sized rounded card: fill + rim inside, soft fringe outside

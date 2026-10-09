@@ -8,6 +8,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod actions;
+mod chrome;
 mod config;
 mod host;
 mod oneshot;
@@ -32,6 +33,7 @@ struct Args {
     settings_only: bool,
     toast_demo: bool,
     card_demo: bool,
+    chrome_demo: bool,
     delay_secs: f64,
     out: Option<std::path::PathBuf>,
 }
@@ -42,6 +44,7 @@ fn parse_args() -> Result<Args> {
         settings_only: false,
         toast_demo: false,
         card_demo: false,
+        chrome_demo: false,
         delay_secs: 0.0,
         out: None,
     };
@@ -52,6 +55,7 @@ fn parse_args() -> Result<Args> {
             "--settings" => args.settings_only = true,
             "--toast" => args.toast_demo = true,
             "--card" => args.card_demo = true,
+            "--chrome" => args.chrome_demo = true,
             "--delay" => {
                 let v = it.next().context("--delay needs SECS")?;
                 args.delay_secs = v.parse().context("--delay: not a number")?;
@@ -95,6 +99,10 @@ fn main() -> Result<()> {
             0x1677DF,
             false,
         );
+    }
+    if args.chrome_demo {
+        let cfg = config::Config::load();
+        return chrome::standalone(&cfg.popup_pos, cfg.accent_rgb());
     }
     if !args.capture_now {
         // one resident app per user — a second launch (LaunchAgent plus a
