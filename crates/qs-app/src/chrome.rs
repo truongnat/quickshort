@@ -35,6 +35,9 @@ const FAN: f64 = 128.0; // hover/pinned fan spacing
 const MAX_VIS: usize = 5;
 const MAX_VIS_PINNED: usize = 8;
 const FLY_MS: f64 = 420.0;
+const FAN_OPEN_MS: f64 = 280.0;
+const FAN_CLOSE_MS: f64 = 180.0;
+const BOX_MS: f64 = 200.0;
 
 /* ---- ui-2026 tokens ---- */
 const CARD: u32 = 0x0A0A0A;
@@ -146,12 +149,18 @@ pub struct Stack {
     pub shots: Vec<Shot>, // newest LAST
     fly: Option<Fly>,
     hover: Option<Hit>,
-    /// stacked↔fanned blend — eases toward `fan_target()` on each tick
+    /// stacked↔fanned blend — time-based tween toward `fan_to`
     fan_t: f64,
+    fan_from: f64,
+    fan_to: f64,
+    fan_t0: Instant,
+    fan_anim: bool,
     /// keyboard selection ring (macshot model — hover syncs it)
     ring: Option<usize>,
     pub pinned: bool,
     lightbox: Option<usize>,
+    /// lightbox fade/scale-in start
+    box_t0: Option<Instant>,
     corner: Corner,
 }
 
@@ -162,9 +171,14 @@ impl Stack {
             fly: None,
             hover: None,
             fan_t: 0.0,
+            fan_from: 0.0,
+            fan_to: 0.0,
+            fan_t0: Instant::now(),
+            fan_anim: false,
             ring: None,
             pinned: false,
             lightbox: None,
+            box_t0: None,
             corner,
         }
     }
@@ -220,7 +234,7 @@ impl Stack {
     fn thumb_rect(&self, i: usize, w: f64, h: f64) -> FRect {
         let (ax, ay) = self.anchor(w, h);
         let inward = if self.corner.right() { -1.0 } else { 1.0 };
-        let dx = inward * (STACK_DX + (FAN - STACK_DX) * ease_out(self.fan_t)) * i as f64;
+        let dx = inward * (STACK_DX + (FAN - STACK_DX) * self.fan_t) * i as f64;
         let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY } * i as f64;
         FRect {
             x: ax + dx,
@@ -303,6 +317,7 @@ impl Stack {
                 let hit = self.hit(x, y, w, h);
                 if hit != self.hover {
                     self.hover = hit;
+                    self.retarget_fan();
                     // hover drives the keyboard ring (macshot parity)
                     self.ring = match hit {
                         Some(Hit::Thumb(i)) | Some(Hit::Del(i)) => Some(i),
@@ -314,6 +329,7 @@ impl Stack {
             }
             ChromeEv::Leave => {
                 if self.hover.take().is_some() {
+                    self.retarget_fan();
                     return Some(ChromeCmd::Redraw);
                 }
                 None
@@ -322,10 +338,11 @@ impl Stack {
                 Some(Hit::Del(i)) => Some(ChromeCmd::Remove(i)),
                 Some(Hit::Chip) => {
                     self.pinned = !self.pinned;
+                    self.retarget_fan();
                     Some(ChromeCmd::Redraw)
                 }
                 Some(Hit::Thumb(i)) => {
-                    self.lightbox = Some(i);
+                    self.open_lightbox(i);
                     Some(ChromeCmd::Redraw)
                 }
                 Some(Hit::Backdrop) => {
@@ -356,6 +373,7 @@ impl Stack {
             }
             (Key::Esc, None) if self.pinned => {
                 self.pinned = false;
+                self.retarget_fan();
                 Some(ChromeCmd::Redraw)
             }
             (Key::Esc, None) => None,
@@ -367,7 +385,7 @@ impl Stack {
             }
             (Key::Enter, None) => match self.ring {
                 Some(i) if i < n => {
-                    self.lightbox = Some(i);
+                    self.open_lightbox(i);
                     Some(ChromeCmd::Redraw)
                 }
                 _ => None,
@@ -383,13 +401,28 @@ impl Stack {
         }
     }
 
-    fn fan_target(&self) -> f64 {
-        if self.pinned || self.hover.is_some() { 1.0 } else { 0.0 }
+    /// Retarget the fan tween whenever hover/pinned flips — opening
+    /// overshoots slightly (ease-out-back, ~280ms) like a native
+    /// popover; closing is a quicker plain ease-out (~180ms).
+    fn retarget_fan(&mut self) {
+        let t = if self.pinned || self.hover.is_some() { 1.0 } else { 0.0 };
+        if t != self.fan_to {
+            self.fan_from = self.fan_t;
+            self.fan_to = t;
+            self.fan_t0 = Instant::now();
+            self.fan_anim = true;
+        }
     }
 
-    /// Fly + fan progress → true while animation frames are needed.
+    /// Fly + fan + lightbox progress → true while frames are needed.
     pub fn animating(&self) -> bool {
-        self.fly.is_some() || (self.fan_t - self.fan_target()).abs() > 0.001
+        self.fly.is_some() || self.fan_anim || self.box_t0.is_some()
+    }
+
+    /// Open the lightbox on thumb `i` with a fade/scale-in.
+    fn open_lightbox(&mut self, i: usize) {
+        self.lightbox = Some(i);
+        self.box_t0 = Some(Instant::now());
     }
 
     fn fly_t(&self, now: Instant) -> f64 {
@@ -399,15 +432,27 @@ impl Stack {
             .unwrap_or(1.0)
     }
 
-    /// Advance animations one tick — drop finished flights, ease the
-    /// fan toward its target (~180ms settle at the 16ms pump cadence).
+    /// Advance animations one tick — drop finished flights, run the
+    /// fan tween and the lightbox fade-in to their ends.
     pub fn settle(&mut self, now: Instant) {
         if self.fly_t(now) >= 1.0 {
             self.fly = None;
         }
-        let t = self.fan_target();
-        let d = t - self.fan_t;
-        self.fan_t = if d.abs() < 0.02 { t } else { self.fan_t + d * 0.3 };
+        if self.fan_anim {
+            let ms = if self.fan_to > self.fan_from { FAN_OPEN_MS } else { FAN_CLOSE_MS };
+            let p = (now.duration_since(self.fan_t0).as_secs_f64() * 1000.0 / ms).min(1.0);
+            let e = if self.fan_to > self.fan_from { ease_out_back(p) } else { ease_out(p) };
+            self.fan_t = self.fan_from + (self.fan_to - self.fan_from) * e;
+            if p >= 1.0 {
+                self.fan_t = self.fan_to;
+                self.fan_anim = false;
+            }
+        }
+        if let Some(t0) = self.box_t0 {
+            if now.duration_since(t0).as_secs_f64() * 1000.0 >= BOX_MS {
+                self.box_t0 = None;
+            }
+        }
     }
 
     /// Delete thumb `i` (0 = newest).
@@ -420,6 +465,7 @@ impl Stack {
             self.lightbox = None;
         }
         self.hover = None;
+        self.retarget_fan();
     }
 
     /// shot for hit-index i (0 = newest).
@@ -456,6 +502,14 @@ pub enum Key {
 
 fn ease_out(t: f64) -> f64 {
     1.0 - (1.0 - t).powi(3)
+}
+
+/// easeOutBack — subtle overshoot (≈8%) so the fan "settles" rather
+/// than stops dead, the way a native popover does.
+fn ease_out_back(t: f64) -> f64 {
+    let c = 1.70158 * 0.8;
+    let u = t - 1.0;
+    1.0 + (c + 1.0) * u * u * u + c * u * u
 }
 
 /// Source-over a packed premul pixel `A<<24|B<<16|G<<8|R` at coverage
@@ -543,23 +597,31 @@ impl Stack {
         let t = Txt { font, scale: cv.scale };
 
         if let Some(i) = self.lightbox {
-            // backdrop dim — real alpha here is the chrome-layer payoff
+            // backdrop dim fades in; the shot scales up from 94% —
+            // real alpha here is the chrome-layer payoff
+            let bp = self
+                .box_t0
+                .map(|t0| (now.duration_since(t0).as_secs_f64() * 1000.0 / BOX_MS).min(1.0))
+                .unwrap_or(1.0);
             for py in 0..cv.h as i32 {
                 for px in 0..cv.w as i32 {
-                    cv.blend_over(px, py, 0x000000, 0.55);
+                    cv.blend_over(px, py, 0x000000, 0.55 * ease_out(bp));
                 }
             }
             if let Some(shot) = self.shot(i) {
+                let grow = 0.94 + 0.06 * ease_out_back(bp);
                 let fit = (lw * 0.8 / shot.img.width() as f64)
                     .min(lh * 0.8 / shot.img.height() as f64);
-                let dw = shot.img.width() as f64 * fit;
-                let dh = shot.img.height() as f64 * fit;
+                let dw = shot.img.width() as f64 * fit * grow;
+                let dh = shot.img.height() as f64 * fit * grow;
                 let r = FRect { x: (lw - dw) / 2.0, y: (lh - dh) / 2.0 - 10.0, w: dw, h: dh };
                 let packed = pack_image(&shot.img);
                 blit_img(cv, &packed, shot.img.width() as usize, shot.img.height() as usize, r, 8.0);
                 let fr = FRect { x: r.x - 1.0, y: r.y - 1.0, w: r.w + 2.0, h: r.h + 2.0 };
                 rrect(cv, fr, 9.0, CARD, 0.0, Some(LINE));
-                t.draw_over(cv, r.x, r.y + r.h + 24.0, 11.0, "ESC / CLICK TO CLOSE", MUTED);
+                if bp >= 1.0 {
+                    t.draw_over(cv, r.x, r.y + r.h + 24.0, 11.0, "ESC / CLICK TO CLOSE", MUTED);
+                }
             }
             return;
         }
