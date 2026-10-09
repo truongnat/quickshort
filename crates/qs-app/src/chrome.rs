@@ -39,7 +39,7 @@ const FAN_OPEN_MS: f64 = 280.0;
 const FAN_CLOSE_MS: f64 = 180.0;
 const BOX_MS: f64 = 200.0;
 /// idle before the stack slides into the edge
-const HIDE_AFTER_MS: f64 = 6000.0;
+const HIDE_AFTER_MS: f64 = 3000.0;
 const HIDE_MS: f64 = 280.0;   // slide-away
 const UNHIDE_MS: f64 = 200.0; // slide-back
 const PEEK: f64 = 10.0;       // sliver left onscreen while edge-hidden
@@ -271,7 +271,9 @@ impl Stack {
         // edge-hidden slides outward toward the corner's side, leaving
         // a PEEK sliver of the newest thumb as the grab handle
         let hide_dx = -inward * self.hide_t * (TW - PEEK);
-        let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY } * i as f64;
+        // the fan is a straight horizontal row — the cascade's vertical
+        // offset collapses as fan_t opens (was spreading diagonally)
+        let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY } * i as f64 * (1.0 - self.fan_t);
         FRect {
             x: ax + dx + hide_dx,
             y: ay + dy,
@@ -1011,6 +1013,8 @@ mod tests {
             1440.0,
             900.0,
         );
+        // step the fan tween to its end
+        st.settle(Instant::now() + Duration::from_millis(400));
         let mut buf = vec![0u32; 2880 * 1800];
         let mut cv = Canvas { buf: &mut buf, w: 2880, h: 1800, scale: 2.0 };
         let font = crate::settings::system_font().expect("font");
