@@ -23,10 +23,11 @@ use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBitmapFormat, NSBitmapImageRep, NSColor, NSEvent, NSEventMask,
-    NSImage, NSScreen, NSStatusWindowLevel, NSView, NSWindowButton, NSWindowCollectionBehavior,
+    NSScreen, NSStatusWindowLevel, NSView, NSWindowButton, NSWindowCollectionBehavior,
     NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSPoint, NSRect, NSString};
+use objc2_quartz_core::CATransaction;
 use qs_overlay::sdf::Canvas;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::event::WindowEvent;
@@ -322,8 +323,9 @@ impl ChromeWin {
         content.addSubview(&view);
         *view.ivars().handler.borrow_mut() = Some(sink);
 
-        // premult BGRA-alpha-first is the little-endian twin of the
-        // buffer's A<<24|B<<16|G<<8|R packing (bytes R,G,B,A)
+        // 32LE without AlphaFirst = memory bytes R,G,B,A — the buffer's
+        // A<<24|B<<16|G<<8|R u32 packing. (AlphaFirst would put alpha at
+        // byte0 — the little-endian "first" — and eat the R channel.)
         let rep = unsafe {
             NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
                 mtm.alloc::<NSBitmapImageRep>(),
@@ -335,7 +337,7 @@ impl ChromeWin {
                 true,
                 false,
                 objc2_app_kit::NSCalibratedRGBColorSpace,
-                NSBitmapFormat::AlphaFirst | NSBitmapFormat::ThirtyTwoBitLittleEndian,
+                NSBitmapFormat::ThirtyTwoBitLittleEndian,
                 (pw * 4) as isize,
                 32,
             )
@@ -391,14 +393,16 @@ impl ChromeWin {
     /// Render the stack into the buffer and push it to the layer.
     fn present(&mut self) {
         self.buf.fill(0);
-        let mut cv = Canvas {
-            buf: &mut self.buf,
-            w: (self.lw * self.scale).round() as usize,
-            h: (self.lh * self.scale).round() as usize,
-            scale: self.scale,
-        };
-        let font = self.font.clone();
-        self.stack.render(&mut cv, &font, self.accent, Instant::now());
+        {
+            let mut cv = Canvas {
+                buf: &mut self.buf,
+                w: (self.lw * self.scale).round() as usize,
+                h: (self.lh * self.scale).round() as usize,
+                scale: self.scale,
+            };
+            let font = self.font.clone();
+            self.stack.render(&mut cv, &font, self.accent, Instant::now());
+        }
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self.buf.as_ptr() as *const u8,
@@ -406,14 +410,19 @@ impl ChromeWin {
                 self.buf.len() * 4,
             );
         }
-        let mtm = MainThreadMarker::new().expect("main thread");
-        let img: Retained<NSImage> = unsafe {
-            msg_send![mtm.alloc::<NSImage>(), initWithSize: NSSize::new(self.lw, self.lh)]
-        };
-        img.addRepresentation(&self.rep);
         if let Some(layer) = self.view.layer() {
-            let obj: &AnyObject = unsafe { &*(&*img as *const NSImage as *const AnyObject) };
-            unsafe { layer.setContents(Some(obj)) };
+            // hand CA a CGImage straight off the rep — routing through
+            // NSImage colorspace-converts and bleeds alpha
+            if let Some(cg) = self.rep.CGImage() {
+                let obj: &AnyObject =
+                    unsafe { &*(Retained::as_ptr(&cg) as *const AnyObject) };
+                // contents swaps implicitly crossfade ~0.25s — at animation
+                // framerates that ghosts every frame into a translucent smear
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                unsafe { layer.setContents(Some(obj)) };
+                CATransaction::commit();
+            }
         }
         self.view.sync_input(
             self.stack

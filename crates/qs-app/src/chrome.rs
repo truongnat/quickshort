@@ -146,6 +146,8 @@ pub struct Stack {
     pub shots: Vec<Shot>, // newest LAST
     fly: Option<Fly>,
     hover: Option<Hit>,
+    /// stacked↔fanned blend — eases toward `fan_target()` on each tick
+    fan_t: f64,
     /// keyboard selection ring (macshot model — hover syncs it)
     ring: Option<usize>,
     pub pinned: bool,
@@ -159,6 +161,7 @@ impl Stack {
             shots: Vec::new(),
             fly: None,
             hover: None,
+            fan_t: 0.0,
             ring: None,
             pinned: false,
             lightbox: None,
@@ -216,13 +219,8 @@ impl Stack {
     /// Hover/pinned fans them horizontally toward the screen middle.
     fn thumb_rect(&self, i: usize, w: f64, h: f64) -> FRect {
         let (ax, ay) = self.anchor(w, h);
-        let fanned = self.pinned || self.hover.is_some();
         let inward = if self.corner.right() { -1.0 } else { 1.0 };
-        let dx = if fanned {
-            inward * FAN * i as f64
-        } else {
-            inward * STACK_DX * i as f64
-        };
+        let dx = inward * (STACK_DX + (FAN - STACK_DX) * ease_out(self.fan_t)) * i as f64;
         let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY } * i as f64;
         FRect {
             x: ax + dx,
@@ -385,9 +383,13 @@ impl Stack {
         }
     }
 
-    /// Fly progress → true while animation frames are needed.
+    fn fan_target(&self) -> f64 {
+        if self.pinned || self.hover.is_some() { 1.0 } else { 0.0 }
+    }
+
+    /// Fly + fan progress → true while animation frames are needed.
     pub fn animating(&self) -> bool {
-        self.fly.is_some()
+        self.fly.is_some() || (self.fan_t - self.fan_target()).abs() > 0.001
     }
 
     fn fly_t(&self, now: Instant) -> f64 {
@@ -397,11 +399,15 @@ impl Stack {
             .unwrap_or(1.0)
     }
 
-    /// Drop finished flights into their slots.
+    /// Advance animations one tick — drop finished flights, ease the
+    /// fan toward its target (~180ms settle at the 16ms pump cadence).
     pub fn settle(&mut self, now: Instant) {
         if self.fly_t(now) >= 1.0 {
             self.fly = None;
         }
+        let t = self.fan_target();
+        let d = t - self.fan_t;
+        self.fan_t = if d.abs() < 0.02 { t } else { self.fan_t + d * 0.3 };
     }
 
     /// Delete thumb `i` (0 = newest).
