@@ -12,7 +12,7 @@ use image::RgbaImage;
 use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, stroke_cov, Canvas};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 #[path = "chrome/macos.rs"]
@@ -38,6 +38,11 @@ const FLY_MS: f64 = 420.0;
 const FAN_OPEN_MS: f64 = 280.0;
 const FAN_CLOSE_MS: f64 = 180.0;
 const BOX_MS: f64 = 200.0;
+/// idle before the stack slides into the edge
+const HIDE_AFTER_MS: f64 = 6000.0;
+const HIDE_MS: f64 = 280.0;   // slide-away
+const UNHIDE_MS: f64 = 200.0; // slide-back
+const PEEK: f64 = 10.0;       // sliver left onscreen while edge-hidden
 
 /* ---- ui-2026 tokens ---- */
 const CARD: u32 = 0x0A0A0A;
@@ -159,6 +164,15 @@ pub struct Stack {
     fan_to: f64,
     fan_t0: Instant,
     fan_anim: bool,
+    /// shown↔edge-hidden blend — after idle the stack slides into the
+    /// screen edge leaving a PEEK sliver as its handle
+    hide_t: f64,
+    hide_from: f64,
+    hide_to: f64,
+    hide_t0: Instant,
+    hide_anim: bool,
+    /// last user activity — the idle countdown for edge-hiding
+    idle_since: Instant,
     /// keyboard selection ring (macshot model — hover syncs it)
     ring: Option<usize>,
     pub pinned: bool,
@@ -182,6 +196,12 @@ impl Stack {
             fan_to: 0.0,
             fan_t0: Instant::now(),
             fan_anim: false,
+            hide_t: 0.0,
+            hide_from: 0.0,
+            hide_to: 0.0,
+            hide_t0: Instant::now(),
+            hide_anim: false,
+            idle_since: Instant::now(),
             ring: None,
             pinned: false,
             lightbox: None,
@@ -196,6 +216,7 @@ impl Stack {
     /// Queue the fly-in; `from` is the selection rect in window-local
     /// logical coords. `rm` (reduce motion) lands instantly.
     pub fn land(&mut self, img: RgbaImage, kind: ShotKind, path: Option<PathBuf>, from: FRect, rm: bool, scale: f64) {
+        self.touch(); // a landing shot is activity — reveal the stack
         let img = Rc::new(img);
         let (thumb, tw, th) = make_thumb(&img, kind, scale);
         let shot = Shot {
@@ -247,9 +268,12 @@ impl Stack {
         let (ax, ay) = self.anchor(w, h);
         let inward = if self.corner.right() { -1.0 } else { 1.0 };
         let dx = inward * (STACK_DX + (FAN - STACK_DX) * self.fan_t) * i as f64;
+        // edge-hidden slides outward toward the corner's side, leaving
+        // a PEEK sliver of the newest thumb as the grab handle
+        let hide_dx = -inward * self.hide_t * (TW - PEEK);
         let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY } * i as f64;
         FRect {
-            x: ax + dx,
+            x: ax + dx + hide_dx,
             y: ay + dy,
             w: TW,
             h: TH,
@@ -259,6 +283,9 @@ impl Stack {
     fn chip_rect(&self, w: f64, h: f64) -> FRect {
         let (ax, ay) = self.anchor(w, h);
         let (cw, ch) = (64.0, 20.0);
+        // rides the same edge-hide as the newest thumb
+        let inward = if self.corner.right() { -1.0 } else { 1.0 };
+        let hide_dx = -inward * self.hide_t * (TW - PEEK);
         // beside the newest thumb, aligned to its far edge — never
         // clipped by the screen edge regardless of the dock corner
         let x = if self.corner.right() { ax - cw - 8.0 } else { ax + TW + 8.0 };
@@ -267,7 +294,7 @@ impl Stack {
         } else {
             ay
         };
-        FRect { x, y, w: cw, h: ch }
+        FRect { x: x + hide_dx, y, w: cw, h: ch }
     }
 
     /// Interactive regions in logical coords for the platform's
@@ -328,6 +355,9 @@ impl Stack {
             ChromeEv::Move { x, y } => {
                 let hit = self.hit(x, y, w, h);
                 if hit != self.hover {
+                    // real hover transitions are activity — synthetic
+                    // Move re-emits (sync_input, global monitor) aren't
+                    self.touch();
                     self.hover = hit;
                     self.retarget_fan();
                     // hover drives the keyboard ring (macshot parity)
@@ -346,7 +376,9 @@ impl Stack {
                 }
                 None
             }
-            ChromeEv::Down { x, y } => match self.hit(x, y, w, h) {
+            ChromeEv::Down { x, y } => {
+                self.touch();
+                match self.hit(x, y, w, h) {
                 Some(Hit::Del(i)) => Some(ChromeCmd::Remove(i)),
                 Some(Hit::Chip) => {
                     self.pinned = !self.pinned;
@@ -362,11 +394,15 @@ impl Stack {
                     Some(ChromeCmd::Redraw)
                 }
                 None => None,
-            },
-            ChromeEv::RightDown { x, y } => match self.hit(x, y, w, h) {
-                Some(Hit::Thumb(i)) | Some(Hit::Del(i)) => Some(ChromeCmd::Menu { idx: i, x, y }),
-                _ => None,
-            },
+                }
+            }
+            ChromeEv::RightDown { x, y } => {
+                self.touch();
+                match self.hit(x, y, w, h) {
+                    Some(Hit::Thumb(i)) | Some(Hit::Del(i)) => Some(ChromeCmd::Menu { idx: i, x, y }),
+                    _ => None,
+                }
+            }
             ChromeEv::Key(_) => None, // keys go through `key()`
         }
     }
@@ -374,6 +410,7 @@ impl Stack {
     /// Keyboard input while the chrome window is key — arrows move the
     /// ring, Enter previews, ⌫ removes, Esc peels a layer off.
     pub fn key(&mut self, k: Key) -> Option<ChromeCmd> {
+        self.touch();
         let n = self
             .shots
             .len()
@@ -426,9 +463,36 @@ impl Stack {
         }
     }
 
-    /// Fly + fan + lightbox progress → true while frames are needed.
+    /// Any user activity resets the idle clock and pulls a hidden
+    /// stack back out of the edge.
+    fn touch(&mut self) {
+        self.idle_since = Instant::now();
+        if self.hide_to != 0.0 {
+            self.hide_from = self.hide_t;
+            self.hide_to = 0.0;
+            self.hide_t0 = self.idle_since;
+            self.hide_anim = true;
+        }
+    }
+
+    /// Next wake for the idle-hide countdown — the host's pump sleeps
+    /// until this when nothing is animating. None while hidden.
+    pub fn idle_deadline(&self) -> Option<Instant> {
+        if self.hide_to == 0.0
+            && self.hover.is_none()
+            && !self.pinned
+            && self.lightbox.is_none()
+            && !self.shots.is_empty()
+        {
+            Some(self.idle_since + Duration::from_millis(HIDE_AFTER_MS as u64))
+        } else {
+            None
+        }
+    }
+
+    /// Fly + fan + lightbox + hide progress → true while frames are needed.
     pub fn animating(&self) -> bool {
-        self.fly.is_some() || self.fan_anim || self.box_t0.is_some()
+        self.fly.is_some() || self.fan_anim || self.hide_anim || self.box_t0.is_some()
     }
 
     /// Open the lightbox on thumb `i` with a fade/scale-in — packs the
@@ -465,6 +529,30 @@ impl Stack {
             if p >= 1.0 {
                 self.fan_t = self.fan_to;
                 self.fan_anim = false;
+            }
+        }
+        // idle → slide into the edge (a fresh shot resets the clock at land)
+        if self.hide_to == 0.0
+            && self.hide_t == 0.0
+            && self.hover.is_none()
+            && !self.pinned
+            && self.lightbox.is_none()
+            && self.fly.is_none()
+            && now.duration_since(self.idle_since).as_secs_f64() * 1000.0 > HIDE_AFTER_MS
+        {
+            self.hide_from = self.hide_t;
+            self.hide_to = 1.0;
+            self.hide_t0 = now;
+            self.hide_anim = true;
+        }
+        if self.hide_anim {
+            let ms = if self.hide_to > self.hide_from { HIDE_MS } else { UNHIDE_MS };
+            let p = (now.duration_since(self.hide_t0).as_secs_f64() * 1000.0 / ms).min(1.0);
+            let e = if self.hide_to > self.hide_from { ease_out(p) } else { ease_out_back(p) };
+            self.hide_t = self.hide_from + (self.hide_to - self.hide_from) * e;
+            if p >= 1.0 {
+                self.hide_t = self.hide_to;
+                self.hide_anim = false;
             }
         }
         if let Some(t0) = self.box_t0 {

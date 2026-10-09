@@ -485,18 +485,19 @@ impl ChromeWin {
         }
     }
 
-    /// Animation tick — returns the next wake while a shot is in flight.
+    /// Animation tick — returns the next wake while a shot is in flight
+    /// or, at rest, the idle-hide deadline so the stack slides away.
     pub fn pump(&mut self) -> Option<Instant> {
-        if !self.stack.animating() {
-            return None;
-        }
         let now = Instant::now();
-        self.stack.settle(now);
-        self.present();
+        let was = self.stack.animating();
+        self.stack.settle(now); // may kick off the idle-hide tween
+        if was || self.stack.animating() {
+            self.present();
+        }
         if self.stack.animating() {
             Some(now + Duration::from_millis(16))
         } else {
-            None
+            self.stack.idle_deadline()
         }
     }
 
