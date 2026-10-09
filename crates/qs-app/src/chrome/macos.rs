@@ -19,15 +19,15 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use block2::RcBlock;
 use objc2::rc::{Allocated, Retained};
-use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBitmapFormat, NSBitmapImageRep, NSColor, NSEvent, NSEventMask,
     NSScreen, NSStatusWindowLevel, NSView, NSWindowButton, NSWindowCollectionBehavior,
     NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
 };
-use objc2_foundation::{NSPoint, NSRect, NSString};
-use objc2_quartz_core::CATransaction;
+use objc2_foundation::{NSDictionary, NSNull, NSPoint, NSRect, NSString};
+use objc2_quartz_core::CAAction;
 use qs_overlay::sdf::Canvas;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::event::WindowEvent;
@@ -319,6 +319,17 @@ impl ChromeWin {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setContentsScale(sf);
+            // contents swaps must never animate — the implicit ~0.25s
+            // crossfade ghosts every frame mid-animation. NSNull in the
+            // actions dict disables it once, instead of wrapping every
+            // setContents in a CATransaction (whose commit() blocks ~20ms
+            // on WindowServer — that stall was the animation jank).
+            let k = NSString::from_str("contents");
+            let acts = NSDictionary::from_retained_objects(
+                &[&*k],
+                &[ProtocolObject::<dyn CAAction>::from_retained(NSNull::null())],
+            );
+            layer.setActions(Some(&acts));
         }
         content.addSubview(&view);
         *view.ivars().handler.borrow_mut() = Some(sink);
@@ -411,17 +422,12 @@ impl ChromeWin {
             );
         }
         if let Some(layer) = self.view.layer() {
-            // hand CA a CGImage straight off the rep — routing through
-            // NSImage colorspace-converts and bleeds alpha
+            // CGImage straight off the rep — the actions dict disables
+            // implicit animations so setContents is non-blocking
             if let Some(cg) = self.rep.CGImage() {
                 let obj: &AnyObject =
                     unsafe { &*(Retained::as_ptr(&cg) as *const AnyObject) };
-                // contents swaps implicitly crossfade ~0.25s — at animation
-                // framerates that ghosts every frame into a translucent smear
-                CATransaction::begin();
-                CATransaction::setDisableActions(true);
                 unsafe { layer.setContents(Some(obj)) };
-                CATransaction::commit();
             }
         }
         self.view.sync_input(

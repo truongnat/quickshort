@@ -79,7 +79,11 @@ pub struct FRect {
 }
 
 struct Fly {
-    img: Rc<RgbaImage>,
+    /// premul-packed full-res pixels — packed once at land-time,
+    /// blitted scaled each frame (packing per frame was the jank)
+    packed: Vec<u32>,
+    iw: usize,
+    ih: usize,
     from: FRect,
     t0: Instant,
 }
@@ -159,8 +163,11 @@ pub struct Stack {
     ring: Option<usize>,
     pub pinned: bool,
     lightbox: Option<usize>,
-    /// lightbox fade/scale-in start
+    /// lightbox fade/scale-in start + its packed pixels (cached at open)
     box_t0: Option<Instant>,
+    box_img: Vec<u32>,
+    box_iw: usize,
+    box_ih: usize,
     corner: Corner,
 }
 
@@ -179,6 +186,9 @@ impl Stack {
             pinned: false,
             lightbox: None,
             box_t0: None,
+            box_img: Vec::new(),
+            box_iw: 0,
+            box_ih: 0,
             corner,
         }
     }
@@ -200,7 +210,9 @@ impl Stack {
             self.shots.push(shot);
         } else {
             self.fly = Some(Fly {
-                img,
+                iw: img.width() as usize,
+                ih: img.height() as usize,
+                packed: pack_image(&img),
                 from,
                 t0: Instant::now(),
             });
@@ -419,8 +431,15 @@ impl Stack {
         self.fly.is_some() || self.fan_anim || self.box_t0.is_some()
     }
 
-    /// Open the lightbox on thumb `i` with a fade/scale-in.
+    /// Open the lightbox on thumb `i` with a fade/scale-in — packs the
+    /// shot's pixels once so frames only blit.
     fn open_lightbox(&mut self, i: usize) {
+        if let Some(s) = self.shot(i) {
+            let (p, w, h) = (pack_image(&s.img), s.img.width() as usize, s.img.height() as usize);
+            self.box_img = p;
+            self.box_iw = w;
+            self.box_ih = h;
+        }
         self.lightbox = Some(i);
         self.box_t0 = Some(Instant::now());
     }
@@ -603,20 +622,17 @@ impl Stack {
                 .box_t0
                 .map(|t0| (now.duration_since(t0).as_secs_f64() * 1000.0 / BOX_MS).min(1.0))
                 .unwrap_or(1.0);
-            for py in 0..cv.h as i32 {
-                for px in 0..cv.w as i32 {
-                    cv.blend_over(px, py, 0x000000, 0.55 * ease_out(bp));
-                }
-            }
-            if let Some(shot) = self.shot(i) {
+            // uniform dim over a zeroed buffer → direct fill, no blend
+            let dim = ((0.55 * ease_out(bp) * 255.0).round() as u32) << 24;
+            cv.buf.fill(dim);
+            if self.shot(i).is_some() {
                 let grow = 0.94 + 0.06 * ease_out_back(bp);
-                let fit = (lw * 0.8 / shot.img.width() as f64)
-                    .min(lh * 0.8 / shot.img.height() as f64);
-                let dw = shot.img.width() as f64 * fit * grow;
-                let dh = shot.img.height() as f64 * fit * grow;
+                let fit = (lw * 0.8 / self.box_iw as f64)
+                    .min(lh * 0.8 / self.box_ih as f64);
+                let dw = self.box_iw as f64 * fit * grow;
+                let dh = self.box_ih as f64 * fit * grow;
                 let r = FRect { x: (lw - dw) / 2.0, y: (lh - dh) / 2.0 - 10.0, w: dw, h: dh };
-                let packed = pack_image(&shot.img);
-                blit_img(cv, &packed, shot.img.width() as usize, shot.img.height() as usize, r, 8.0);
+                blit_img(cv, &self.box_img, self.box_iw, self.box_ih, r, 8.0);
                 let fr = FRect { x: r.x - 1.0, y: r.y - 1.0, w: r.w + 2.0, h: r.h + 2.0 };
                 rrect(cv, fr, 9.0, CARD, 0.0, Some(LINE));
                 if bp >= 1.0 {
@@ -683,8 +699,7 @@ impl Stack {
             };
             // draw the capture scaled into the moving rect — border fades
             // from accent to hairline as it "becomes" a stack thumb
-            let packed = pack_image(&f.img);
-            blit_img(cv, &packed, f.img.width() as usize, f.img.height() as usize, r, 5.0);
+            blit_img(cv, &f.packed, f.iw, f.ih, r, 5.0);
             let border = if p < 0.6 { accent } else { LINE };
             rrect(cv, r, 5.0, CARD, 0.0, Some(border));
         }
