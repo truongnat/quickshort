@@ -42,7 +42,8 @@ const BOX_MS: f64 = 200.0;
 const HIDE_AFTER_MS: f64 = 3000.0;
 const HIDE_MS: f64 = 280.0;   // slide-away
 const UNHIDE_MS: f64 = 200.0; // slide-back
-const PEEK: f64 = 10.0;       // sliver left onscreen while edge-hidden
+// thumbs slide fully off-screen when hidden — the edge-docked chip
+// is the grab handle (a sliver + chip read as two disjoint artifacts)
 
 /* ---- ui-2026 tokens ---- */
 const CARD: u32 = 0x0A0A0A;
@@ -165,7 +166,7 @@ pub struct Stack {
     fan_t0: Instant,
     fan_anim: bool,
     /// shown↔edge-hidden blend — after idle the stack slides into the
-    /// screen edge leaving a PEEK sliver as its handle
+    /// screen edge — the docked chip is the only visible handle
     hide_t: f64,
     hide_from: f64,
     hide_to: f64,
@@ -271,9 +272,10 @@ impl Stack {
         // (the newest thumb) instead of a diagonal trail of peeks
         let collapse = 1.0 - self.hide_t;
         let dx = inward * (STACK_DX + (FAN - STACK_DX) * self.fan_t) * i as f64 * collapse;
-        // edge-hidden slides outward toward the corner's side, leaving
-        // a PEEK sliver of the newest thumb as the grab handle
-        let hide_dx = -inward * self.hide_t * (TW - PEEK);
+        // edge-hidden slides thumbs fully off-screen — the docked chip
+        // is the only visible handle (a sliver + floating chip read as
+        // two disjoint artifacts)
+        let hide_dx = -inward * self.hide_t * (TW + MARGIN);
         // the fan is a straight horizontal row — the cascade's vertical
         // offset collapses as fan_t opens (was spreading diagonally)
         let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY }
@@ -289,18 +291,18 @@ impl Stack {
     fn chip_rect(&self, w: f64, h: f64) -> FRect {
         let (ax, ay) = self.anchor(w, h);
         let (cw, ch) = (64.0, 20.0);
-        // rides the same edge-hide as the newest thumb
-        let inward = if self.corner.right() { -1.0 } else { 1.0 };
-        let hide_dx = -inward * self.hide_t * (TW - PEEK);
         // beside the newest thumb, aligned to its far edge — never
         // clipped by the screen edge regardless of the dock corner
-        let x = if self.corner.right() { ax - cw - 8.0 } else { ax + TW + 8.0 };
+        let shown = if self.corner.right() { ax - cw - 8.0 } else { ax + TW + 8.0 };
+        // hidden: dock flush against the screen edge as the sole handle
+        let docked = if self.corner.right() { w - cw - 2.0 } else { 2.0 };
+        let x = shown + (docked - shown) * self.hide_t;
         let y = if self.corner.bottom() {
             ay + TH - ch
         } else {
             ay
         };
-        FRect { x: x + hide_dx, y, w: cw, h: ch }
+        FRect { x, y, w: cw, h: ch }
     }
 
     /// Interactive regions in logical coords for the platform's
@@ -1063,8 +1065,11 @@ mod tests {
             assert_eq!(r.x, r0.x, "thumb {i} must collapse behind the newest");
             assert_eq!(r.y, r0.y);
         }
-        // and the sliver sits at the right edge, PEEK wide
-        assert!((r0.x - (1440.0 - MARGIN - PEEK)).abs() < 1.0, "x={}", r0.x);
+        // the thumbs sit fully off the right edge; the chip docks as
+        // the sole handle flush against it
+        assert!(r0.x >= 1440.0, "thumb must be off-screen, x={}", r0.x);
+        let c = st.chip_rect(1440.0, 900.0);
+        assert!((c.x - (1440.0 - c.w - 2.0)).abs() < 1.0, "chip x={}", c.x);
 
         // activity brings it back
         st.touch();
