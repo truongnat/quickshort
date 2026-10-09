@@ -1,0 +1,677 @@
+<!doctype html>
+<!--
+  Quickshort — App UI component sheet (PROPOSED dark reskin).
+  Implements demo/app-ui-research.md §4 spec blocks: everything moves to
+  ui-2026 tokens (#0a0a0a surfaces, #262626 hairlines, #52c7ea accent).
+  Real geometry kept from crates/: 28px toolbar discs, dock cascade,
+  424×108 card, 272→300px toast, 172×46 REC, 820×600 settings.
+  Overlay section is interactive: drag to select, click tools/actions.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quickshort — App UI kit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#000; --raised:#0a0a0a; --ink:#ededed; --muted:#a1a1a1; --faint:#6b6b6b;
+  --line:#262626; --soft:#1a1a1a;
+  --acc:#52c7ea; --grn:#30d158; --red:#ff5f57;
+  --sans:"Geist",system-ui,-apple-system,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SF Mono",monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+.page{max-width:1180px;margin:0 auto;padding:64px 32px 120px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--acc);margin-bottom:14px}
+h1{font-size:clamp(30px,4vw,44px);font-weight:700;letter-spacing:-.04em;line-height:1.05}
+.lede{margin-top:14px;max-width:680px;color:var(--muted);font-size:14.5px;line-height:1.7}
+.lede code,.note code{font-family:var(--mono);font-size:12px;color:var(--ink);background:var(--raised);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.lede b,.note b{color:var(--ink);font-weight:600}
+
+.sec{margin-top:88px}
+.sec-label{font-family:var(--mono);font-size:11px;letter-spacing:.24em;color:var(--faint);margin-bottom:22px}
+.sec-label b{color:var(--muted);font-weight:500}
+.note{margin-top:14px;max-width:780px;color:var(--muted);font-size:13px;line-height:1.7}
+.prop{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--grn);border:1px solid rgba(48,209,88,.35);border-radius:4px;padding:1px 6px;vertical-align:2px}
+.chg{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:#ffd60a;border:1px solid rgba(255,214,10,.35);border-radius:4px;padding:1px 6px;vertical-align:2px}
+
+.specs{margin-top:18px;border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:12px;max-width:780px}
+.specs .r{display:flex;border-top:1px solid var(--soft)}
+.specs .r:first-child{border-top:0}
+.specs .k{flex:0 0 190px;padding:8px 14px;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--faint);border-right:1px solid var(--soft)}
+.specs .v{padding:8px 14px;color:var(--muted)}
+.specs .v code{font-family:var(--mono);font-size:11px;color:var(--ink)}
+
+/* ============================================================
+   OVERLAY — interactive mock (research §4.1/§4.2)
+   ============================================================ */
+.stage{position:relative;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+  cursor:crosshair;touch-action:none;user-select:none;-webkit-user-select:none;background:#000}
+.stage img.bg{display:block;width:100%;height:auto;filter:brightness(.5);pointer-events:none}
+.stage .hintcap{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
+  font-family:var(--mono);font-size:11px;letter-spacing:.22em;color:var(--muted);
+  border:1px solid var(--line);border-radius:999px;padding:8px 16px;background:rgba(0,0,0,.65);
+  pointer-events:none;transition:opacity .3s}
+.stage.used .hintcap{opacity:0}
+
+/* crosshair — 1px @ ~14% ink, full span (research §4.1) */
+.xh{position:absolute;pointer-events:none;background:rgba(237,237,237,.14)}
+.xh.h{left:0;right:0;height:1px}.xh.v{top:0;bottom:0;width:1px}
+
+/* selection: dashed while dragging → solid + 8 handles when confirmed */
+.sel{position:absolute;display:none;border:1.5px dashed var(--acc);box-shadow:0 0 0 9999px rgba(0,0,0,.25)}
+.sel.ok{border-style:solid}
+.sel i{position:absolute;width:11px;height:11px;background:#000;border:1.5px solid var(--acc);border-radius:2px;opacity:0;transition:opacity .15s}
+.sel.ok i{opacity:1}
+.sel i:nth-of-type(1){left:-6px;top:-6px}.sel i:nth-of-type(2){left:calc(50% - 5.5px);top:-6px}.sel i:nth-of-type(3){right:-6px;top:-6px}
+.sel i:nth-of-type(4){left:-6px;top:calc(50% - 5.5px)}.sel i:nth-of-type(5){right:-6px;top:calc(50% - 5.5px)}
+.sel i:nth-of-type(6){left:-6px;bottom:-6px}.sel i:nth-of-type(7){left:calc(50% - 5.5px);bottom:-6px}.sel i:nth-of-type(8){right:-6px;bottom:-6px}
+
+/* W×H chip — mono 11, #0a0a0a+#262626, click toggles logical⇄physical */
+.dim{position:absolute;font-family:var(--mono);font-size:11px;color:var(--ink);cursor:pointer;
+  background:var(--raised);border:1px solid var(--line);border-radius:6px;padding:5px 10px;white-space:nowrap}
+.dim .u{color:var(--faint);font-size:9px;letter-spacing:.1em;margin-left:6px}
+.dim:hover{border-color:#3a3a3a}
+
+/* toolbar — 28px discs, #0a0a0a@92% + #262626 rim, grouped with separators */
+.tbwrap{position:absolute;display:flex;flex-direction:column;gap:4px}
+.tbrow{display:flex;align-items:center;gap:8px;padding:6px}
+.tbsep{width:1px;height:18px;background:var(--line);margin:0 4px;flex:none}
+.tbgap{width:8px;flex:none}
+.tb{position:relative;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;flex:none;
+  background:rgba(10,10,10,.92);box-shadow:0 1.5px 4px rgba(0,0,0,.24),inset 0 0 0 1px var(--line);
+  color:var(--ink);cursor:pointer;transition:background .12s,box-shadow .12s}
+.tb:hover{background:var(--soft);box-shadow:0 1.5px 4px rgba(0,0,0,.24),inset 0 0 0 1px #3a3a3a}
+.tb.on{background:var(--acc);color:#000}
+.tb.off{color:var(--faint);pointer-events:none;opacity:.55}
+.tb svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;display:block}
+.tb svg .f{fill:currentColor;stroke:none}
+.tb .sw{width:12px;height:12px;border-radius:50%}
+.tb .sw.selw{box-shadow:0 0 0 2px var(--raised),0 0 0 3.5px var(--acc)}   /* accent ring, not fill */
+.tb .fsz{font-family:var(--mono);font-size:9.5px;font-weight:500}
+.tb .fsz.b{font-weight:700}
+.tb .sz{width:12px;height:12px;border-radius:50%;background:currentColor;transform:scale(var(--s))}
+/* hover tooltip chip: name + key (research §4.2) */
+.tb[data-tip]::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;white-space:nowrap;color:var(--ink);
+  background:var(--raised);border:1px solid var(--line);border-radius:6px;padding:4px 8px;
+  opacity:0;pointer-events:none;transition:opacity .15s .35s}
+.tb[data-tip]:hover::after{opacity:1}
+.tbwrap.v .tb[data-tip]::after{top:50%;left:calc(100% + 8px);transform:translateY(-50%)}
+
+/* ---- capture stack: shots fly to the corner album ---- */
+.stack{position:absolute;right:14px;bottom:14px;width:120px;height:86px;pointer-events:auto}
+.st{position:absolute;right:0;bottom:0;width:104px;height:66px;border-radius:6px;
+  border:1px solid var(--line);background:#050505 center/cover;overflow:hidden;
+  box-shadow:0 4px 14px rgba(0,0,0,.5);cursor:pointer;
+  transform:translateY(calc(var(--i) * -7px)) translateX(calc(var(--i) * -6px)) rotate(calc(var(--i) * -1.6deg));
+  transition:transform .3s cubic-bezier(.16,1,.3,1)}
+.stack:hover .st{transform:translateX(calc(var(--i) * -112px)) rotate(0)}
+.stack:hover .st:hover{outline:1.5px solid var(--acc)}
+.st .badge{position:absolute;left:5px;bottom:5px;width:15px;height:15px;border-radius:50%;
+  display:grid;place-items:center;font-size:8px;font-family:var(--mono);color:#000}
+.st .badge.ok{background:var(--grn)} .st .badge.info{background:var(--acc)}
+.st .badge.err{background:var(--red);color:#fff} .st .badge.work{background:var(--acc);animation:spin 1.2s linear infinite}
+.st .bdel{position:absolute;right:4px;top:4px;width:14px;height:14px;border-radius:50%;
+  background:rgba(10,10,10,.85);border:1px solid var(--line);color:var(--faint);
+  font-size:8px;display:none;place-items:center}
+.stack:hover .bdel{display:grid}
+.st .bdel:hover{color:var(--red);border-color:var(--red)}
+.stackn{position:absolute;right:0;top:-26px;font-family:var(--mono);font-size:10px;color:var(--muted);
+  background:var(--raised);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
+.fly{position:absolute;border:1.5px solid var(--acc);border-radius:5px;
+  background:#050505;overflow:hidden;pointer-events:none;z-index:20;
+  transition:left .55s cubic-bezier(.3,.9,.3,1),top .55s cubic-bezier(.3,.9,.3,1),
+            width .55s cubic-bezier(.3,.9,.3,1),height .55s cubic-bezier(.3,.9,.3,1),opacity .3s .4s}
+
+/* ============================================================
+   STATIC COMPONENTS — proposed dark chrome
+   ============================================================ */
+.frame{display:inline-block;border:1px solid var(--line);border-radius:8px;padding:22px;background:var(--raised)}
+.frame.plain{background:#050505}
+.row-set{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start}
+.cap{font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);margin-top:10px;text-align:center}
+
+/* ---- toasts ~300×64 — icon-cell spec (research §4.4) ---- */
+.qtoast{width:300px;height:64px;background:var(--raised);border-radius:11px;position:relative;
+  box-shadow:0 0 0 1px var(--line),0 2px 12px rgba(0,0,0,.55);display:flex;align-items:center;gap:12px;padding:0 14px}
+.qtoast .ic{width:30px;height:30px;border-radius:6px;display:grid;place-items:center;flex:none;
+  font-family:var(--mono);font-size:13px;border:1px solid var(--line)}
+.qtoast .ic.ok{color:var(--grn);border-color:rgba(48,209,88,.45)}
+.qtoast .ic.info{color:var(--acc);border-color:rgba(82,199,234,.45)}
+.qtoast .ic.err{color:var(--red);border-color:rgba(255,95,87,.45)}
+.qtoast .ic.work{color:var(--acc);border-color:rgba(82,199,234,.45);animation:spin 1.2s linear infinite}
+@keyframes spin{to{transform:rotate(1turn)}}
+.qtoast .t-main{font-size:14px;font-weight:550;letter-spacing:-.01em}
+.qtoast .t-sub{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px}
+.qtoast .t-sub b{color:var(--acc);font-weight:500}
+.qtoast .bar{position:absolute;left:12px;bottom:2px;height:2px;border-radius:1px}
+
+/* ---- REC dock 172×46 (research §4.5) ---- */
+.rec{width:172px;height:46px;background:var(--raised);border-radius:11px;position:relative;
+  box-shadow:0 0 0 1px var(--line),0 2px 10px rgba(0,0,0,.5);display:flex;align-items:center;padding:0 10px;gap:7px}
+.rec .rd{width:10px;height:10px;border-radius:50%;background:var(--red);flex:none;animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.5}}
+.rec .rt{font-family:var(--mono);font-size:12px;color:var(--ink)}
+.rec .stop{margin-left:auto;height:26px;padding:0 14px;display:grid;place-items:center;border-radius:999px;
+  background:var(--soft);box-shadow:inset 0 0 0 1px var(--line);font-family:var(--mono);font-size:10.5px;color:var(--ink);cursor:default}
+.rec .stop:hover{background:var(--red);color:#000;box-shadow:none}
+
+/* ---- pin window ---- */
+.pinw{display:inline-block;background:#000;border:1px solid var(--line);border-radius:6px;position:relative}
+.pinw img{display:block;width:280px;border-radius:5px}
+.pinw .px{position:absolute;right:5px;top:5px;width:18px;height:18px;border-radius:50%;
+  background:var(--raised);border:1px solid var(--line);color:var(--faint);font-size:10px;display:grid;place-items:center}
+.pinw .px:hover{background:var(--red);color:#000;border-color:var(--red)}
+
+/* ---- editable block + text draft ---- */
+.tblock{display:inline-block;position:relative;border:1.5px dashed var(--acc);border-radius:3px;padding:8px 14px}
+.tblock .handle{position:absolute;width:11px;height:11px;background:#000;border:1.5px solid var(--acc);border-radius:2px}
+.tblock .handle.tl{left:-7px;top:-7px}.tblock .handle.tr{right:-7px;top:-7px}
+.tblock .handle.bl{left:-7px;bottom:-7px}.tblock .handle.br{right:-7px;bottom:-7px}
+.tdraft{display:inline-flex;align-items:center;border:1.5px solid var(--acc);border-radius:3px;
+  padding:5px 10px;font-size:18px;color:var(--ink);background:rgba(0,0,0,.35)}
+.tdraft .caret{width:1.6px;height:20px;background:var(--acc);margin-left:1px;animation:caret 1s steps(1) infinite}
+@keyframes caret{50%{opacity:0}}
+.tdraft .seltxt{background:rgba(82,199,234,.35);border-radius:2px}
+.tdraft .ime{border-bottom:1.5px solid var(--acc)}
+
+/* ---- settings window 820×600 — dark reskin (research §4.6) ---- */
+.setwin{width:820px;height:600px;background:#000;border-radius:12px;overflow:hidden;
+  display:flex;box-shadow:0 0 0 1px var(--line),0 24px 70px rgba(0,0,0,.6);color:var(--ink);text-align:left}
+.side{width:200px;flex:none;background:#050505;border-right:1px solid var(--soft);padding:44px 10px 10px}
+.side .sitem{display:flex;align-items:center;gap:9px;padding:0 9px;height:34px;border-radius:7px;
+  font-size:12px;color:var(--muted);cursor:default;margin-bottom:1px;border-left:2px solid transparent}
+.side .sitem .tile{width:22px;height:22px;border-radius:6px;background:var(--soft);display:grid;place-items:center;color:var(--muted);font-size:11px;flex:none}
+.side .sitem.on{background:var(--soft);border-left-color:var(--acc);color:var(--ink)}
+.side .sitem.on .tile{color:var(--acc)}
+.setbody{flex:1;padding:44px 24px 24px;overflow:hidden;position:relative}
+.setpage{display:none}
+.setpage.on{display:block}
+.settitle{font-size:20px;font-weight:700;letter-spacing:-.02em;margin-bottom:18px}
+.gcard{background:var(--raised);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:18px}
+.grow{display:flex;align-items:center;justify-content:space-between;padding:0 14px;height:52px;border-top:1px solid var(--soft)}
+.grow:first-child{border-top:0}
+.grow .gt{font-size:13px}
+.grow .gs{display:block;font-size:11px;color:var(--faint);margin-top:1px}
+.kcap{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 8px;border-radius:5px;
+  background:var(--raised);border:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted)}
+.kcap+.kcap{margin-left:4px}
+.sw{width:34px;height:20px;border-radius:10px;background:var(--line);position:relative;transition:background .15s;flex:none;cursor:default}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--faint);transition:left .15s,background .15s}
+.sw.on{background:var(--acc)}
+.sw.on::after{left:16px;background:#000}
+.selbox{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink);
+  background:var(--raised);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+.selbox::after{content:"▾";font-size:9px;color:var(--faint)}
+.recchip{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--acc);
+  border:1px solid rgba(82,199,234,.4);background:rgba(82,199,234,.08);border-radius:999px;padding:4px 10px}
+.okchip{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--grn);
+  border:1px solid rgba(48,209,88,.4);background:rgba(48,209,88,.07);border-radius:999px;padding:4px 10px}
+.accents{display:flex;gap:10px}
+.accw{width:24px;height:24px;border-radius:50%;cursor:default;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
+.accw.on{box-shadow:0 0 0 2px var(--raised),0 0 0 4px var(--acc)}
+.aboutico{width:56px;height:56px;border-radius:14px}
+.verline{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:10px}
+.setbtn{display:inline-block;font-size:12px;color:var(--ink);background:var(--raised);border:1px solid var(--line);
+  border-radius:999px;padding:7px 14px;margin-top:14px}
+
+/* ---- tray menu (native — macOS dark mock) ---- */
+.traym{width:264px;background:rgba(30,30,32,.95);backdrop-filter:blur(20px);border-radius:10px;
+  box-shadow:0 0 0 .5px rgba(255,255,255,.12),0 12px 34px rgba(0,0,0,.55);padding:5px;color:#ededed;font-size:13px}
+.traym .mi{display:flex;justify-content:space-between;align-items:center;padding:5px 12px;border-radius:6px}
+.traym .mi:hover{background:var(--acc);color:#000}
+.traym .mi .k{font-size:12px;opacity:.55}
+.traym .mi.dis{color:#6b6b6b;pointer-events:none}
+.traym .sep{height:1px;background:rgba(255,255,255,.1);margin:5px 12px}
+.trayicon{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:6px;background:#1a1a1a}
+
+@media(max-width:900px){.setwin{width:100%;height:auto;min-height:560px}.side{width:150px}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <p class="eyebrow">Quickshort · design kit — proposed</p>
+  <h1>App UI — every surface.</h1>
+  <p class="lede">Component sheet implementing <code>demo/app-ui-research.md</code>: every surface reskinned to the dark ui-2026 tokens (<code>#0a0a0a</code> + hairline <code>#262626</code> + accent <code>#52c7ea</code>). Real geometry kept from <code>crates/</code>. Today the app mixes <b>dark</b> overlay chrome with <b>light</b> macOS cards — this sheet is the unified proposal. Overlay is <b>interactive</b>: drag to select, arm tools, click actions. <span class="prop">NEW</span> = not in the app yet, <span class="chg">RESKIN</span> = exists but re-themed.</p>
+
+  <!-- ================= 01 · OVERLAY ================= -->
+  <div class="sec">
+    <div class="sec-label">01 · <b>CAPTURE OVERLAY</b> — interactive <span class="prop">CROSSHAIR · W×H CHIP · HANDLES</span></div>
+    <div class="stage" id="stage">
+      <img class="bg" src="../docs/assets/feat-overlay.png" draggable="false" alt="">
+      <div class="hintcap">DRAG TO SELECT · ACTIONS FLY TO THE ALBUM ↘</div>
+      <div class="xh h" id="xhH" hidden></div>
+      <div class="xh v" id="xhV" hidden></div>
+      <div class="dim" id="dim" hidden><span id="dimv">0 × 0</span><span class="u" id="dimu">CSS PX</span></div>
+      <div class="sel" id="sel">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="tbwrap" id="tbwrap" hidden></div>
+      <div class="stack" id="stack" hidden><div class="stackn" id="stackn" hidden></div></div>
+    </div>
+    <div class="specs">
+      <div class="r"><div class="k">DIM</div><div class="v"><code>(p &amp; 0xFEFEFE) &gt;&gt; 1</code> — 50% darken outside selection (keep)</div></div>
+      <div class="r"><div class="k">CROSSHAIR <span class="prop">NEW</span></div><div class="v">1px <code>#ededed @ 12–14%</code>, full monitor span — today: none</div></div>
+      <div class="r"><div class="k">SELECTION</div><div class="v"><b>dashed</b> 1.5px accent (dash 8/gap 4) while dragging → <b>solid</b> + 8 handles (11px, #000 fill) when confirmed — today: solid only, no handles</div></div>
+      <div class="r"><div class="k">W×H CHIP <span class="prop">NEW</span></div><div class="v">mono 11px on <code>#0a0a0a</code>+<code>#262626</code>; follows cursor while dragging, docks above top-left on confirm; <b>click toggles logical⇄physical</b> (Shottr parity)</div></div>
+      <div class="r"><div class="k">TOOLBAR</div><div class="v">28px discs <code>#0a0a0a@92%</code> rim <code>#262626</code> · separators <code>tools|history|actions</code> · active = accent disc + <code>#000</code> glyph · dock cascade bottom→top→right→left→inside (keep)</div></div>
+      <div class="r"><div class="k">AFTER ACTION</div><div class="v">the region flies to the <code>popup_pos</code> corner → <b>capture stack</b> (§05) — replaces the quick-access card entirely</div></div>
+    </div>
+  </div>
+
+  <!-- ================= 02 · TOOLBAR ================= -->
+  <div class="sec">
+    <div class="sec-label">02 · <b>ANNOTATION TOOLBAR</b> — grouped + separators <span class="chg">RESKIN</span></div>
+    <div class="frame">
+      <div class="tb-wrap-inner" id="tbstatic"></div>
+      <div class="cap">MANIPULATE · DRAW —sep— HISTORY —sep— TERMINAL ACTIONS (ShareX taxonomy)</div>
+    </div>
+    <div class="note">Order per research §4.2: <code>Select(V)</code> · <code>Pen(P) Arrow(A) Rect(R) Ellipse(O) Marker(M) Text(T) Pixelate(X)</code> │ <code>Undo ⌘Z · Redo ⌘⇧Z</code> │ <code>Save ⌘S · Copy ⌘C · OCR ⌘T · Share ⌘L</code> · <code>Scroll ⌘G · Record ⌘R</code>. One key per tool (CleanShot/Shottr convention) — key shows in the hover chip, not on the button. Hover a button above to see the tooltip.</div>
+  </div>
+
+  <!-- ================= 03 · OPTIONS ROWS ================= -->
+  <div class="sec">
+    <div class="sec-label">03 · <b>OPTIONS ROW VARIANTS</b></div>
+    <div class="row-set">
+      <div class="frame">
+        <div class="tbrow" id="optsShapes"></div>
+        <div class="cap">SHAPE TOOL — S/M/L DISCS + PALETTE</div>
+      </div>
+      <div class="frame">
+        <div class="tbrow" id="optsText"></div>
+        <div class="cap">TEXT TOOL — FONT SIZES + B + PALETTE</div>
+      </div>
+    </div>
+    <div class="note">Swatch selection = <b>accent ring outside the disc</b> (survives white/black swatches — research §4.2). Palette = macOS system colors. New input, zero chrome: <b>mouse wheel = stroke thickness</b> while a tool is armed (Flameshot); right-click radial palette optional v2.</div>
+  </div>
+
+  <!-- ================= 04 · BLOCKS & TEXT ================= -->
+  <div class="sec">
+    <div class="sec-label">04 · <b>EDITABLE BLOCKS + TEXT DRAFT</b></div>
+    <div class="row-set">
+      <div class="frame plain">
+        <div class="tblock">
+          <span class="handle tl"></span><span class="handle tr"></span><span class="handle bl"></span><span class="handle br"></span>
+          <svg width="150" height="60" viewBox="0 0 150 60"><rect x="8" y="8" width="134" height="44" rx="8" fill="none" stroke="#FF453A" stroke-width="3.6"/></svg>
+        </div>
+        <div class="cap">SELECTED BLOCK — DASHED BBOX + HANDLES</div>
+      </div>
+      <div class="frame plain">
+        <div class="tdraft">ship <span class="seltxt">it</span><span class="ime">nay</span><span class="caret"></span></div>
+        <div class="cap">TEXT DRAFT — SEL @35% · IME UNDERLINE · ACCENT CARET</div>
+      </div>
+    </div>
+    <div class="note">Change vs today: caret = <code>--accent</code> (signals editing, not output color); selected block gets the same 11px handle spec as the selection. IME <code>preedit</code> underlined; commit <code>Enter</code>, discard <code>Esc</code>.</div>
+  </div>
+
+  <!-- ================= 05 · CAPTURE STACK ================= -->
+  <div class="sec">
+    <div class="sec-label">05 · <b>CAPTURE STACK</b> — shots fly to the corner album <span class="prop">REPLACES QUICK-ACCESS CARD</span></div>
+    <div class="row-set">
+      <div class="frame plain" style="min-width:460px;min-height:170px;position:relative">
+        <!-- fanned stack, hover state rendered statically -->
+        <div style="position:relative;height:120px">
+          <div class="st" style="position:absolute;right:0;bottom:0;--i:3;background-image:url('../docs/assets/feat-overlay.png')"><span class="badge ok">✓</span></div>
+          <div class="st" style="position:absolute;right:110px;bottom:0;--i:2;background-image:url('../docs/assets/feat-annotate.png')"><span class="badge info">⧉</span></div>
+          <div class="st" style="position:absolute;right:220px;bottom:0;--i:1;background-image:url('../docs/assets/feat-settings.png')"><span class="badge work">◌</span></div>
+          <div class="st" style="position:absolute;right:330px;bottom:0;--i:0;background-image:url('../docs/assets/feat-tray.png')"><span class="badge err">✕</span><span class="bdel" style="display:grid">×</span></div>
+        </div>
+        <div class="cap">HOVER — FANS OUT · BADGES: ✓ SAVED · ⧉ LINK · ◌ UPLOADING · ✕ FAILED (RETRY)</div>
+      </div>
+      <div class="frame">
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--faint);margin-bottom:10px">RIGHT-CLICK MENU</div>
+        <div style="width:190px;background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:5px;font-size:12.5px">
+          <div style="padding:5px 10px;border-radius:6px">Reveal in Finder</div>
+          <div style="padding:5px 10px;border-radius:6px">Copy image</div>
+          <div style="padding:5px 10px;border-radius:6px">Share link <span style="color:var(--faint);font-size:11px">⌘L</span></div>
+          <div style="padding:5px 10px;border-radius:6px">Beautify</div>
+          <div style="padding:5px 10px;border-radius:6px">Pin to screen</div>
+          <div style="height:1px;background:var(--soft);margin:5px 10px"></div>
+          <div style="padding:5px 10px;border-radius:6px;color:var(--red)">Delete</div>
+        </div>
+        <div class="cap">ACTIONS LIVE ON THE THUMB — NOT ON A CARD</div>
+      </div>
+    </div>
+    <div class="note"><b>Replaces <code>quick_access.rs</code>.</b> The toolbar already committed the action — the stack is a <b>passive album</b>, not a decision card. Spec: after the toolbar action, the captured region animates flying to the <code>popup_pos</code> corner and lands on the stack (~550ms spring). Newest on top, up to ~5 visible (older collapse into the stack, count chip on top). <b>Hover → fans out</b>; click thumb → reveal/open; thumb is a <b>drag source</b> into any app; right-click → actions; <b>◌ badge while uploading</b> flips to ⧉ on success, ✕ on failure (click retries). Stack lingers until interacted; × on each thumb deletes. No countdown bar, no pills, no card.</div>
+  </div>
+
+  <!-- ================= 06 · TOASTS ================= -->
+  <div class="sec">
+    <div class="sec-label">06 · <b>TOASTS</b> — in-flight + errors only <span class="chg">DARK RESKIN</span></div>
+    <div class="row-set">
+      <div>
+        <div class="qtoast"><span class="ic work">◌</span><div><div class="t-main">Publishing link…</div><div class="t-sub">tunnel handshake · tunnl.gg</div></div></div>
+        <div class="cap">WORKING — SPINNING ◌ · NO COUNTDOWN</div>
+      </div>
+      <div>
+        <div class="qtoast"><span class="ic err">✕</span><div><div class="t-main">Share failed</div><div class="t-sub">tunnel timeout · retry ⌘L</div></div><span class="bar" style="width:110px;background:var(--red)"></span></div>
+        <div class="cap">ERROR — RETRY HINT IN SUB</div>
+      </div>
+    </div>
+    <div class="note">No "saved"/"copied" success toasts — <b>the flight to the stack IS the confirmation</b>. Toasts only exist while an action is in flight (upload, OCR) or when it fails. Spec unchanged: 30px icon cell, title 14px/550 + mono sub, ~300×64, drag-away ≥40px dismisses.</div>
+  </div>
+
+  <!-- ================= 07 · REC + PIN ================= -->
+  <div class="sec">
+    <div class="sec-label">07 · <b>REC DOCK + PIN WINDOW</b> <span class="chg">RESKIN</span></div>
+    <div class="row-set">
+      <div>
+        <div class="rec"><span class="rd"></span><span class="rt">REC 0:07</span><span class="stop">Stop</span></div>
+        <div class="cap">REC DOCK 172×46 — PULSE ~1.5Hz · STOP→RED</div>
+      </div>
+      <div>
+        <div class="pinw"><img src="../docs/assets/feat-annotate.png" alt=""><span class="px">×</span></div>
+        <div class="cap">PIN — 1px #262626 BORDER · × → RED</div>
+      </div>
+    </div>
+    <div class="note">REC dock keeps 172×46 shape (dot + mono timer + Stop); <code>#ff5f57</code> pulse. Reserve a pill slot if recording gains pause (Screen Studio). V2 idea: 1.5px <code>--red</code> frame on the recorded region itself (GNOME indicator). Pin: scroll = resize (Shottr), ⌥scroll = opacity later (StickyShot).</div>
+  </div>
+
+  <!-- ================= 08 · SETTINGS ================= -->
+  <div class="sec">
+    <div class="sec-label">08 · <b>SETTINGS WINDOW</b> — 820×600 <span class="chg">DARK RESKIN</span></div>
+    <div class="setwin">
+      <div class="side" id="setside"></div>
+      <div class="setbody">
+        <div class="setpage on" data-page="Capture">
+          <div class="settitle">Capture</div>
+          <div class="gcard">
+            <div class="grow"><div class="gt">Global hotkey<span class="gs">works in any app, any space</span></div><div><span class="kcap">⌘</span><span class="kcap">⇧</span><span class="kcap">S</span> <span class="recchip" style="margin-left:8px">PRESS KEYS</span></div></div>
+            <div class="grow"><div class="gt">Copy after save<span class="gs">also put the PNG on the clipboard</span></div><div class="sw"></div></div>
+            <div class="grow"><div class="gt">Popup position<span class="gs">toasts, card, REC dock corner</span></div><span class="selbox">Top right</span></div>
+          </div>
+        </div>
+        <div class="setpage" data-page="General">
+          <div class="settitle">General</div>
+          <div class="gcard">
+            <div class="grow"><div class="gt">Launch at login</div><div class="sw on"></div></div>
+            <div class="grow"><div class="gt">Auto-update<span class="gs">checks GitHub Releases daily</span></div><div class="sw on"></div></div>
+          </div>
+        </div>
+        <div class="setpage" data-page="Shortcuts">
+          <div class="settitle">Shortcuts</div>
+          <div class="gcard">
+            <div class="grow"><div class="gt">Save</div><div><span class="kcap">⌘</span><span class="kcap">S</span></div></div>
+            <div class="grow"><div class="gt">Copy to clipboard</div><div><span class="kcap">⌘</span><span class="kcap">C</span></div></div>
+            <div class="grow"><div class="gt">Extract text (OCR)</div><div><span class="kcap">⌘</span><span class="kcap">T</span></div></div>
+            <div class="grow"><div class="gt">Share link</div><div><span class="kcap">⌘</span><span class="kcap">L</span></div></div>
+            <div class="grow"><div class="gt">Scrolling capture</div><div><span class="kcap">⌘</span><span class="kcap">G</span></div></div>
+            <div class="grow"><div class="gt">Screen recording</div><div><span class="kcap">⌘</span><span class="kcap">R</span></div></div>
+            <div class="grow"><div class="gt">Undo / Redo</div><div><span class="kcap">⌘</span><span class="kcap">Z</span></div></div>
+          </div>
+        </div>
+        <div class="setpage" data-page="Appearance">
+          <div class="settitle">Appearance</div>
+          <div class="gcard">
+            <div class="grow"><div class="gt">Accent color<span class="gs">selection frame, active states</span></div>
+              <div class="accents">
+                <span class="accw on" style="background:#52c7ea"></span><span class="accw" style="background:#0A84FF"></span><span class="accw" style="background:#BF5AF2"></span><span class="accw" style="background:#FF6482"></span><span class="accw" style="background:#FF9F0A"></span><span class="accw" style="background:#32D74B"></span><span class="accw" style="background:#98989D"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="setpage" data-page="OCR">
+          <div class="settitle">OCR</div>
+          <div class="gcard">
+            <div class="grow"><div class="gt">Language<span class="gs">auto detects the script, or pin packs</span></div><span class="selbox">Auto</span></div>
+          </div>
+        </div>
+        <div class="setpage" data-page="Storage">
+          <div class="settitle">Storage</div>
+          <div class="gcard">
+            <div class="grow"><div class="gt">Save folder</div><span class="selbox">~/Pictures/quickshort</span></div>
+            <div class="grow"><div class="gt">Recent captures<span class="gs">entries in the tray menu</span></div><span class="selbox">8</span></div>
+            <div class="grow"><div class="gt">Auto-delete<span class="gs">keep captures for N days · 0 = forever</span></div><span class="selbox">Forever</span></div>
+          </div>
+        </div>
+        <div class="setpage" data-page="About">
+          <div class="settitle">About</div>
+          <div class="gcard" style="padding:18px 14px">
+            <img class="aboutico" src="../docs/assets/icon.png" alt="">
+            <div style="font-weight:600;margin-top:8px">Quickshort <span class="okchip" style="margin-left:6px">V0.4.0 ✓</span></div>
+            <div class="verline">rust stable · ~3 MB · no electron</div>
+            <span class="setbtn">Check for Updates…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note">Geometry kept (sidebar 200px, rows 52px, grouped inset cards). Reskin per §4.6: sidebar <code>#050505</code> + 2px accent left-bar on active, cards <code>#0a0a0a</code>/<code>#262626</code>, icon tiles <code>#1a1a1a</code>, <code>.kbd-inline</code> keycaps, accent-filled switches (<code>#000</code> knob), version chip <code>.chip.ok</code> → <code>UPDATE →</code> when pending.</div>
+  </div>
+
+  <!-- ================= 09 · TRAY ================= -->
+  <div class="sec">
+    <div class="sec-label">09 · <b>TRAY MENU + ICON</b> — native per-OS (keep)</div>
+    <div class="row-set">
+      <div class="traym">
+        <div class="mi">Capture Region<span class="k">⌘⇧S</span></div>
+        <div class="mi">Recent Captures<span class="k">›</span></div>
+        <div class="sep"></div>
+        <div class="mi">Open Screenshots Folder</div>
+        <div class="mi">Settings…</div>
+        <div class="mi">✓ Launch at Login</div>
+        <div class="sep"></div>
+        <div class="mi">Check for Updates…</div>
+        <div class="mi">Support Quickshort</div>
+        <div class="mi">Quit Quickshort<span class="k">⌘Q</span></div>
+      </div>
+      <div>
+        <div class="trayicon"><svg width="18" height="18" viewBox="0 0 18 18"><path d="M3 7V3h4M11 3h4v4M15 11v4h-4M7 15H3v-4" stroke="#ededed" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></div>
+        <div class="cap">TRAY GLYPH — CROP CORNERS, SDF-DRAWN</div>
+      </div>
+    </div>
+    <div class="note">Native menu per toolkit (<code>muda</code>) — never fake a context menu. Order per §4.7; hotkey label reflects live config; update item flips to <code>Update to vX — Restart to Install</code>. Monochrome template icon on macOS; accent permissible on Linux/Windows.</div>
+  </div>
+
+</div>
+
+<script>
+/* ============ toolbar builder — research §4.2 grouping ============ */
+const SWATCH = ['#FF453A','#FF9F0A','#FFD60A','#32D74B','#0A84FF','#BF5AF2','#FFFFFF','#1C1C1E'];
+const ICONS = {
+  select:'<path d="M3.8 2.4v9.6l2.7-2.5 2.1 3.5 2-0.8-2.1-3.5 3.7-0.1z"/>',
+  pen:'<path d="M3.4 12.6L9.4 6.6l3 3-6 6z" transform="translate(-1.5 -3.2) scale(1.05)"/>',
+  arrow:'<path d="M3 13L13 3M8 3h5v5"/>',
+  rect:'<rect x="3" y="4" width="10" height="8" rx="1"/>',
+  ellipse:'<ellipse cx="8" cy="8" rx="5" ry="3.8"/>',
+  marker:'<path d="M3 11.5L7 7.5l3.5 3.5-4 4zM7 7.5l4-4"/>',
+  text:'<text x="4.4" y="12" font-family="Geist,system-ui" font-size="11" fill="currentColor" stroke="none">T</text>',
+  pixel:'<g class="f"><rect x="3" y="3" width="4" height="4" rx=".8"/><rect x="9" y="3" width="4" height="4" rx=".8"/><rect x="3" y="9" width="4" height="4" rx=".8"/><rect x="9" y="9" width="4" height="4" rx=".8"/></g>',
+  undo:'<path d="M6.5 4.5L3.5 7.5l3 3M3.5 7.5h6a3.5 3.5 0 0 1 0 7H8"/>',
+  redo:'<path d="M9.5 4.5l3 3-3 3M12.5 7.5h-6a3.5 3.5 0 0 0 0 7H8"/>',
+  save:'<path d="M3 8v5h10V8M8 2v7M5 6.5L8 9.5l3-3"/>',
+  copy:'<rect x="5.5" y="5.5" width="7" height="7" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4.5A1.5 1.5 0 0 0 3 3.5V9a1.5 1.5 0 0 0 1.5 1.5h1"/>',
+  scroll:'<rect x="4.5" y="2" width="7" height="12" rx="1.2"/><path d="M8 5.5v5M6 8.5l2 2 2-2"/>',
+  record:'<rect x="2.5" y="5" width="7.5" height="6.5" rx="1.4"/><path d="M10 7l3.5-2v6.5L10 9.5"/>',
+  ocr:'<path d="M3 4h10M3 8h11M3 12h5"/>',
+  share:'<path d="M3 7v6h10V7M8 2v7M5 4.5L8 1.5l3 3"/>'
+};
+/* tool keys (proposed): V P A R O M T X — research §4.2 */
+const GROUPS = [
+  ['select'],
+  ['pen','arrow','rect','ellipse','marker','text','pixel'],
+  null,                                   // separator
+  ['undo','redo'],
+  null,
+  ['save','copy','ocr','share'],
+  ['scroll','record']
+];
+const TOOLS = ['select','pen','arrow','rect','ellipse','marker','text','pixel'];
+const TIPS = {select:'SELECT · V',pen:'PEN · P',arrow:'ARROW · A',rect:'RECT · R',ellipse:'ELLIPSE · O',marker:'MARKER · M',text:'TEXT · T',pixel:'PIXELATE · X',
+  undo:'UNDO · ⌘Z',redo:'REDO · ⌘⇧Z',save:'SAVE · ⌘S',copy:'COPY · ⌘C',ocr:'OCR · ⌘T',share:'SHARE · ⌘L',scroll:'SCROLL · ⌘G',record:'RECORD · ⌘R'};
+
+function tbButton(name,cls=''){
+  return `<div class="tb ${cls}" data-t="${name}" data-tip="${TIPS[name]||''}"><svg viewBox="0 0 16 16">${ICONS[name]}</svg></div>`;
+}
+const SEP='<div class="tbsep"></div>', GAP='<div class="tbgap"></div>';
+function buildMain(armed){
+  let html='';
+  for(const g of GROUPS){
+    if(g===null){html+=SEP;continue;}
+    html+=g.map(a=>tbButton(a, TOOLS.includes(a)&&a===armed?'on':((a==='undo')?'off':''))).join('');
+  }
+  // small gap between primary actions and scroll/record (sub-group, §4.2)
+  return html.replace(tbButton('scroll'),GAP+tbButton('scroll'));
+}
+function sizeDiscs(){
+  return [0,1,2].map(i=>`<div class="tb${i===1?' on':''}" data-tip="${['STROKE S','STROKE M','STROKE L'][i]}"><span class="sz" style="--s:${[.35,.6,.95][i]}"></span></div>`).join('');
+}
+function swatches(active=4){
+  return SWATCH.map((c,i)=>`<div class="tb" data-tip="COLOR"><span class="sw${i===active?' selw':''}" style="background:${c};${i===7?'box-shadow:inset 0 0 0 1px #555':''}"></span></div>`).join('');
+}
+function fontSizes(){
+  return [12,14,18,24,32,48].map((s,i)=>`<div class="tb${i===1?' on':''}" data-tip="${s}PX"><span class="fsz">${s}</span></div>`).join('');
+}
+const optsShapes=()=>sizeDiscs()+SEP+swatches();
+const optsText=()=>fontSizes()+`<div class="tb" data-tip="BOLD"><span class="fsz b">B</span></div>`+SEP+swatches();
+
+/* static (section 02): arrow armed */
+document.getElementById('tbstatic').innerHTML =
+  `<div class="tbrow">${buildMain('arrow')}</div><div class="tbrow" style="padding-top:2px">${optsShapes()}</div>`;
+document.getElementById('optsShapes').innerHTML = optsShapes();
+document.getElementById('optsText').innerHTML = optsText();
+
+/* ============ interactive overlay (research §4.1) ============ */
+const stage=document.getElementById('stage'), sel=document.getElementById('sel'),
+      dim=document.getElementById('dim'), dimv=document.getElementById('dimv'), dimu=document.getElementById('dimu'),
+      xhH=document.getElementById('xhH'), xhV=document.getElementById('xhV'),
+      tbwrap=document.getElementById('tbwrap');
+let sx=0,sy=0,dragging=false,moved=false,armed=null,phys=false;
+let selRect=null;   // confirmed {x,y,w,h}
+
+const pos=e=>{const r=stage.getBoundingClientRect();
+  return[Math.min(Math.max(e.clientX-r.left,0),r.width),Math.min(Math.max(e.clientY-r.top,0),r.height),r];};
+
+function dimText(w,h){
+  dimv.textContent=phys?`${Math.round(w*2)} × ${Math.round(h*2)}`:`${Math.round(w)} × ${Math.round(h)}`;
+  dimu.textContent=phys?'PHYS PX':'CSS PX';
+}
+dim.addEventListener('click',e=>{e.stopPropagation();phys=!phys;
+  const r=selRect||{w:0,h:0};dimText(r.w,r.h);});
+dim.addEventListener('pointerdown',e=>e.stopPropagation());
+
+function buildTb(){
+  tbwrap.innerHTML=`<div class="tbrow">${buildMain(armed)}</div>`+
+    (armed?`<div class="tbrow" style="padding-top:2px">${armed==='text'?optsText():optsShapes()}</div>`:'');
+  tbwrap.querySelectorAll('.tb').forEach(b=>{
+    b.addEventListener('pointerdown',e=>e.stopPropagation());
+    b.addEventListener('click',()=>{
+      const t=b.dataset.t;if(!t)return;
+      if(TOOLS.includes(t)){armed=(armed===t?null:t);buildTb();dockTb();}
+      else flyToStack(t);
+    });
+  });
+}
+function dockTb(){
+  if(!selRect)return;
+  const bw=tbwrap.offsetWidth,bh=tbwrap.offsetHeight,r=stage.getBoundingClientRect();
+  let tx=Math.min(Math.max(selRect.x+selRect.w-bw,4),r.width-bw-4), ty=selRect.y+selRect.h+8;
+  if(ty+bh>r.height-4)ty=Math.max(selRect.y-bh-8,4);
+  tbwrap.style.left=tx+'px';tbwrap.style.top=ty+'px';
+}
+function dockDim(){
+  if(!selRect)return;
+  const dw=dim.offsetWidth;
+  let dx=Math.min(selRect.x,stage.getBoundingClientRect().width-dw-4);
+  let dy=selRect.y-34; if(dy<4)dy=selRect.y+selRect.h+8;   // flip below when clipped
+  dim.style.left=Math.max(dx,4)+'px';dim.style.top=dy+'px';
+}
+
+/* ---- capture stack: action commits → shot flies to the corner album ---- */
+const stack=document.getElementById('stack'),stackn=document.getElementById('stackn');
+const BADGE={save:['ok','✓'],copy:['ok','✓'],ocr:['ok','✓'],scroll:['ok','✓'],share:['work','◌'],record:['info','●']};
+const BGIMG='../docs/assets/feat-overlay.png';
+
+function flyToStack(act){
+  const r=stage.getBoundingClientRect();
+  // fly element = the selected region, shrinking into the corner slot
+  const f=document.createElement('div');f.className='fly';
+  const s=selRect;
+  Object.assign(f.style,{left:s.x+'px',top:s.y+'px',width:s.w+'px',height:s.h+'px',
+    backgroundImage:`url('${BGIMG}')`,backgroundSize:`${r.width}px ${r.height}px`,
+    backgroundPosition:`-${s.x}px -${s.y}px`});
+  stage.appendChild(f);
+  // overlay "commits": chrome disappears as the shot leaves
+  sel.style.display='none';tbwrap.hidden=true;dim.hidden=true;armed=null;selRect=null;
+  const tx=r.width-14-104, ty=r.height-14-66;
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    Object.assign(f.style,{left:tx+'px',top:ty+'px',width:'104px',height:'66px',opacity:'.9'});
+  }));
+  f.addEventListener('transitionend',()=>{f.remove();landThumb(act);},{once:true});
+}
+function landThumb(act){
+  const[cls,g]=BADGE[act]||['ok','✓'];
+  const st=document.createElement('div');st.className='st';
+  st.style.backgroundImage=`url('${BGIMG}')`;
+  st.innerHTML=`<span class="badge ${cls}">${g}</span><span class="bdel">×</span>`;
+  st.querySelector('.bdel').addEventListener('click',e=>{e.stopPropagation();st.remove();relayout();});
+  st.addEventListener('click',()=>{st.remove();relayout();});   // click = open (demo: removes)
+  stack.appendChild(st);stack.hidden=false;
+  while(stack.querySelectorAll('.st').length>5)stack.querySelector('.st').remove();
+  relayout();
+  // share "upload" resolves: ◌ → ⧉
+  if(act==='share')setTimeout(()=>{const b=st.querySelector('.badge');
+    if(b){b.className='badge info';b.textContent='⧉';}},1400);
+}
+function relayout(){
+  const sts=[...stack.querySelectorAll('.st')];
+  sts.forEach((s,i)=>s.style.setProperty('--i',sts.length-1-i));
+  stackn.hidden=sts.length<2;stackn.textContent=`${sts.length} SHOTS`;
+  stack.hidden=sts.length===0;
+}
+
+stage.addEventListener('pointerdown',e=>{
+  if(e.target.closest('.tbwrap,.dim,.stack'))return;
+  [sx,sy]=pos(e);dragging=true;moved=false;selRect=null;
+  sel.style.display='none';sel.classList.remove('ok');
+  tbwrap.hidden=true;armed=null;dim.hidden=true;
+  stage.classList.add('used');stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener('pointermove',e=>{
+  const[x,y,r]=pos(e);
+  xhH.hidden=xhV.hidden=false;xhH.style.top=y+'px';xhV.style.left=x+'px';
+  if(!dragging)return;
+  const l=Math.min(sx,x),t=Math.min(sy,y),w=Math.abs(x-sx),h=Math.abs(y-sy);
+  sel.style.display='block';
+  Object.assign(sel.style,{left:l+'px',top:t+'px',width:w+'px',height:h+'px'});
+  if(w>6&&h>6){moved=true;
+    // chip follows cursor (+14,+18) while dragging
+    dim.hidden=false;dimText(w,h);
+    dim.style.left='auto';dim.style.top='auto';
+    dim.style.left=Math.min(x+14,r.width-dim.offsetWidth-4)+'px';
+    dim.style.top=Math.min(y+18,r.height-30)+'px';
+  }
+});
+stage.addEventListener('pointerup',e=>{
+  if(!dragging)return;dragging=false;
+  const[x,y]=pos(e);
+  if(!moved){sel.style.display='none';tbwrap.hidden=true;dim.hidden=true;selRect=null;return;}
+  selRect={x:Math.min(sx,x),y:Math.min(sy,y),w:Math.abs(x-sx),h:Math.abs(y-sy)};
+  sel.classList.add('ok');           // solid + handles
+  dockDim();                          // chip docks above top-left
+  buildTb();tbwrap.hidden=false;dockTb();
+});
+stage.addEventListener('pointerleave',()=>{if(!dragging){xhH.hidden=xhV.hidden=true;}});
+addEventListener('keydown',e=>{if(e.key==='Escape'){
+  sel.style.display='none';tbwrap.hidden=true;dim.hidden=true;armed=null;selRect=null;
+  stage.classList.remove('used');}});
+
+/* ============ settings sidebar ============ */
+const PAGES=[['Capture','▢'],['General','⚙'],['Shortcuts','⌘'],['Appearance','◑'],['OCR','T'],['Storage','▤'],['About','ⓘ']];
+const side=document.getElementById('setside');
+side.innerHTML=PAGES.map(([n,g],i)=>`<div class="sitem${i===0?' on':''}" data-p="${n}"><span class="tile">${g}</span>${n}</div>`).join('');
+side.querySelectorAll('.sitem').forEach(el=>el.addEventListener('click',()=>{
+  side.querySelectorAll('.sitem').forEach(s=>s.classList.toggle('on',s===el));
+  document.querySelectorAll('.setpage').forEach(p=>p.classList.toggle('on',p.dataset.page===el.dataset.p));
+}));
+document.querySelectorAll('.sw').forEach(s=>s.addEventListener('click',()=>s.classList.toggle('on')));
+document.querySelectorAll('.accw').forEach(a=>a.addEventListener('click',()=>{
+  document.querySelectorAll('.accw').forEach(x=>x.classList.remove('on'));a.classList.add('on');}));
+</script>
+</body>
+</html>
