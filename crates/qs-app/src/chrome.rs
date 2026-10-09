@@ -267,13 +267,17 @@ impl Stack {
     fn thumb_rect(&self, i: usize, w: f64, h: f64) -> FRect {
         let (ax, ay) = self.anchor(w, h);
         let inward = if self.corner.right() { -1.0 } else { 1.0 };
-        let dx = inward * (STACK_DX + (FAN - STACK_DX) * self.fan_t) * i as f64;
+        // hiding collapses every offset so the edge shows ONE sliver
+        // (the newest thumb) instead of a diagonal trail of peeks
+        let collapse = 1.0 - self.hide_t;
+        let dx = inward * (STACK_DX + (FAN - STACK_DX) * self.fan_t) * i as f64 * collapse;
         // edge-hidden slides outward toward the corner's side, leaving
         // a PEEK sliver of the newest thumb as the grab handle
         let hide_dx = -inward * self.hide_t * (TW - PEEK);
         // the fan is a straight horizontal row — the cascade's vertical
         // offset collapses as fan_t opens (was spreading diagonally)
-        let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY } * i as f64 * (1.0 - self.fan_t);
+        let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY }
+            * i as f64 * (1.0 - self.fan_t) * collapse;
         FRect {
             x: ax + dx + hide_dx,
             y: ay + dy,
@@ -1028,5 +1032,43 @@ mod tests {
             Rgba([unprem(p & 0xFF), unprem((p >> 8) & 0xFF), unprem((p >> 16) & 0xFF), a as u8])
         });
         img.save("/tmp/qs-chrome-hover.png").unwrap();
+    }
+
+    /// Idle past HIDE_AFTER_MS slides the stack into the edge and the
+    /// cascade collapses — only the newest thumb's sliver shows.
+    #[test]
+    fn idle_hides_to_single_sliver() {
+        let mut st = Stack::new(Corner::BR);
+        for i in 0..3u8 {
+            st.land(
+                shot_img(1200, 800, [40 + i * 40, 60, 90]),
+                ShotKind::Saved,
+                None,
+                FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+                true,
+                2.0,
+            );
+        }
+        // wind the idle clock back past the threshold
+        st.idle_since = Instant::now() - Duration::from_secs(10);
+        st.settle(Instant::now());
+        assert!(st.hide_anim, "idle past the deadline must start the hide tween");
+        st.settle(Instant::now() + Duration::from_millis(400));
+        assert_eq!(st.hide_t, 1.0);
+
+        // every thumb converged on the newest one's rect — one sliver
+        let r0 = st.thumb_rect(0, 1440.0, 900.0);
+        for i in 1..3 {
+            let r = st.thumb_rect(i, 1440.0, 900.0);
+            assert_eq!(r.x, r0.x, "thumb {i} must collapse behind the newest");
+            assert_eq!(r.y, r0.y);
+        }
+        // and the sliver sits at the right edge, PEEK wide
+        assert!((r0.x - (1440.0 - MARGIN - PEEK)).abs() < 1.0, "x={}", r0.x);
+
+        // activity brings it back
+        st.touch();
+        st.settle(Instant::now() + Duration::from_millis(400));
+        assert_eq!(st.hide_t, 0.0);
     }
 }
