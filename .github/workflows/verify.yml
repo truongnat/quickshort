@@ -91,6 +91,10 @@ jobs:
           sleep 3
           ls -la "$XDG_RUNTIME_DIR" > /tmp/env.log 2>&1
           WAYLAND_DISPLAY=wl-test wayland-info >> /tmp/env.log 2>&1 | head -30
+          # weston-debug binds the debug protocol (--debug above) and
+          # prints every client request plus the kill reason
+          WAYLAND_DISPLAY=wl-test weston-debug proto > /tmp/proto.log 2>&1 &
+          WDBG=$!
           ( cd /tmp && WAYLAND_DEBUG=1 WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
             strace -f -o /tmp/strace.log "$GITHUB_WORKSPACE/target/debug/quickshort" --chrome > /tmp/chrome-wl.log 2>&1 ) &
           APP=$!
@@ -107,7 +111,9 @@ jobs:
           cat /tmp/env.log
           echo "--- strace tail ---"
           tail -40 /tmp/strace.log 2>/dev/null || true
-          kill $APP $WESTON 2>/dev/null || true
+          echo "--- proto tail ---"
+          tail -80 /tmp/proto.log 2>/dev/null || true
+          kill $APP $WDBG $WESTON 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: chrome-wayland-smoke
@@ -117,6 +123,7 @@ jobs:
             /tmp/weston.log
             /tmp/env.log
             /tmp/strace.log
+            /tmp/proto.log
           if-no-files-found: warn
       - name: dump logs on failure
         if: failure()
