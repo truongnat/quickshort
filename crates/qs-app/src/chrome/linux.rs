@@ -398,8 +398,6 @@ struct WlBuf {
 struct WlState {
     compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
-    region: Option<WlRegion>,
-    /// Option per slot: indices are wl_buffer udata, so removal must
     /// never renumber — dead slots stay `None` until swept
     bufs: Vec<Option<WlBuf>>,
     /// slot indices released by the server since the last dispatch
@@ -427,7 +425,6 @@ impl Wl {
         if state.shm.is_none() {
             anyhow::bail!("compositor offers no wl_shm");
         }
-        state.region = Some(compositor.create_region(&qh, ()));
         Ok(Self {
             surface: surface as *mut wl_proxy,
             conn,
@@ -532,11 +529,13 @@ impl Wl {
         let bufp = self.state.bufs[idx].as_ref().map(|b| b.buf.id().as_ptr());
         let Some(bufp) = bufp else { return };
 
-        // one persistent wl_region, emptied by subtracting a plane-sized
-        // rect — regions are surface-local (logical) coords, so no
-        // scale multiply here
-        if let Some(region) = &self.state.region {
-            region.subtract(-0x4000_0000, -0x4000_0000, i32::MAX, i32::MAX);
+        // fresh wl_region per present — the server copies it into the
+        // pending input region, so a one-shot object avoids mutating
+        // shared state across commits and the giant-subtract trick
+        // (±2³⁰ rects) some compositors choke on. Destroy after the
+        // request is queued is safe: regions are copied, not referenced.
+        if let Some(comp) = &self.state.compositor {
+            let region = comp.create_region(&qh, ());
             for r in rects {
                 let x0 = r.x.floor() as i32;
                 let y0 = r.y.floor() as i32;
@@ -553,6 +552,7 @@ impl Wl {
                     region.id().as_ptr(),
                 );
             }
+            region.destroy();
         }
         unsafe {
             let wl = wayland_client_handle();
@@ -567,12 +567,11 @@ impl Wl {
 
 impl Drop for Wl {
     fn drop(&mut self) {
-        // explicit destroys must run while the connection is still up;
+        // explicit destroys must run while the connection is still up
+        // (winit disconnects the display after `exiting`, so Host/Demo
+        // clear chrome.wins there); region objects are one-shot now
         for b in self.state.bufs.drain(..).flatten() {
             drop(b);
-        }
-        if let Some(r) = self.state.region.take() {
-            r.destroy();
         }
     }
 }
