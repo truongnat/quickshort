@@ -86,7 +86,7 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR=/tmp/xdg
           mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
-          weston --backend=headless --socket=wl-test --width=1024 --height=768 --idle-time=0 > /tmp/weston.log 2>&1 &
+          weston --debug --backend=headless --socket=wl-test --width=1024 --height=768 --idle-time=0 > /tmp/weston.log 2>&1 &
           WESTON=$!
           sleep 3
           ls -la "$XDG_RUNTIME_DIR" > /tmp/env.log 2>&1
