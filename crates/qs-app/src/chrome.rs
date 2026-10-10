@@ -501,6 +501,7 @@ impl Stack {
         self.fly.is_some() || self.fan_anim || self.hide_anim || self.box_t0.is_some()
     }
 
+
     /// Open the lightbox on thumb `i` with a fade/scale-in — packs the
     /// shot's pixels once so frames only blit.
     fn open_lightbox(&mut self, i: usize) {
@@ -627,10 +628,12 @@ fn ease_out_back(t: f64) -> f64 {
 
 /// Source-over a packed premul pixel `A<<24|B<<16|G<<8|R` at coverage
 /// `cov`. Scaling the premult channels by `cov` keeps color and alpha
-/// consistent.
+/// consistent. The bounds check is load-bearing: without it an
+/// off-screen rect (e.g. a thumb hidden past the right edge) wraps
+/// `y*w + x` into the next row — the image re-appears on the LEFT.
 #[inline]
 fn blit_px(cv: &mut Canvas, x: i32, y: i32, px: u32, cov: f64) {
-    if cov <= 0.0 {
+    if cov <= 0.0 || x < 0 || y < 0 || x >= cv.w as i32 || y >= cv.h as i32 {
         return;
     }
     let i = y as usize * cv.w + x as usize;
@@ -651,8 +654,18 @@ fn blit_px(cv: &mut Canvas, x: i32, y: i32, px: u32, cov: f64) {
 /// logical rect `dst`, clipped to a rounded rect `rad` (logical).
 fn blit_img(cv: &mut Canvas, src: &[u32], sw: usize, sh: usize, dst: FRect, rad: f64) {
     let s = cv.scale;
-    for py in (dst.y * s) as i32..((dst.y + dst.h) * s).ceil() as i32 {
-        for px in (dst.x * s) as i32..((dst.x + dst.w) * s).ceil() as i32 {
+    // clip to the buffer — off-screen pixels are dead work, and would
+    // wrap into visible rows downstream
+    let (x0, x1) = (
+        ((dst.x * s) as i32).max(0),
+        (((dst.x + dst.w) * s).ceil() as i32).min(cv.w as i32),
+    );
+    let (y0, y1) = (
+        ((dst.y * s) as i32).max(0),
+        (((dst.y + dst.h) * s).ceil() as i32).min(cv.h as i32),
+    );
+    for py in y0..y1 {
+        for px in x0..x1 {
             let lx = px as f64 / s;
             let ly = py as f64 / s;
             if rad > 0.0 {
@@ -1073,6 +1086,56 @@ mod tests {
         st.touch();
         st.settle(Instant::now() + Duration::from_millis(400));
         assert_eq!(st.hide_t, 0.0);
+
+        // mid-hide frame for eyeballing the slide path
+        st.hide_t = 0.5;
+        let mut buf = vec![0u32; 2880 * 1800];
+        let mut cv = Canvas { buf: &mut buf, w: 2880, h: 1800, scale: 2.0 };
+        let font = crate::settings::system_font().expect("font");
+        st.render(&mut cv, &font, 0x52C7EA, Instant::now());
+        let img = RgbaImage::from_fn(2880, 1800, |x, y| {
+            let p = buf[(y as usize) * 2880 + x as usize];
+            let a = ((p >> 24) & 0xFF) as u32;
+            let unprem = |c: u32| -> u8 {
+                if a == 0 { 0 } else { ((c * 255 / a).min(255)) as u8 }
+            };
+            Rgba([unprem(p & 0xFF), unprem((p >> 8) & 0xFF), unprem((p >> 16) & 0xFF), a as u8])
+        });
+        img.save("/tmp/qs-chrome-midhide.png").unwrap();
+    }
+
+    /// A thumb parked fully past the RIGHT edge must not wrap into the
+    /// next buffer row — an unchecked `y*w + x` used to re-emit it on
+    /// the LEFT edge.
+    #[test]
+    fn hidden_thumbs_dont_wrap_to_left_edge() {
+        let mut st = Stack::new(Corner::BR);
+        st.land(
+            shot_img(1200, 800, [90, 60, 40]),
+            ShotKind::Saved,
+            None,
+            FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+            true,
+            2.0,
+        );
+        st.hide_t = 1.0; // fully slid off the right edge
+        let (bw, bh) = (2880usize, 1800usize);
+        let mut buf = vec![0u32; bw * bh];
+        {
+            let mut cv = Canvas { buf: &mut buf, w: bw, h: bh, scale: 2.0 };
+            let font = crate::settings::system_font().expect("font");
+            st.render(&mut cv, &font, 0x52C7EA, Instant::now());
+        }
+        // nothing but the docked chip may be opaque — and it lives at
+        // the right edge, so the left half must be empty
+        for y in 0..bh {
+            for x in 0..bw / 2 {
+                assert_eq!(
+                    buf[y * bw + x], 0,
+                    "hidden thumb wrapped to left edge at phys ({x},{y})"
+                );
+            }
+        }
     }
 
     /// Click thumb0 → lightbox opens; backdrop click closes it.
