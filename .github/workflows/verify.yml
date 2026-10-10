@@ -86,7 +86,7 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR=/tmp/xdg
           mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
-          weston --backend=headless --socket=wl-test --idle-time=0 > /tmp/weston.log 2>&1 &
+          weston --backend=headless --socket=wl-test --width=1024 --height=768 --idle-time=0 > /tmp/weston.log 2>&1 &
           WESTON=$!
           sleep 2
           ( cd /tmp && WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
@@ -100,6 +100,8 @@ jobs:
           mv /tmp/wayland-screenshot*.png /tmp/chrome-wl.png || true
           identify /tmp/chrome-wl.png || true
           cat /tmp/chrome-wl.log
+          echo "--- weston ---"
+          cat /tmp/weston.log
           kill $APP $WESTON 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
@@ -107,6 +109,7 @@ jobs:
           path: |
             /tmp/chrome-wl.png
             /tmp/chrome-wl.log
+            /tmp/weston.log
           if-no-files-found: warn
       - name: dump logs on failure
         if: failure()
