@@ -216,7 +216,7 @@ pub struct ChromeWin {
     pub stack: Stack,
     rep: Retained<NSBitmapImageRep>,
     buf: Vec<u32>,
-    mon_id: u32,
+    mon_key: String,
     /// logical size/origin of this monitor
     lw: f64,
     lh: f64,
@@ -230,13 +230,12 @@ pub struct ChromeWin {
 }
 
 impl ChromeWin {
-    fn new(
+    pub(super) fn new(
         el: &ActiveEventLoop,
         mon: &MonitorHandle,
         corner: Corner,
         font: Rc<fontdue::Font>,
         accent: u32,
-        sink: Rc<dyn Fn(ChromeEv)>,
     ) -> Result<Self> {
         let sf = mon.scale_factor();
 
@@ -341,7 +340,7 @@ impl ChromeWin {
             layer.setActions(Some(&acts));
         }
         content.addSubview(&view);
-        *view.ivars().handler.borrow_mut() = Some(sink);
+        // sink binds the WindowId — set later via set_sink() from land()
 
         // 32LE without AlphaFirst = memory bytes R,G,B,A — the buffer's
         // A<<24|B<<16|G<<8|R u32 packing. (AlphaFirst would put alpha at
@@ -402,7 +401,7 @@ impl ChromeWin {
             stack: Stack::new(corner),
             rep,
             buf: vec![0; pw * ph],
-            mon_id: mon.native_id(),
+            mon_key: super::mon_key(mon),
             lw: mw,
             lh: mh,
             mx,
@@ -417,8 +416,13 @@ impl ChromeWin {
     pub fn id(&self) -> WindowId {
         self.win.id()
     }
-    fn mon_id(&self) -> u32 {
-        self.mon_id
+    pub(super) fn mon_key(&self) -> &str {
+        &self.mon_key
+    }
+    /// Rebind the event sink once the real WindowId exists — the generic
+    /// `land` calls this right after `new`.
+    pub(super) fn set_sink(&self, sink: Rc<dyn Fn(ChromeEv)>) {
+        *self.view.ivars().handler.borrow_mut() = Some(sink);
     }
     pub fn stack(&self) -> &Stack {
         &self.stack
@@ -466,7 +470,7 @@ impl ChromeWin {
     }
 
     /// Fly a finished shot into this monitor's stack.
-    fn land(&mut self, l: Land) {
+    pub(super) fn land(&mut self, l: Land) {
         let from = l
             .sel
             .map(|r| FRect {
@@ -541,166 +545,3 @@ impl Drop for ChromeWin {
     }
 }
 
-/* ==================== entry point ==================== */
-
-/// Monitor containing the selection's centre, else the primary.
-fn monitor_for(el: &ActiveEventLoop, sel: Option<qs_core::Rect>) -> Option<MonitorHandle> {
-    let mut mons = el.available_monitors();
-    let primary = el.primary_monitor();
-    match sel {
-        Some(r) => {
-            let (cx, cy) = (r.x as f64 + r.w as f64 / 2.0, r.y as f64 + r.h as f64 / 2.0);
-            mons.find(|m| {
-                let sf = m.scale_factor();
-                let p = m.position();
-                let s = m.size();
-                let (mx, my) = (p.x as f64 / sf, p.y as f64 / sf);
-                let (mw, mh) = (s.width as f64 / sf, s.height as f64 / sf);
-                cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
-            })
-            .or(primary)
-        }
-        None => primary,
-    }
-}
-
-/// `Chrome::land` — the shared entry. Err hands the `Land` back intact
-/// so the host can fall back to the quick-access card.
-pub fn land(chrome: &mut Chrome, el: &ActiveEventLoop, l: Land) -> Result<(), Land> {
-    let Some(mon) = monitor_for(el, l.sel) else {
-        return Err(l);
-    };
-    let mid = mon.native_id();
-    if chrome.wins.iter().all(|w| w.mon_id() != mid) {
-        let font = Rc::new(match crate::settings::system_font() {
-            Ok(f) => f,
-            Err(_) => return Err(l),
-        });
-        let corner = Corner::from_popup_pos(chrome.pos());
-        // the sink binds the window id, which only exists after creation —
-        // give the view a placeholder first and rebind to the real id below
-        let w = match ChromeWin::new(
-            el,
-            &mon,
-            corner,
-            font,
-            chrome.accent(),
-            (chrome.sink)(WindowId::dummy()),
-        ) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("chrome win: {e:#}");
-                return Err(l);
-            }
-        };
-        *w.view.ivars().handler.borrow_mut() = Some((chrome.sink)(w.id()));
-        chrome.wins.push(w);
-    }
-    let w = chrome.wins.iter_mut().find(|w| w.mon_id() == mid).unwrap();
-    w.land(l);
-    Ok(())
-}
-
-/* ==================== `--chrome` demo ==================== */
-
-/// Bare event loop hosting one stack — drops three synthetic shots a
-/// second apart, then leaves the window live for hover/click/menu poking.
-pub fn standalone(pos: &str, accent: u32) -> Result<()> {
-    use winit::application::ApplicationHandler;
-    use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
-
-    enum Ev {
-        View(WindowId, ChromeEv),
-    }
-
-    fn shot(i: usize) -> Land {
-        let img = image::RgbaImage::from_fn(1200, 800, |x, y| {
-            image::Rgba([
-                ((x * 200 / 1200) as u8).saturating_add(i as u8 * 40),
-                (y * 200 / 800) as u8,
-                120u8.saturating_add(i as u8 * 30),
-                255,
-            ])
-        });
-        Land {
-            img,
-            kind: [ShotKind::Saved, ShotKind::Shared, ShotKind::Record][i % 3],
-            path: None,
-            sel: Some(qs_core::Rect::new(200, 200, 400, 300)),
-            instant: false,
-        }
-    }
-
-    struct Demo {
-        chrome: Chrome,
-        drops: usize,
-        next_drop: Instant,
-    }
-    impl Demo {
-        fn drop(&mut self, el: &ActiveEventLoop) {
-            if self.chrome.land(el, shot(self.drops)).is_ok() {
-                self.drops += 1;
-            }
-            self.next_drop = Instant::now() + Duration::from_secs(1);
-        }
-    }
-    impl ApplicationHandler<Ev> for Demo {
-        fn resumed(&mut self, el: &ActiveEventLoop) {
-            self.drop(el);
-        }
-        fn window_event(&mut self, _el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
-            self.chrome.window_event(id, &ev);
-        }
-        fn user_event(&mut self, _el: &ActiveEventLoop, ev: Ev) {
-            let Ev::View(id, e) = ev;
-            if let Some((wid, cmd)) = self.chrome.event(id, e) {
-                match cmd {
-                    ChromeCmd::Remove(i) => {
-                        self.chrome.remove(wid, i);
-                        self.chrome.sweep();
-                    }
-                    ChromeCmd::ClearAll => {
-                        self.chrome.clear_all(wid);
-                        self.chrome.sweep();
-                    }
-                    ChromeCmd::Menu { idx, x, y } => eprintln!("menu: thumb {idx} @ {x},{y}"),
-                    ChromeCmd::Redraw => {}
-                }
-            }
-        }
-        fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-            if self.drops < 3 && Instant::now() >= self.next_drop {
-                self.drop(el);
-            }
-            let mut wake = self.chrome.pump();
-            if self.drops < 3 {
-                wake = Some(wake.map_or(self.next_drop, |w| w.min(self.next_drop)));
-            }
-            el.set_control_flow(match wake {
-                Some(w) => ControlFlow::WaitUntil(w),
-                None => ControlFlow::Wait,
-            });
-        }
-    }
-
-    let el = EventLoop::<Ev>::with_user_event().build()?;
-    let proxy: EventLoopProxy<Ev> = el.create_proxy();
-    let px = proxy.clone();
-    let chrome = Chrome::new(
-        accent,
-        pos,
-        Box::new(move |wid| {
-            let px = px.clone();
-            Rc::new(move |e| {
-                let _ = px.send_event(Ev::View(wid, e));
-            })
-        }),
-    );
-    let mut demo = Demo {
-        chrome,
-        drops: 0,
-        next_drop: Instant::now(),
-    };
-    el.run_app(&mut demo)?;
-    Ok(())
-}

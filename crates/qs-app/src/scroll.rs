@@ -25,8 +25,11 @@ const EPS: f64 = 6.0;
 /// Block until the scroll settles, then return the stitched tall image.
 pub fn run(sel: qs_core::Rect) -> Result<RgbaImage> {
     let backend = qs_capture::backend()?;
-    let grab = || -> Result<RgbaImage> {
-        let frames = backend.capture_all()?;
+    // One session reused across polls — a fresh portal session each grab
+    // would re-prompt for consent on Wayland.
+    let mut session = backend.session()?;
+    let mut grab = || -> Result<RgbaImage> {
+        let frames = session()?;
         qs_core::stitch(&frames, sel)
             .map(|(i, _)| i)
             .context("selection covers no monitor")

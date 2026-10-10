@@ -256,9 +256,11 @@ Free and open source, built in spare time. If Quickshort saves you time:
 - Mutter inhibits screencast while the screen is locked
 - Wayland needs one overlay window per monitor (no global window
   positioning); pointer grab carries the selection across monitors
-- Wayland has no global hotkey API — run the resident app for the tray
-  (needs an AppIndicator extension on GNOME) and bind
-  `quickshort --capture` as a desktop custom shortcut
+- Wayland has no global hotkey API — the resident app registers through
+  the compositor instead (GNOME custom keybinding, KDE GlobalShortcuts
+  portal, swaymsg/hyprctl); other Wayland desktops: bind
+  `quickshort --capture` as a custom shortcut. The tray needs an
+  AppIndicator extension on GNOME
 - Unsigned macOS builds: first launch needs one right-click → Open; the
   self-signed identity keeps TCC grants across updates but is not a
   Developer ID

@@ -17,6 +17,7 @@ use std::rc::Rc;
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
+use super::live::LiveStream;
 use crate::ScreenCapture;
 
 const BUS: &str = "org.gnome.Mutter.ScreenCast";
@@ -765,51 +766,11 @@ fn opts<'a>(entries: &'a [(&'a str, Value<'a>)]) -> HashMap<String, Value<'a>> {
 
 // ------------------------------------------------------------------ record
 
-/// Live screencast of one monitor — full-monitor RGBA frames arrive on
-/// `rx` until `stop` fires. Dropping stops the mutter session.
-pub struct LiveStream {
-    /// monitor rect in virtual logical coords — the app crops `sel` out
-    /// of each frame with `scale` (physical px per logical px)
-    pub logical: Rect,
-    pub scale: f64,
-    rx: std::sync::mpsc::Receiver<image::RgbaImage>,
-    conn: Connection,
-    session: OwnedObjectPath,
-    handle: Option<std::thread::JoinHandle<()>>,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    _poke: DamagePoke,
-}
-
-impl LiveStream {
-    pub fn frames(&self) -> &std::sync::mpsc::Receiver<image::RgbaImage> {
-        &self.rx
-    }
-    pub fn stop(&self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-impl Drop for LiveStream {
-    fn drop(&mut self) {
-        self.stop();
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
-        let _ = Proxy::new(
-            &self.conn,
-            BUS,
-            self.session.as_str(),
-            "org.gnome.Mutter.ScreenCast.Session",
-        )
-        .and_then(|p| p.call::<_, _, ()>("Stop", &()));
-    }
-}
-
 /// Screencast session on the monitor overlapping `sel` the most, cursor
 /// embedded so the recording shows it. PipeWire frames are pumped on a
 /// private thread into a small channel — a slow consumer gets dropped
 /// frames rather than back-pressuring the stream.
-pub fn record_start(sel: Rect) -> Result<LiveStream> {
+pub(super) fn record_start(sel: Rect) -> Result<LiveStream> {
     let conn = Connection::session().context("session dbus")?;
     let mons = display_config(&conn)?;
     let m = mons
@@ -873,25 +834,33 @@ pub fn record_start(sel: Rect) -> Result<LiveStream> {
         }
     });
 
-    Ok(LiveStream {
-        logical: m.logical,
-        scale: m.phys.0 as f64 / m.logical.w.max(1) as f64,
+    let poke = DamagePoke::start(vec![(
+        m.logical.x + m.logical.w as i32 / 2,
+        m.logical.y + m.logical.h as i32 / 2,
+    )]);
+    Ok(LiveStream::new(
+        m.logical,
+        m.phys.0 as f64 / m.logical.w.max(1) as f64,
         rx,
-        conn,
-        session,
-        handle: Some(handle),
         stop,
-        _poke: DamagePoke::start(vec![(
-            m.logical.x + m.logical.w as i32 / 2,
-            m.logical.y + m.logical.h as i32 / 2,
-        )]),
-    })
+        handle,
+        Some(Box::new(move || {
+            drop(poke);
+            let _ = Proxy::new(
+                &conn,
+                BUS,
+                session.as_str(),
+                "org.gnome.Mutter.ScreenCast.Session",
+            )
+            .and_then(|p| p.call::<_, _, ()>("Stop", &()));
+        })),
+    ))
 }
 
 /// PipeWire consumer loop: every processed buffer becomes an RgbaImage;
 /// `try_send` drops the frame on backpressure (encoder falling behind →
 /// realtime wins over completeness).
-fn stream_pump(
+pub(super) fn stream_pump(
     node: u32,
     expect: (u32, u32),
     tx: std::sync::mpsc::SyncSender<image::RgbaImage>,

@@ -23,7 +23,7 @@ use crate::tray;
 use crate::update::{self, Release};
 
 /// Everything that wakes the loop besides window events.
-enum HostEvent {
+pub(crate) enum HostEvent {
     /// Tray "Capture Region" or the global hotkey.
     Trigger,
     Menu(MenuId),
@@ -91,6 +91,11 @@ struct Host {
     hotkey: Option<HotKey>,
     /// hotkey unregistered while the settings recorder is armed
     hotkey_suspended: bool,
+    /// Wayland compositor/portal binding — gsettings custom keybinding,
+    /// KDE GlobalShortcuts session, sway/hyprland IPC. Present only when
+    /// hotkey_linux::register found a desktop mechanism.
+    #[cfg(target_os = "linux")]
+    hotkey_guard: Option<crate::hotkey_linux::Guard>,
     settings: Option<Settings>,
     toast: Option<Toast>,
     /// Post-capture thumbnail card — fallback where the chrome layer
@@ -136,6 +141,8 @@ impl Host {
             hotkeys: None,
             hotkey: None,
             hotkey_suspended: false,
+            #[cfg(target_os = "linux")]
+            hotkey_guard: None,
             settings: None,
             toast: None,
             card: None,
@@ -313,6 +320,12 @@ impl Host {
                 return;
             }
         }
+        // compositor/portal binding needs the same treatment — otherwise
+        // the grabbed chord never reaches the settings recorder
+        #[cfg(target_os = "linux")]
+        if let Some(g) = &mut self.hotkey_guard {
+            g.suspend(suspended);
+        }
         self.hotkey_suspended = suspended;
     }
 
@@ -348,6 +361,17 @@ impl Host {
                     }
                 }
             }
+        }
+        // Wayland: re-issue the compositor/portal binding for the new chord
+        // (re-BindShortcuts for KDE, gsettings/swaymsg/hyprctl overwrite)
+        #[cfg(target_os = "linux")]
+        if let Some(g) = &mut self.hotkey_guard {
+            if let Err(e) = g.rebind(&self.cfg.hotkey) {
+                eprintln!("hotkey rebind failed: {e:#}");
+            }
+            // a Changed event while the recorder is still armed must not
+            // leave the binding live
+            g.suspend(self.hotkey_suspended);
         }
         self.rebuild_menu();
     }
@@ -605,16 +629,33 @@ impl ApplicationHandler<HostEvent> for Host {
             }
         }
 
+        // On Wayland the X11 grabs below never fire — register through the
+        // compositor's own mechanism (gsettings / portal / swaymsg /
+        // hyprctl) and skip the manager entirely when that works.
         #[cfg(target_os = "linux")]
-        if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            // the tray works through the AppIndicator extension, but
-            // global-hotkey's X11 grabs never reach Wayland — the supported
-            // path is a GNOME custom shortcut running `quickshort --capture`
-            eprintln!(
-                "note: on Wayland the global hotkey won't fire — bind \
-                 `quickshort --capture` in Settings > Keyboard"
-            );
-        }
+        let try_manager = if crate::hotkey_linux::is_wayland() {
+            match crate::hotkey_linux::register(self.proxy.clone(), &self.cfg.hotkey) {
+                Ok(guard) => {
+                    self.hotkey_guard = guard;
+                    if self.hotkey_guard.is_none() {
+                        eprintln!(
+                            "note: no hotkey mechanism for this Wayland desktop — \
+                             bind `quickshort --capture` in your compositor config"
+                        );
+                    }
+                    false
+                }
+                Err(e) => {
+                    eprintln!("hotkey: compositor registration failed: {e:#} — \
+                               bind `quickshort --capture` in your compositor config");
+                    true
+                }
+            }
+        } else {
+            true
+        };
+        #[cfg(not(target_os = "linux"))]
+        let try_manager = true;
 
         let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
         // rehydrate the album from disk — recents are newest-first, so
@@ -656,41 +697,43 @@ impl ApplicationHandler<HostEvent> for Host {
             }
         }
 
-        match self.cfg.hotkey.parse::<HotKey>() {
-            Ok(hk) => {
-                match GlobalHotKeyManager::new().and_then(|m| {
-                    m.register(hk)?;
-                    Ok(m)
-                }) {
-                    Ok(m) => {
-                        self.hotkey = Some(hk);
-                        self.hotkeys = Some(m);
-                    }
-                    Err(e) => {
-                        eprintln!("hotkey register failed: {e:#}");
-                        // the configured chord may be shell-owned (Windows
-                        // claims PrintScreen for Snipping on fresh installs)
-                        // — fall back to a chord that is always free
-                        const FALLBACK: &str = "Ctrl+Shift+S";
-                        if self.cfg.hotkey != FALLBACK {
-                            if let Ok(fbk) = FALLBACK.parse::<HotKey>() {
-                                match GlobalHotKeyManager::new().and_then(|m| {
-                                    m.register(fbk)?;
-                                    Ok(m)
-                                }) {
-                                    Ok(m) => {
-                                        eprintln!("hotkey fell back to {FALLBACK}");
-                                        self.hotkey = Some(fbk);
-                                        self.hotkeys = Some(m);
+        if try_manager {
+            match self.cfg.hotkey.parse::<HotKey>() {
+                Ok(hk) => {
+                    match GlobalHotKeyManager::new().and_then(|m| {
+                        m.register(hk)?;
+                        Ok(m)
+                    }) {
+                        Ok(m) => {
+                            self.hotkey = Some(hk);
+                            self.hotkeys = Some(m);
+                        }
+                        Err(e) => {
+                            eprintln!("hotkey register failed: {e:#}");
+                            // the configured chord may be shell-owned (Windows
+                            // claims PrintScreen for Snipping on fresh installs)
+                            // — fall back to a chord that is always free
+                            const FALLBACK: &str = "Ctrl+Shift+S";
+                            if self.cfg.hotkey != FALLBACK {
+                                if let Ok(fbk) = FALLBACK.parse::<HotKey>() {
+                                    match GlobalHotKeyManager::new().and_then(|m| {
+                                        m.register(fbk)?;
+                                        Ok(m)
+                                    }) {
+                                        Ok(m) => {
+                                            eprintln!("hotkey fell back to {FALLBACK}");
+                                            self.hotkey = Some(fbk);
+                                            self.hotkeys = Some(m);
+                                        }
+                                        Err(e) => eprintln!("fallback register failed: {e:#}"),
                                     }
-                                    Err(e) => eprintln!("fallback register failed: {e:#}"),
                                 }
                             }
                         }
                     }
                 }
+                Err(e) => eprintln!("bad hotkey {:?}: {e}", self.cfg.hotkey),
             }
-            Err(e) => eprintln!("bad hotkey {:?}: {e}", self.cfg.hotkey),
         }
 
         // honor the retention policy, then the once-a-day update check
@@ -709,7 +752,14 @@ impl ApplicationHandler<HostEvent> for Host {
 
     fn user_event(&mut self, el: &ActiveEventLoop, ev: HostEvent) {
         match ev {
-            HostEvent::Trigger => self.trigger(el),
+            HostEvent::Trigger => {
+                // in-process hotkey sources (KDE portal signal thread)
+                // must honor the recorder suspension the same way an
+                // unregistered X11 grab does
+                if !self.hotkey_suspended {
+                    self.trigger(el);
+                }
+            }
             HostEvent::Menu(id) => self.on_menu(el, id),
             HostEvent::UpdateCheck { res, manual } => match res {
                 Ok(Some(rel)) => {

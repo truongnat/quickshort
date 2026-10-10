@@ -9,14 +9,23 @@ use qs_core::{CapturedFrame, Rect};
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod poll;
 #[cfg(target_os = "windows")]
 mod windows;
 
 /// Capture every monitor's raw pixels together with its virtual-space geometry.
-pub trait ScreenCapture {
+/// Sync: `session()` hands out a closure borrowing `&self` that must be
+/// Send for the scroll-capture poll thread.
+pub trait ScreenCapture: Sync {
     fn capture_all(&self) -> Result<Vec<CapturedFrame>>;
+
+    /// Repeated grabs over one backend session — the scroll stitcher polls
+    /// several times a second, and on xdg-desktop-portal each `capture_all`
+    /// would re-run the consent flow. Default: re-grab every call.
+    fn session(&self) -> Result<Box<dyn FnMut() -> Result<Vec<CapturedFrame>> + Send + '_>> {
+        Ok(Box::new(|| self.capture_all()))
+    }
 
     /// The monitor frame overlapping `sel` the most — the recording loop
     /// calls this every tick, so backends may capture just that display
@@ -43,7 +52,7 @@ pub fn platform_init() {
 /// Live one-monitor screencast — a PipeWire push stream on Wayland, a
 /// re-capture polling loop where the OS has no push API wired in.
 #[cfg(target_os = "linux")]
-pub use linux::wayland::{record_start, LiveStream};
+pub use linux::live::{record_start, LiveStream};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use poll::{record_start, PollStream};
 

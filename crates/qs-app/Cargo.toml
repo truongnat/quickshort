@@ -35,6 +35,11 @@ muda = "0.21.0"
 tray-icon = "0.26.0"
 # tray-icon/muda call gtk; linux runs them on a dedicated gtk::main() thread
 gtk = "0.18"
+# kde wayland hotkey goes through the GlobalShortcuts portal (zbus);
+# async-io/futures-lite drive the portal Response/Activated signals
+zbus = { version = "5", features = ["blocking"] }
+async-io = "2"
+futures-lite = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"

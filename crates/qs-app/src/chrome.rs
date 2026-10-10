@@ -8,11 +8,14 @@
 //! that is R,G,B,A bytes, what NSBitmapImageRep and wl_shm ARGB8888 take.
 //! All drawing goes through `Canvas::blend_over`.
 
+use anyhow::Result;
 use image::RgbaImage;
 use qs_overlay::sdf::{ellipse_sdf, fill_cov, rrect_sdf, stroke_cov, Canvas};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use winit::event_loop::ActiveEventLoop;
+use winit::monitor::MonitorHandle;
 
 #[cfg(target_os = "macos")]
 #[path = "chrome/macos.rs"]
@@ -346,8 +349,44 @@ impl Stack {
         Some(FRect { x, y, w: pw, h: ph })
     }
 
-    /// Interactive regions in logical coords for the platform's
-    /// hit-test/input-region. Order matters: first match wins. Thumb
+    /// The wide retention zone as rects — platform backends feed these
+    /// to their input-region API (Wayland `wl_region`, X11 XShape,
+    /// Windows `SetWindowRgn`) so pointer moves inside the hysteresis
+    /// zone still reach the surface while the rest of the desktop stays
+    /// click-through. Rects may overlap; regions union them.
+    pub fn zone_rects(&self, w: f64, h: f64) -> Vec<FRect> {
+        if self.lightbox.is_some() {
+            return vec![FRect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            }];
+        }
+        let mut v = Vec::new();
+        let n = self
+            .shots
+            .len()
+            .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        for &ht in &[self.hide_t, 0.0, 1.0] {
+            for &ft in &[self.fan_t, 0.0, 1.0] {
+                for i in 0..n {
+                    v.push(self.thumb_rect_at(i, w, h, ft, ht));
+                }
+                if self.shots.len() >= 2 {
+                    v.push(self.chip_rect_at(w, h, ht));
+                }
+            }
+        }
+        for r in &mut v {
+            r.x -= 28.0;
+            r.y -= 28.0;
+            r.w += 56.0;
+            r.h += 56.0;
+        }
+        v
+    }
+
     /// rects are padded so the × disc overhanging the edge stays live.
     pub fn input_rects(&self, w: f64, h: f64) -> Vec<(FRect, Hit)> {
         if self.lightbox.is_some() {
@@ -1035,7 +1074,7 @@ impl Chrome {
     /// Fly the shot into the stack. On failure the `Land` is handed back
     /// so the host can fall back to the quick-access card.
     pub fn land(&mut self, el: &winit::event_loop::ActiveEventLoop, l: Land) -> Result<(), Land> {
-        imp::land(self, el, l)
+        land(self, el, l)
     }
 
     /// Window events (redraw, cursor-left). Returns true if consumed.
@@ -1104,10 +1143,171 @@ impl Chrome {
     }
 }
 
+/* ==================== entry point (shared by every backend) ========== */
+
+/// Monitor containing the selection's centre, else the primary.
+fn monitor_for(el: &ActiveEventLoop, sel: Option<qs_core::Rect>) -> Option<MonitorHandle> {
+    let mut mons = el.available_monitors();
+    let primary = el.primary_monitor();
+    match sel {
+        Some(r) => {
+            let (cx, cy) = (r.x as f64 + r.w as f64 / 2.0, r.y as f64 + r.h as f64 / 2.0);
+            mons.find(|m| {
+                let sf = m.scale_factor();
+                let p = m.position();
+                let s = m.size();
+                let (mx, my) = (p.x as f64 / sf, p.y as f64 / sf);
+                let (mw, mh) = (s.width as f64 / sf, s.height as f64 / sf);
+                cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
+            })
+            .or(primary)
+        }
+        None => primary,
+    }
+}
+
+/// Positions/name don't make a stable cross-platform id — the key only
+/// needs to tell one monitor from another within a session.
+fn mon_key(m: &MonitorHandle) -> String {
+    format!(
+        "{:?}@{:?}x{:?}s{:.3}",
+        m.position(),
+        m.size().width,
+        m.size().height,
+        m.scale_factor()
+    )
+}
+
+/// `Chrome::land` — the shared entry. Err hands the `Land` back intact
+/// so the host can fall back to the quick-access card.
+fn land(chrome: &mut Chrome, el: &ActiveEventLoop, l: Land) -> Result<(), Land> {
+    let Some(mon) = monitor_for(el, l.sel) else {
+        return Err(l);
+    };
+    let key = mon_key(&mon);
+    if chrome.wins.iter().all(|w| w.mon_key() != key) {
+        let font = Rc::new(match crate::settings::system_font() {
+            Ok(f) => f,
+            Err(_) => return Err(l),
+        });
+        let corner = Corner::from_popup_pos(chrome.pos());
+        let w = match ChromeWin::new(el, &mon, corner, font, chrome.accent()) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("chrome win: {e:#}");
+                return Err(l);
+            }
+        };
+        // the sink binds the window id, which only exists after creation
+        w.set_sink((chrome.sink)(w.id()));
+        chrome.wins.push(w);
+    }
+    let w = chrome.wins.iter_mut().find(|w| w.mon_key() == key).unwrap();
+    w.land(l);
+    Ok(())
+}
+
 /// `--chrome` demo: a bare event loop hosting one stack on the primary
 /// monitor, landing synthetic shots so the layer can be verified by hand.
 pub fn standalone(pos: &str, accent: u32) -> anyhow::Result<()> {
-    imp::standalone(pos, accent)
+    use winit::application::ApplicationHandler;
+    use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
+    use winit::window::WindowId;
+
+    enum Ev {
+        View(WindowId, ChromeEv),
+    }
+
+    fn shot(i: usize) -> Land {
+        let img = image::RgbaImage::from_fn(1200, 800, |x, y| {
+            image::Rgba([
+                ((x * 200 / 1200) as u8).saturating_add(i as u8 * 40),
+                (y * 200 / 800) as u8,
+                120u8.saturating_add(i as u8 * 30),
+                255,
+            ])
+        });
+        Land {
+            img,
+            kind: [ShotKind::Saved, ShotKind::Shared, ShotKind::Record][i % 3],
+            path: None,
+            sel: Some(qs_core::Rect::new(200, 200, 400, 300)),
+            instant: false,
+        }
+    }
+
+    struct Demo {
+        chrome: Chrome,
+        drops: usize,
+        next_drop: Instant,
+    }
+    impl Demo {
+        fn drop(&mut self, el: &ActiveEventLoop) {
+            if self.chrome.land(el, shot(self.drops)).is_ok() {
+                self.drops += 1;
+            }
+            self.next_drop = Instant::now() + Duration::from_secs(1);
+        }
+    }
+    impl ApplicationHandler<Ev> for Demo {
+        fn resumed(&mut self, el: &ActiveEventLoop) {
+            self.drop(el);
+        }
+        fn window_event(&mut self, _el: &ActiveEventLoop, id: WindowId, ev: winit::event::WindowEvent) {
+            self.chrome.window_event(id, &ev);
+        }
+        fn user_event(&mut self, _el: &ActiveEventLoop, ev: Ev) {
+            let Ev::View(id, e) = ev;
+            if let Some((wid, cmd)) = self.chrome.event(id, e) {
+                match cmd {
+                    ChromeCmd::Remove(i) => {
+                        self.chrome.remove(wid, i);
+                        self.chrome.sweep();
+                    }
+                    ChromeCmd::ClearAll => {
+                        self.chrome.clear_all(wid);
+                        self.chrome.sweep();
+                    }
+                    ChromeCmd::Menu { idx, x, y } => eprintln!("menu: thumb {idx} @ {x},{y}"),
+                    ChromeCmd::Redraw => {}
+                }
+            }
+        }
+        fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+            if self.drops < 3 && Instant::now() >= self.next_drop {
+                self.drop(el);
+            }
+            let mut wake = self.chrome.pump();
+            if self.drops < 3 {
+                wake = Some(wake.map_or(self.next_drop, |w| w.min(self.next_drop)));
+            }
+            el.set_control_flow(match wake {
+                Some(w) => ControlFlow::WaitUntil(w),
+                None => ControlFlow::Wait,
+            });
+        }
+    }
+
+    let el = EventLoop::<Ev>::with_user_event().build()?;
+    let proxy: EventLoopProxy<Ev> = el.create_proxy();
+    let px = proxy.clone();
+    let chrome = Chrome::new(
+        accent,
+        pos,
+        Box::new(move |wid| {
+            let px = px.clone();
+            Rc::new(move |e| {
+                let _ = px.send_event(Ev::View(wid, e));
+            })
+        }),
+    );
+    let mut demo = Demo {
+        chrome,
+        drops: 0,
+        next_drop: Instant::now(),
+    };
+    el.run_app(&mut demo)?;
+    Ok(())
 }
 
 #[cfg(test)]

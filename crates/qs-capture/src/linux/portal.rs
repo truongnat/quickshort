@@ -21,7 +21,8 @@ use zbus::blocking::{Connection, Proxy};
 use zbus::proxy::SignalStream;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
-use super::wayland::{grab_frames, mk_frame, DamagePoke};
+use super::live::LiveStream;
+use super::wayland::{grab_frames, mk_frame, stream_pump, DamagePoke};
 use crate::ScreenCapture;
 
 const DESKTOP: &str = "org.freedesktop.portal.Desktop";
@@ -37,8 +38,25 @@ type Opts = HashMap<String, Value<'static>>;
 
 pub struct PortalCapture;
 
-impl ScreenCapture for PortalCapture {
-    fn capture_all(&self) -> Result<Vec<CapturedFrame>> {
+/// One open portal ScreenCast session: CreateSession -> SelectSources ->
+/// Start run once, then every grab is just one PipeWire frame per stream.
+/// Reusing it across grabs is what kills the consent-dialog-per-poll on
+/// compositors that don't honor persist_mode.
+struct PortalSession {
+    conn: Connection,
+    session_path: String,
+    nodes: Vec<u32>,
+    /// per-stream rect the portal reported (position + size)
+    logicals: Vec<Rect>,
+    /// expected pixel size per stream, in stream order
+    expects: Vec<(u32, u32)>,
+    _poke: DamagePoke,
+}
+
+impl PortalSession {
+    /// `multiple` lets the consent dialog offer every monitor; `false`
+    /// asks for a single output (record picks the best overlap anyway).
+    fn open(multiple: bool) -> Result<Self> {
         let conn = Connection::session().context("session dbus")?;
         let sc = Proxy::new(&conn, DESKTOP, ROOT, CAST)?;
 
@@ -67,7 +85,7 @@ impl ScreenCapture for PortalCapture {
         let mut opts = Opts::new();
         opts.insert("handle_token".into(), vstr(&req_tok));
         opts.insert("types".into(), Value::from(1u32)); // monitors
-        opts.insert("multiple".into(), Value::from(true));
+        opts.insert("multiple".into(), Value::from(multiple));
         // a cursor_mode the portal doesn't advertise is a hard
         // InvalidArgument — GNOME reports 0 available modes, so omit it
         let modes: u32 = sc.get_property("AvailableCursorModes").unwrap_or(0);
@@ -148,18 +166,86 @@ impl ScreenCapture for PortalCapture {
         // same starvation quirk as mutter: producers may wait for damage
         let _poke = DamagePoke::start(centers);
         let expects: Vec<(u32, u32)> = logicals.iter().map(|r| (r.w, r.h)).collect();
-        let imgs = grab_frames(&nodes, &expects)?;
-
-        // best-effort cleanup — the compositor reaps the session with us anyway
-        let _ = Proxy::new(&conn, DESKTOP, session_path.as_str(), SESSION)
-            .and_then(|p| p.call::<_, _, ()>("Close", &()));
-
-        let mut frames = Vec::with_capacity(imgs.len());
-        for (img, rect) in imgs.into_iter().zip(logicals) {
-            frames.push(mk_frame(img, rect));
-        }
-        Ok(frames)
+        Ok(Self {
+            conn,
+            session_path,
+            nodes,
+            logicals,
+            expects,
+            _poke,
+        })
     }
+
+    /// One frame per stream — the compositor keeps feeding the PipeWire
+    /// nodes for the session's lifetime, no re-consent needed.
+    fn grab(&mut self) -> Result<Vec<CapturedFrame>> {
+        let imgs = grab_frames(&self.nodes, &self.expects)?;
+        Ok(imgs
+            .into_iter()
+            .zip(self.logicals.iter().copied())
+            .map(|(img, r)| mk_frame(img, r))
+            .collect())
+    }
+}
+
+impl Drop for PortalSession {
+    fn drop(&mut self) {
+        // best-effort cleanup — the compositor reaps the session with us anyway
+        let _ = Proxy::new(&self.conn, DESKTOP, self.session_path.as_str(), SESSION)
+            .and_then(|p| p.call::<_, _, ()>("Close", &()));
+    }
+}
+
+impl ScreenCapture for PortalCapture {
+    fn capture_all(&self) -> Result<Vec<CapturedFrame>> {
+        PortalSession::open(true)?.grab()
+    }
+
+    /// Scroll capture polls several times a second — one open session,
+    /// one consent, one PipeWire reconnect per grab.
+    fn session(&self) -> Result<Box<dyn FnMut() -> Result<Vec<CapturedFrame>> + Send + '_>> {
+        let mut s = PortalSession::open(true)?;
+        Ok(Box::new(move || s.grab()))
+    }
+}
+
+/// Live stream of the monitor overlapping `sel` — one portal session
+/// whose PipeWire node feeds frames until the LiveStream drops.
+pub(super) fn record_start(sel: Rect) -> Result<LiveStream> {
+    let session = PortalSession::open(false)?;
+    let i = session
+        .logicals
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, r)| {
+            r.intersection(&sel)
+                .map(|o| o.w as i64 * o.h as i64)
+                .unwrap_or(0)
+        })
+        .context("no portal stream overlaps the selection")?
+        .0;
+    let logical = session.logicals[i];
+    let node = session.nodes[i];
+    let expect = session.expects[i];
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<image::RgbaImage>(3);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let handle = std::thread::spawn(move || {
+        if let Err(e) = stream_pump(node, expect, tx, stop2) {
+            eprintln!("record stream: {e:#}");
+        }
+    });
+
+    // dropping the session sends Session.Close and stops the damage poke
+    Ok(LiveStream::new(
+        logical,
+        expect.0 as f64 / logical.w.max(1) as f64,
+        rx,
+        stop,
+        handle,
+        Some(Box::new(move || drop(session))),
+    ))
 }
 
 // ------------------------------------------------------------- helpers

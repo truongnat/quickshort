@@ -11,6 +11,8 @@ mod actions;
 mod chrome;
 mod config;
 mod host;
+#[cfg(target_os = "linux")]
+mod hotkey_linux;
 mod oneshot;
 mod pin;
 mod quick_access;
