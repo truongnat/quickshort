@@ -409,6 +409,12 @@ impl Host {
         let _ = menu.append(&MenuItem::with_id(chrome::MENU_PIN, "Pin", true, None));
         let _ = menu.append(&muda::PredefinedMenuItem::separator());
         let _ = menu.append(&MenuItem::with_id(chrome::MENU_DEL, "Delete", true, None));
+        let _ = menu.append(&MenuItem::with_id(
+            chrome::MENU_CLEAR,
+            "Clear All",
+            true,
+            None,
+        ));
         let view = self
             .chrome
             .wins
@@ -473,6 +479,10 @@ impl Host {
             }
             chrome::MENU_DEL => {
                 self.chrome.remove(wid, idx);
+                self.chrome.sweep();
+            }
+            chrome::MENU_CLEAR => {
+                self.chrome.clear_all(wid);
                 self.chrome.sweep();
             }
             _ => {}
@@ -851,6 +861,10 @@ impl ApplicationHandler<HostEvent> for Host {
                     ChromeCmd::Menu { idx, x, y } => self.chrome_menu(wid, idx, x, y),
                     ChromeCmd::Remove(i) => {
                         self.chrome.remove(wid, i);
+                        self.chrome.sweep();
+                    }
+                    ChromeCmd::ClearAll => {
+                        self.chrome.clear_all(wid);
                         self.chrome.sweep();
                     }
                     ChromeCmd::Redraw => {} // handled inside Chrome::event

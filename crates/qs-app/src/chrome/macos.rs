@@ -659,6 +659,10 @@ pub fn standalone(pos: &str, accent: u32) -> Result<()> {
                         self.chrome.remove(wid, i);
                         self.chrome.sweep();
                     }
+                    ChromeCmd::ClearAll => {
+                        self.chrome.clear_all(wid);
+                        self.chrome.sweep();
+                    }
                     ChromeCmd::Menu { idx, x, y } => eprintln!("menu: thumb {idx} @ {x},{y}"),
                     ChromeCmd::Redraw => {}
                 }

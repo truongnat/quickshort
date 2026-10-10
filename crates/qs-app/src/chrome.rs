@@ -103,6 +103,8 @@ pub enum Hit {
     Del(usize),
     /// "N SHOTS" count chip — toggles the pinned fan
     Chip,
+    /// the fanned row's "clear all" pill (Notification-Centre style)
+    ClearAll,
     /// lightbox backdrop (click = close)
     Backdrop,
 }
@@ -114,6 +116,8 @@ pub enum ChromeCmd {
     /// right-click menu over thumb `idx` at logical (x, y)
     Menu { idx: usize, x: f64, y: f64 },
     Remove(usize),
+    /// dismiss the whole stack (files on disk are untouched)
+    ClearAll,
 }
 
 /// muda ids for the thumb right-click menu (host matches on them).
@@ -122,6 +126,7 @@ pub const MENU_COPY: &str = "qs-chrome.copy";
 pub const MENU_SAVE: &str = "qs-chrome.save";
 pub const MENU_PIN: &str = "qs-chrome.pin";
 pub const MENU_DEL: &str = "qs-chrome.del";
+pub const MENU_CLEAR: &str = "qs-chrome.clear";
 
 /// Which screen corner the stack docks to.
 #[derive(Clone, Copy, PartialEq)]
@@ -318,6 +323,28 @@ impl Stack {
         FRect { x, y, w: cw, h: ch }
     }
 
+    /// "CLEAR ALL" pill riding the far end of the fanned row —
+    /// Notification-Centre style. Only exists once the fan is mostly
+    /// open (hit/live gating matches `input_rects`).
+    fn clear_rect(&self, w: f64, h: f64) -> Option<FRect> {
+        if self.shots.len() < 2 || self.fan_t < 0.5 {
+            return None;
+        }
+        let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        let last = self.thumb_rect_at(n - 1, w, h, self.fan_t, self.hide_t);
+        let (pw, ph) = (92.0, 22.0);
+        let (_, ay) = self.anchor(w, h);
+        let y = ay + TH / 2.0 - ph / 2.0;
+        // the row's far end: left of the leftmost for right corners,
+        // right of the rightmost otherwise
+        let x = if self.corner.right() {
+            last.x - pw - 12.0
+        } else {
+            last.x + last.w + 12.0
+        };
+        Some(FRect { x, y, w: pw, h: ph })
+    }
+
     /// Interactive regions in logical coords for the platform's
     /// hit-test/input-region. Order matters: first match wins. Thumb
     /// rects are padded so the × disc overhanging the edge stays live.
@@ -337,6 +364,9 @@ impl Stack {
         }
         if self.shots.len() >= 2 {
             v.push((self.chip_rect(w, h), Hit::Chip));
+        }
+        if let Some(c) = self.clear_rect(w, h) {
+            v.push((c, Hit::ClearAll));
         }
         v
     }
@@ -440,6 +470,7 @@ impl Stack {
                 self.touch();
                 match self.hit(x, y, w, h) {
                 Some(Hit::Del(i)) => Some(ChromeCmd::Remove(i)),
+                Some(Hit::ClearAll) => Some(ChromeCmd::ClearAll),
                 Some(Hit::Chip) => {
                     self.pinned = !self.pinned;
                     self.retarget_fan();
@@ -634,6 +665,29 @@ impl Stack {
         }
         self.hover = None;
         self.retarget_fan();
+    }
+
+    /// Dismiss the whole stack — "clear all" like Notification Centre.
+    /// Files on disk are untouched; this only empties the shelf.
+    pub fn clear_all(&mut self) {
+        self.shots.clear();
+        self.fly = None;
+        self.lightbox = None;
+        self.box_t0 = None;
+        self.box_img.clear();
+        self.hover = None;
+        self.inside = false;
+        self.pinned = false;
+        self.ring = None;
+        self.fan_t = 0.0;
+        self.fan_from = 0.0;
+        self.fan_to = 0.0;
+        self.fan_anim = false;
+        self.hide_t = 0.0;
+        self.hide_from = 0.0;
+        self.hide_to = 0.0;
+        self.hide_anim = false;
+        self.idle_since = Instant::now();
     }
 
     /// shot for hit-index i (0 = newest).
@@ -851,6 +905,24 @@ impl Stack {
             }
         }
 
+        // "CLEAR ALL" pill fading in with the fan — red text on hover
+        // like the per-thumb × (same dismiss affordance, whole row)
+        if let Some(cr) = self.clear_rect(lw, lh) {
+            let a = ((self.fan_t - 0.4) / 0.6).clamp(0.0, 1.0);
+            let hot = self.hover == Some(Hit::ClearAll);
+            rrect(cv, cr, 11.0, CARD, 0.92 * a, Some(if hot { accent } else { LINE }));
+            let label = "× CLEAR ALL";
+            let tw = t.width(9.5, label);
+            t.draw_over(
+                cv,
+                cr.x + (cr.w - tw) / 2.0,
+                cr.y + 15.0,
+                9.5,
+                label,
+                if hot { RED } else { MUTED },
+            );
+        }
+
         // the flight itself
         if let Some(f) = &self.fly {
             let p = ease_out(self.fly_t(now));
@@ -1006,6 +1078,14 @@ impl Chrome {
         if let Some(w) = self.wins.iter_mut().find(|w| w.id() == id) {
             w.stack_mut().remove(idx);
             w.redraw();
+        }
+    }
+
+    /// Dismiss the whole stack on window `id` (clear-all). The caller
+    /// sweeps afterwards so the emptied window goes away.
+    pub fn clear_all(&mut self, id: winit::window::WindowId) {
+        if let Some(w) = self.wins.iter_mut().find(|w| w.id() == id) {
+            w.stack_mut().clear_all();
         }
     }
 
@@ -1249,5 +1329,72 @@ mod tests {
         assert!(st.lightbox.is_some());
         st.pointer(ChromeEv::Down { x: 700.0, y: 450.0 }, 1440.0, 900.0);
         assert!(st.lightbox.is_none());
+    }
+
+    /// The "CLEAR ALL" pill rides the far end of the fanned row: it only
+    /// exists once the fan is open with ≥2 shots, clicking it emits
+    /// ChromeCmd::ClearAll, and clear_all() empties every bit of state.
+    #[test]
+    fn clear_all_pill_empties_stack() {
+        let (lw, lh) = (1440.0, 900.0);
+        let mut st = Stack::new(Corner::TR);
+        for i in 0..3u8 {
+            st.land(
+                shot_img(1200, 800, [40 + i * 40, 60, 90]),
+                ShotKind::Saved,
+                None,
+                FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+                true,
+                2.0,
+            );
+        }
+        // no pill while the stack sits collapsed
+        assert!(st.clear_rect(lw, lh).is_none());
+        // hover → fan open to the end
+        let r0 = st.thumb_rect_at(0, lw, lh, 0.0, 0.0);
+        let _ = st.pointer(
+            ChromeEv::Move { x: r0.x + r0.w / 2.0, y: r0.y + r0.h / 2.0 },
+            lw,
+            lh,
+        );
+        st.settle(Instant::now() + Duration::from_millis(400));
+        assert_eq!(st.fan_t, 1.0);
+
+        // the pill sits just past the far end of the row
+        let cr = st.clear_rect(lw, lh).expect("pill exists when fanned");
+        let last = st.thumb_rect_at(2, lw, lh, 1.0, 0.0);
+        assert!(cr.x + cr.w < last.x, "pill must be inward of the row end");
+        let cmd = st.pointer(
+            ChromeEv::Down { x: cr.x + cr.w / 2.0, y: cr.y + cr.h / 2.0 },
+            lw,
+            lh,
+        );
+        assert!(matches!(cmd, Some(ChromeCmd::ClearAll)));
+
+        // clearing empties everything — shots, hover, lightbox, pinned
+        st.clear_all();
+        assert!(st.is_empty());
+        assert!(st.shots.is_empty());
+        assert!(st.clear_rect(lw, lh).is_none());
+        assert!(st.input_rects(lw, lh).is_empty());
+
+        // also clears a lightbox/pinned state mid-flight
+        let mut st = Stack::new(Corner::TR);
+        for _ in 0..2 {
+            st.land(
+                shot_img(1200, 800, [40, 60, 90]),
+                ShotKind::Saved,
+                None,
+                FRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+                true,
+                2.0,
+            );
+        }
+        st.pinned = true;
+        st.lightbox = Some(0);
+        st.clear_all();
+        assert!(st.is_empty());
+        assert!(st.lightbox.is_none());
+        assert!(!st.pinned);
     }
 }
