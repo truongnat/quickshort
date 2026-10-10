@@ -89,7 +89,7 @@ jobs:
           weston --backend=headless --socket=wl-test --width=1024 --height=768 --idle-time=0 > /tmp/weston.log 2>&1 &
           WESTON=$!
           sleep 3
-          ls -la "$XDG_RUNTIME_DIR" >> /tmp/chrome-wl.log 2>&1
+          ls -la "$XDG_RUNTIME_DIR" > /tmp/env.log 2>&1
           ( cd /tmp && WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
             gdb -batch -ex run -ex bt --args \
             "$GITHUB_WORKSPACE/target/debug/quickshort" --chrome > /tmp/chrome-wl.log 2>&1 ) &
@@ -103,6 +103,8 @@ jobs:
           cat /tmp/chrome-wl.log
           echo "--- weston ---"
           cat /tmp/weston.log
+          echo "--- env ---"
+          cat /tmp/env.log
           kill $APP $WESTON 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
