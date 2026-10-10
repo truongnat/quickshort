@@ -360,8 +360,7 @@ mod gnome {
     use super::*;
 
     const SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
-    const BIND_SCHEMA: &str =
-        "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
+    const BIND_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
     const PATH: &str =
         "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/quickshort0/";
 
@@ -428,7 +427,6 @@ mod gnome {
         ])?;
         Ok(())
     }
-
 }
 
 // ------------------------------------------------------------- sway / hyprland
@@ -464,7 +462,9 @@ mod sway {
     }
 
     pub fn unbind(hk: &HotKey) -> Result<()> {
-        run(Command::new("swaymsg").arg("unbindsym").arg(sway_chord(hk)?))
+        run(Command::new("swaymsg")
+            .arg("unbindsym")
+            .arg(sway_chord(hk)?))
     }
 }
 
@@ -473,11 +473,10 @@ mod hypr {
 
     /// `hyprctl keyword bind 'CTRL SHIFT, s, exec, "<exe>" --capture'`
     pub fn bind(hk: &HotKey) -> Result<()> {
-        run(Command::new("hyprctl").arg("keyword").arg("bind").arg(format!(
-            "{}, exec, {}",
-            hypr_chord(hk)?,
-            cmd()?
-        )))
+        run(Command::new("hyprctl")
+            .arg("keyword")
+            .arg("bind")
+            .arg(format!("{}, exec, {}", hypr_chord(hk)?, cmd()?)))
     }
 
     pub fn unbind(hk: &HotKey) -> Result<()> {
@@ -695,34 +694,22 @@ mod tests {
 
     #[test]
     fn sway_syntax() {
-        assert_eq!(
-            sway_chord(&hk("Ctrl+Shift+S")).unwrap(),
-            "Ctrl+Shift+s"
-        );
+        assert_eq!(sway_chord(&hk("Ctrl+Shift+S")).unwrap(), "Ctrl+Shift+s");
         assert_eq!(sway_chord(&hk("Super+Alt+F2")).unwrap(), "Alt+Mod4+F2");
         assert_eq!(sway_chord(&hk("Ctrl+Minus")).unwrap(), "Ctrl+minus");
     }
 
     #[test]
     fn hypr_syntax() {
-        assert_eq!(
-            hypr_chord(&hk("Ctrl+Shift+S")).unwrap(),
-            "CTRL SHIFT, s"
-        );
+        assert_eq!(hypr_chord(&hk("Ctrl+Shift+S")).unwrap(), "CTRL SHIFT, s");
         assert_eq!(hypr_chord(&hk("Super+Q")).unwrap(), "SUPER, q");
         assert_eq!(hypr_chord(&hk("Ctrl+Enter")).unwrap(), "CTRL, Return");
     }
 
     #[test]
     fn kde_syntax() {
-        assert_eq!(
-            kde_trigger(&hk("Ctrl+Shift+S")).unwrap(),
-            "CTRL+SHIFT+S"
-        );
-        assert_eq!(
-            kde_trigger(&hk("Ctrl+Alt+Delete")).unwrap(),
-            "CTRL+ALT+Del"
-        );
+        assert_eq!(kde_trigger(&hk("Ctrl+Shift+S")).unwrap(), "CTRL+SHIFT+S");
+        assert_eq!(kde_trigger(&hk("Ctrl+Alt+Delete")).unwrap(), "CTRL+ALT+Del");
         assert_eq!(kde_trigger(&hk("Shift+PageUp")).unwrap(), "SHIFT+PgUp");
         assert_eq!(kde_trigger(&hk("Ctrl+F12")).unwrap(), "CTRL+F12");
     }

@@ -20,7 +20,13 @@ use winit::monitor::MonitorHandle;
 #[cfg(target_os = "macos")]
 #[path = "chrome/macos.rs"]
 mod imp;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+#[path = "chrome/windows.rs"]
+mod imp;
+#[cfg(target_os = "linux")]
+#[path = "chrome/linux.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 #[path = "chrome/stub.rs"]
 mod imp;
 
@@ -43,10 +49,10 @@ const FAN_CLOSE_MS: f64 = 180.0;
 const BOX_MS: f64 = 200.0;
 /// idle before the stack slides into the edge
 const HIDE_AFTER_MS: f64 = 3000.0;
-const HIDE_MS: f64 = 280.0;   // slide-away
+const HIDE_MS: f64 = 280.0; // slide-away
 const UNHIDE_MS: f64 = 200.0; // slide-back
-// thumbs slide fully off-screen when hidden — the edge-docked chip
-// is the grab handle (a sliver + chip read as two disjoint artifacts)
+                              // thumbs slide fully off-screen when hidden — the edge-docked chip
+                              // is the grab handle (a sliver + chip read as two disjoint artifacts)
 
 /* ---- ui-2026 tokens ---- */
 const CARD: u32 = 0x0A0A0A;
@@ -79,6 +85,14 @@ pub struct Shot {
     kind: ShotKind,
 }
 
+impl Shot {
+    /// Premul-packed thumbnail pixels + dims (physical px) — backends
+    /// use it as the drag-session image.
+    pub fn thumb(&self) -> (&[u32], usize, usize) {
+        (&self.thumb, self.tw, self.th)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct FRect {
     pub x: f64,
@@ -108,26 +122,41 @@ pub enum Hit {
     Chip,
     /// the fanned row's "clear all" pill (Notification-Centre style)
     ClearAll,
+    /// context-menu row `i`
+    MenuRow(usize),
+    /// menu panel background (swallows clicks, no action)
+    MenuPanel,
     /// lightbox backdrop (click = close)
     Backdrop,
 }
 
 /// What the host must run in response to a chrome click/key.
+#[derive(Debug)]
 pub enum ChromeCmd {
     /// state changed — repaint the window
     Redraw,
-    /// right-click menu over thumb `idx` at logical (x, y)
-    Menu { idx: usize, x: f64, y: f64 },
+    /// a context-menu row was picked — `id` is a MENU_* const
+    MenuAction {
+        idx: usize,
+        id: &'static str,
+    },
     Remove(usize),
     /// dismiss the whole stack (files on disk are untouched)
     ClearAll,
+    /// thumb dragged out — the backend that owns the window starts the
+    /// real file-promise drag; consumed locally, never reaches the host
+    DragBegin {
+        idx: usize,
+    },
 }
 
-/// muda ids for the thumb right-click menu (host matches on them).
+/// Menu row ids — drawn in-chrome, stable across backends.
 pub const MENU_REVEAL: &str = "qs-chrome.reveal";
 pub const MENU_COPY: &str = "qs-chrome.copy";
 pub const MENU_SAVE: &str = "qs-chrome.save";
 pub const MENU_PIN: &str = "qs-chrome.pin";
+pub const MENU_BEAUTIFY: &str = "qs-chrome.beautify";
+pub const MENU_SHARE: &str = "qs-chrome.share";
 pub const MENU_DEL: &str = "qs-chrome.del";
 pub const MENU_CLEAR: &str = "qs-chrome.clear";
 
@@ -160,6 +189,21 @@ impl Corner {
         matches!(self, Self::BL | Self::BC | Self::BR)
     }
 }
+
+/// In-chrome context menu — a native popup can't position inside the
+/// chrome surface (muda needs an NSView/HWND/gtk::Window per-OS), so the
+/// menu is pixels in the same layer: one path on every backend.
+struct Menu {
+    /// thumb index the menu is anchored to (0 = newest)
+    idx: usize,
+    anchor: FRect,
+    /// (MENU_* id, enabled)
+    rows: Vec<(&'static str, bool)>,
+}
+
+const MENU_ROW_H: f64 = 28.0;
+const MENU_PAD: f64 = 6.0;
+const MENU_W: f64 = 210.0;
 
 /// Per-window stack state — pure logic, platform code only forwards
 /// events and asks `render` for pixels.
@@ -195,6 +239,10 @@ pub struct Stack {
     box_img: Vec<u32>,
     box_iw: usize,
     box_ih: usize,
+    menu: Option<Menu>,
+    /// a held left-press on a thumb — position + index; `Up` resolves
+    /// it to a click, `Dragged` past the threshold to a drag-out
+    press: Option<(f64, f64, usize)>,
     corner: Corner,
 }
 
@@ -223,13 +271,23 @@ impl Stack {
             box_img: Vec::new(),
             box_iw: 0,
             box_ih: 0,
+            menu: None,
+            press: None,
             corner,
         }
     }
 
     /// Queue the fly-in; `from` is the selection rect in window-local
     /// logical coords. `rm` (reduce motion) lands instantly.
-    pub fn land(&mut self, img: RgbaImage, kind: ShotKind, path: Option<PathBuf>, from: FRect, rm: bool, scale: f64) {
+    pub fn land(
+        &mut self,
+        img: RgbaImage,
+        kind: ShotKind,
+        path: Option<PathBuf>,
+        from: FRect,
+        rm: bool,
+        scale: f64,
+    ) {
         self.touch(); // a landing shot is activity — reveal the stack
         let img = Rc::new(img);
         let (thumb, tw, th) = make_thumb(&img, kind, scale);
@@ -268,7 +326,11 @@ impl Stack {
         } else {
             MARGIN
         };
-        let y = if self.corner.bottom() { h - MARGIN - TH } else { MARGIN };
+        let y = if self.corner.bottom() {
+            h - MARGIN - TH
+        } else {
+            MARGIN
+        };
         // (the chrome view already starts below the menu bar — macOS
         // clamps the window to visibleFrame — so no extra top inset)
         (x, y)
@@ -295,8 +357,13 @@ impl Stack {
         let hide_dx = -inward * hide_t * (TW + MARGIN);
         // the fan is a straight horizontal row — the cascade's vertical
         // offset collapses as fan_t opens (was spreading diagonally)
-        let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY }
-            * i as f64 * (1.0 - fan_t) * collapse;
+        let dy = if self.corner.bottom() {
+            -STACK_DY
+        } else {
+            STACK_DY
+        } * i as f64
+            * (1.0 - fan_t)
+            * collapse;
         FRect {
             x: ax + dx + hide_dx,
             y: ay + dy,
@@ -314,9 +381,17 @@ impl Stack {
         let (cw, ch) = (64.0, 20.0);
         // beside the newest thumb, aligned to its far edge — never
         // clipped by the screen edge regardless of the dock corner
-        let shown = if self.corner.right() { ax - cw - 8.0 } else { ax + TW + 8.0 };
+        let shown = if self.corner.right() {
+            ax - cw - 8.0
+        } else {
+            ax + TW + 8.0
+        };
         // hidden: dock flush against the screen edge as the sole handle
-        let docked = if self.corner.right() { w - cw - 2.0 } else { 2.0 };
+        let docked = if self.corner.right() {
+            w - cw - 2.0
+        } else {
+            2.0
+        };
         let x = shown + (docked - shown) * hide_t;
         let y = if self.corner.bottom() {
             ay + TH - ch
@@ -334,7 +409,10 @@ impl Stack {
         if self.shots.len() < 2 || self.fan_t < 0.5 {
             return None;
         }
-        let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        let n = self
+            .shots
+            .len()
+            .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
         let first = self.thumb_rect_at(0, w, h, self.fan_t, self.hide_t);
         let last = self.thumb_rect_at(n - 1, w, h, self.fan_t, self.hide_t);
         let (pw, ph) = (92.0, 22.0);
@@ -345,8 +423,100 @@ impl Stack {
         };
         let x = (left + right) / 2.0 - pw / 2.0;
         // below the row for top corners, above it for bottom ones
-        let y = if self.corner.bottom() { first.y - ph - 10.0 } else { first.y + first.h + 10.0 };
+        let y = if self.corner.bottom() {
+            first.y - ph - 10.0
+        } else {
+            first.y + first.h + 10.0
+        };
         Some(FRect { x, y, w: pw, h: ph })
+    }
+
+    /* ---- in-chrome context menu ---- */
+
+    /// Open the thumb menu at the click point. Row ids are the MENU_*
+    /// consts; the host answers `MenuAction` events.
+    fn open_menu(&mut self, idx: usize, x: f64, y: f64) {
+        let has_path = self.shot(idx).and_then(|s| s.path.as_ref()).is_some();
+        self.menu = Some(Menu {
+            idx,
+            anchor: FRect {
+                x,
+                y,
+                w: 0.0,
+                h: 0.0,
+            },
+            rows: vec![
+                (MENU_REVEAL, has_path),
+                (MENU_SAVE, !has_path),
+                (MENU_COPY, true),
+                (MENU_PIN, true),
+                (MENU_BEAUTIFY, true),
+                (MENU_SHARE, true),
+                (MENU_DEL, true),
+                (MENU_CLEAR, true),
+            ],
+        });
+    }
+
+    /// Menu panel rect — anchored at the click, clamped inside the
+    /// monitor like a native menu.
+    fn menu_rect(&self, w: f64, h: f64) -> Option<FRect> {
+        let m = self.menu.as_ref()?;
+        let mh = m.rows.len() as f64 * MENU_ROW_H + MENU_PAD * 2.0;
+        let x = m.anchor.x.min(w - MENU_W - 4.0).max(4.0);
+        let y = m.anchor.y.min(h - mh - 4.0).max(4.0);
+        Some(FRect {
+            x,
+            y,
+            w: MENU_W,
+            h: mh,
+        })
+    }
+
+    /// Row rect `i` inside the panel.
+    fn menu_row_rect(&self, i: usize, w: f64, h: f64) -> Option<FRect> {
+        let p = self.menu_rect(w, h)?;
+        Some(FRect {
+            x: p.x + MENU_PAD,
+            y: p.y + MENU_PAD + i as f64 * MENU_ROW_H,
+            w: p.w - MENU_PAD * 2.0,
+            h: MENU_ROW_H,
+        })
+    }
+
+    fn menu_row_at(&self, x: f64, y: f64, w: f64, h: f64) -> Option<usize> {
+        let m = self.menu.as_ref()?;
+        for i in 0..m.rows.len() {
+            if let Some(r) = self.menu_row_rect(i, w, h) {
+                if x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Menu label for a row id — rendered at draw time.
+    fn menu_label(id: &'static str) -> &'static str {
+        match id {
+            MENU_REVEAL => {
+                if cfg!(target_os = "macos") {
+                    "Reveal in Finder"
+                } else if cfg!(target_os = "windows") {
+                    "Reveal in Explorer"
+                } else {
+                    "Reveal in Folder"
+                }
+            }
+            MENU_SAVE => "Save to Screenshots",
+            MENU_COPY => "Copy Image",
+            MENU_PIN => "Pin",
+            MENU_BEAUTIFY => "Beautify",
+            MENU_SHARE => "Share Link",
+            MENU_DEL => "Delete",
+            MENU_CLEAR => "Clear All",
+            _ => "?",
+        }
     }
 
     /// The wide retention zone as rects — platform backends feed these
@@ -354,8 +524,9 @@ impl Stack {
     /// Windows `SetWindowRgn`) so pointer moves inside the hysteresis
     /// zone still reach the surface while the rest of the desktop stays
     /// click-through. Rects may overlap; regions union them.
+    #[allow(dead_code)] // consumed by the Linux/Windows backends' input regions
     pub fn zone_rects(&self, w: f64, h: f64) -> Vec<FRect> {
-        if self.lightbox.is_some() {
+        if self.lightbox.is_some() || self.menu.is_some() {
             return vec![FRect {
                 x: 0.0,
                 y: 0.0,
@@ -389,15 +560,26 @@ impl Stack {
 
     /// rects are padded so the × disc overhanging the edge stays live.
     pub fn input_rects(&self, w: f64, h: f64) -> Vec<(FRect, Hit)> {
-        if self.lightbox.is_some() {
-            return vec![(FRect { x: 0.0, y: 0.0, w, h }, Hit::Backdrop)];
+        if self.lightbox.is_some() || self.menu.is_some() {
+            return vec![(
+                FRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h,
+                },
+                Hit::Backdrop,
+            )];
         }
         let mut v = Vec::new();
         // the pill sits in the thumbs' hit padding — first so it wins
         if let Some(c) = self.clear_rect(w, h) {
             v.push((c, Hit::ClearAll));
         }
-        let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        let n = self
+            .shots
+            .len()
+            .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
         for i in 0..n {
             let mut r = self.thumb_rect(i, w, h);
             r.x -= 12.0;
@@ -421,24 +603,43 @@ impl Stack {
     /// Acquire (`wide` = false) stays at current geometry so the
     /// hover area doesn't swallow the screen.
     fn zone_hit(&self, x: f64, y: f64, w: f64, h: f64, wide: bool) -> bool {
-        if self.lightbox.is_some() {
+        if self.lightbox.is_some() || self.menu.is_some() {
             return true;
         }
         let pad = if wide { 28.0 } else { 12.0 };
-        let fan_opts: &[f64] = if wide { &[self.fan_t, 0.0, 1.0][..] } else { &[self.fan_t][..] };
-        let hide_opts: &[f64] = if wide { &[self.hide_t, 0.0, 1.0][..] } else { &[self.hide_t][..] };
-        let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        let fan_opts: &[f64] = if wide {
+            &[self.fan_t, 0.0, 1.0][..]
+        } else {
+            &[self.fan_t][..]
+        };
+        let hide_opts: &[f64] = if wide {
+            &[self.hide_t, 0.0, 1.0][..]
+        } else {
+            &[self.hide_t][..]
+        };
+        let n = self
+            .shots
+            .len()
+            .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
         for &ht in hide_opts {
             for &ft in fan_opts {
                 for i in 0..n {
                     let r = self.thumb_rect_at(i, w, h, ft, ht);
-                    if x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad {
+                    if x >= r.x - pad
+                        && x <= r.x + r.w + pad
+                        && y >= r.y - pad
+                        && y <= r.y + r.h + pad
+                    {
                         return true;
                     }
                 }
                 if self.shots.len() >= 2 {
                     let c = self.chip_rect_at(w, h, ht);
-                    if x >= c.x - pad && x <= c.x + c.w + pad && y >= c.y - pad && y <= c.y + c.h + pad {
+                    if x >= c.x - pad
+                        && x <= c.x + c.w + pad
+                        && y >= c.y - pad
+                        && y <= c.y + c.h + pad
+                    {
                         return true;
                     }
                 }
@@ -449,6 +650,17 @@ impl Stack {
 
     /// Point (logical) → role.
     pub fn hit(&self, x: f64, y: f64, w: f64, h: f64) -> Option<Hit> {
+        if self.menu.is_some() {
+            if let Some(i) = self.menu_row_at(x, y, w, h) {
+                return Some(Hit::MenuRow(i));
+            }
+            if let Some(p) = self.menu_rect(w, h) {
+                if x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h {
+                    return Some(Hit::MenuPanel);
+                }
+            }
+            return Some(Hit::Backdrop);
+        }
         if self.lightbox.is_none() {
             // the × disc only exists while its thumb is hovered
             if let Some(Hit::Thumb(i) | Hit::Del(i)) = self.hover {
@@ -510,29 +722,90 @@ impl Stack {
             ChromeEv::Down { x, y } => {
                 self.touch();
                 match self.hit(x, y, w, h) {
-                Some(Hit::Del(i)) => Some(ChromeCmd::Remove(i)),
-                Some(Hit::ClearAll) => Some(ChromeCmd::ClearAll),
-                Some(Hit::Chip) => {
-                    self.pinned = !self.pinned;
-                    self.retarget_fan();
-                    Some(ChromeCmd::Redraw)
-                }
-                Some(Hit::Thumb(i)) => {
-                    self.open_lightbox(i);
-                    Some(ChromeCmd::Redraw)
-                }
-                Some(Hit::Backdrop) => {
-                    self.lightbox = None;
-                    Some(ChromeCmd::Redraw)
-                }
-                None => None,
+                    Some(Hit::Del(i)) => Some(ChromeCmd::Remove(i)),
+                    Some(Hit::ClearAll) => Some(ChromeCmd::ClearAll),
+                    Some(Hit::Chip) => {
+                        self.pinned = !self.pinned;
+                        self.retarget_fan();
+                        Some(ChromeCmd::Redraw)
+                    }
+                    Some(Hit::Thumb(i)) => {
+                        // click resolves on release — the same press may
+                        // become a drag-out instead
+                        self.press = Some((x, y, i));
+                        Some(ChromeCmd::Redraw)
+                    }
+                    Some(Hit::MenuRow(i)) => {
+                        let m = self.menu.take().unwrap();
+                        let (id, enabled) = m.rows[i];
+                        if enabled {
+                            Some(ChromeCmd::MenuAction { idx: m.idx, id })
+                        } else {
+                            // disabled row: keep the menu open, like a native one
+                            self.menu = Some(m);
+                            Some(ChromeCmd::Redraw)
+                        }
+                    }
+                    Some(Hit::MenuPanel) => None, // swallowed, menu stays
+                    Some(Hit::Backdrop) => {
+                        self.lightbox = None;
+                        self.menu = None;
+                        Some(ChromeCmd::Redraw)
+                    }
+                    None => None,
                 }
             }
             ChromeEv::RightDown { x, y } => {
                 self.touch();
                 match self.hit(x, y, w, h) {
-                    Some(Hit::Thumb(i)) | Some(Hit::Del(i)) => Some(ChromeCmd::Menu { idx: i, x, y }),
-                    _ => None,
+                    Some(Hit::Thumb(i)) | Some(Hit::Del(i)) => {
+                        self.open_menu(i, x, y);
+                        Some(ChromeCmd::Redraw)
+                    }
+                    // a second right-click on another thumb retargets the
+                    // menu; anywhere else it dismisses — matching native
+                    // context-menu behaviour. hit() runs with the menu
+                    // taken so thumbs are visible to it again.
+                    _ => {
+                        if self.menu.take().is_some() {
+                            if let Some(Hit::Thumb(i) | Hit::Del(i)) = self.hit(x, y, w, h) {
+                                self.open_menu(i, x, y);
+                            }
+                            Some(ChromeCmd::Redraw)
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+            ChromeEv::Dragged { x, y } => {
+                self.touch();
+                match self.press.take() {
+                    Some((px, py, i)) if (x - px).hypot(y - py) >= 4.0 => {
+                        // past the native drag threshold — the backend
+                        // turns this into a real file-promise drag
+                        self.press = None;
+                        Some(ChromeCmd::DragBegin { idx: i })
+                    }
+                    Some((px, py, i)) => {
+                        self.press = Some((px, py, i));
+                        None
+                    }
+                    None => None,
+                }
+            }
+            ChromeEv::Up { x, y } => {
+                self.touch();
+                match self.press.take() {
+                    // released on the same thumb → the deferred click
+                    Some((_, _, i)) if matches!(self.hit(x, y, w, h), Some(Hit::Thumb(j)) if j == i) =>
+                    {
+                        self.open_lightbox(i);
+                        Some(ChromeCmd::Redraw)
+                    }
+                    // released elsewhere — just a cancelled press
+                    Some(_) => None,
+                    None => None,
                 }
             }
             ChromeEv::Key(_) => None, // keys go through `key()`
@@ -547,6 +820,12 @@ impl Stack {
             .shots
             .len()
             .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        if k == Key::Esc && self.menu.take().is_some() {
+            return Some(ChromeCmd::Redraw);
+        }
+        if self.menu.is_some() {
+            return None; // menu is modal while open
+        }
         match (k, self.lightbox) {
             (Key::Esc, Some(_)) => {
                 self.lightbox = None;
@@ -564,22 +843,38 @@ impl Stack {
                 self.ring = Some((cur as i64 + d).clamp(0, n as i64 - 1) as usize);
                 Some(ChromeCmd::Redraw)
             }
-            (Key::Enter, None) => match self.ring {
-                Some(i) if i < n => {
+            (Key::Enter, None) | (Key::Space, None) => match self.key_target(n) {
+                Some(i) => {
                     self.open_lightbox(i);
                     Some(ChromeCmd::Redraw)
                 }
-                _ => None,
+                None => None,
             },
-            (Key::Back, _) => match self.ring.or(self.hover.and_then(|h| match h {
-                Hit::Thumb(i) | Hit::Del(i) => Some(i),
-                _ => None,
-            })) {
+            (Key::Copy, _) => self.key_target(n).map(|i| ChromeCmd::MenuAction {
+                idx: i,
+                id: MENU_COPY,
+            }),
+            (Key::Back, _) => match self.key_target(n) {
                 Some(i) => Some(ChromeCmd::Remove(i)),
                 None => None,
             },
             _ => None,
         }
+    }
+
+    /// The shot a keypress applies to: the ring selection first, then
+    /// a hovered thumb, falling back to the newest — matches the
+    /// hover-and-arrows-share-one-ring contract.
+    fn key_target(&self, n: usize) -> Option<usize> {
+        self.ring
+            .filter(|i| *i < n)
+            .or_else(|| {
+                self.hover.and_then(|h| match h {
+                    Hit::Thumb(i) | Hit::Del(i) => Some(i),
+                    _ => None,
+                })
+            })
+            .or(if n > 0 { Some(0) } else { None })
     }
 
     /// Retarget the fan tween whenever hover/pinned flips — opening
@@ -627,12 +922,15 @@ impl Stack {
         self.fly.is_some() || self.fan_anim || self.hide_anim || self.box_t0.is_some()
     }
 
-
     /// Open the lightbox on thumb `i` with a fade/scale-in — packs the
     /// shot's pixels once so frames only blit.
     fn open_lightbox(&mut self, i: usize) {
         if let Some(s) = self.shot(i) {
-            let (p, w, h) = (pack_image(&s.img), s.img.width() as usize, s.img.height() as usize);
+            let (p, w, h) = (
+                pack_image(&s.img),
+                s.img.width() as usize,
+                s.img.height() as usize,
+            );
             self.box_img = p;
             self.box_iw = w;
             self.box_ih = h;
@@ -655,9 +953,17 @@ impl Stack {
             self.fly = None;
         }
         if self.fan_anim {
-            let ms = if self.fan_to > self.fan_from { FAN_OPEN_MS } else { FAN_CLOSE_MS };
+            let ms = if self.fan_to > self.fan_from {
+                FAN_OPEN_MS
+            } else {
+                FAN_CLOSE_MS
+            };
             let p = (now.duration_since(self.fan_t0).as_secs_f64() * 1000.0 / ms).min(1.0);
-            let e = if self.fan_to > self.fan_from { ease_out_back(p) } else { ease_out(p) };
+            let e = if self.fan_to > self.fan_from {
+                ease_out_back(p)
+            } else {
+                ease_out(p)
+            };
             self.fan_t = self.fan_from + (self.fan_to - self.fan_from) * e;
             if p >= 1.0 {
                 self.fan_t = self.fan_to;
@@ -679,9 +985,17 @@ impl Stack {
             self.hide_anim = true;
         }
         if self.hide_anim {
-            let ms = if self.hide_to > self.hide_from { HIDE_MS } else { UNHIDE_MS };
+            let ms = if self.hide_to > self.hide_from {
+                HIDE_MS
+            } else {
+                UNHIDE_MS
+            };
             let p = (now.duration_since(self.hide_t0).as_secs_f64() * 1000.0 / ms).min(1.0);
-            let e = if self.hide_to > self.hide_from { ease_out(p) } else { ease_out_back(p) };
+            let e = if self.hide_to > self.hide_from {
+                ease_out(p)
+            } else {
+                ease_out_back(p)
+            };
             self.hide_t = self.hide_from + (self.hide_to - self.hide_from) * e;
             if p >= 1.0 {
                 self.hide_t = self.hide_to;
@@ -705,6 +1019,7 @@ impl Stack {
             self.lightbox = None;
         }
         self.hover = None;
+        self.menu = None;
         self.retarget_fan();
     }
 
@@ -716,6 +1031,7 @@ impl Stack {
         self.lightbox = None;
         self.box_t0 = None;
         self.box_img.clear();
+        self.menu = None;
         self.hover = None;
         self.inside = false;
         self.pinned = false;
@@ -745,10 +1061,32 @@ impl Stack {
 /// Pointer/key events the platform view forwards.
 #[allow(dead_code)] // Leave is part of the portable contract (Wayland wl_pointer.leave)
 pub enum ChromeEv {
-    Move { x: f64, y: f64 },
+    Move {
+        x: f64,
+        y: f64,
+    },
     Leave,
-    Down { x: f64, y: f64 },
-    RightDown { x: f64, y: f64 },
+    Down {
+        x: f64,
+        y: f64,
+    },
+    RightDown {
+        x: f64,
+        y: f64,
+    },
+    /// The left button moved past the drag threshold while held — the
+    /// backend distinguishes this from `Move` itself (macOS
+    /// `mouseDragged:`, winit `CursorMoved` + cached button state).
+    Dragged {
+        x: f64,
+        y: f64,
+    },
+    /// Left button released — a thumb click resolves here so the same
+    /// press can become a `Dragged` instead.
+    Up {
+        x: f64,
+        y: f64,
+    },
     Key(Key),
 }
 
@@ -759,6 +1097,11 @@ pub enum Key {
     Right,
     Enter,
     Back,
+    /// Space — quick look, same preview the Enter key opens
+    Space,
+    /// ⌘C / Ctrl+C — copy the focused shot (backends supply the
+    /// modifier check)
+    Copy,
 }
 
 /* ==================== rendering ==================== */
@@ -818,7 +1161,15 @@ fn blit_img(cv: &mut Canvas, src: &[u32], sw: usize, sh: usize, dst: FRect, rad:
             let lx = px as f64 / s + 0.5 / s;
             let ly = py as f64 / s + 0.5 / s;
             if rad > 0.0 {
-                let d = rrect_sdf(lx, ly, dst.x + dst.w / 2.0, dst.y + dst.h / 2.0, dst.w / 2.0, dst.h / 2.0, rad);
+                let d = rrect_sdf(
+                    lx,
+                    ly,
+                    dst.x + dst.w / 2.0,
+                    dst.y + dst.h / 2.0,
+                    dst.w / 2.0,
+                    dst.h / 2.0,
+                    rad,
+                );
                 if d > 0.0 {
                     continue;
                 }
@@ -842,7 +1193,15 @@ fn rrect(cv: &mut Canvas, r: FRect, rad: f64, fill: u32, fa: f64, border: Option
     // a pixel past it on bottom/right, so the hairline dies there
     for py in (r.y * s) as i32..((r.y + r.h) * s) as i32 {
         for px in (r.x * s) as i32..((r.x + r.w) * s) as i32 {
-            let d = rrect_sdf(px as f64 / s + 0.5 / s, py as f64 / s + 0.5 / s, r.x + r.w / 2.0, r.y + r.h / 2.0, r.w / 2.0, r.h / 2.0, rad);
+            let d = rrect_sdf(
+                px as f64 / s + 0.5 / s,
+                py as f64 / s + 0.5 / s,
+                r.x + r.w / 2.0,
+                r.y + r.h / 2.0,
+                r.w / 2.0,
+                r.h / 2.0,
+                rad,
+            );
             if d <= 0.0 {
                 cv.blend_over(px, py, fill, fill_cov(d, s) * fa);
             }
@@ -860,7 +1219,14 @@ fn disc(cv: &mut Canvas, cx: f64, cy: f64, r: f64, fill: u32, fa: f64) {
     let s = cv.scale;
     for py in ((cy - r) * s) as i32..((cy + r) * s) as i32 {
         for px in ((cx - r) * s) as i32..((cx + r) * s) as i32 {
-            let d = ellipse_sdf(px as f64 / s + 0.5 / s, py as f64 / s + 0.5 / s, cx, cy, r, r);
+            let d = ellipse_sdf(
+                px as f64 / s + 0.5 / s,
+                py as f64 / s + 0.5 / s,
+                cx,
+                cy,
+                r,
+                r,
+            );
             if d <= 0.0 {
                 cv.blend_over(px, py, fill, fill_cov(d, s) * fa);
             }
@@ -872,7 +1238,10 @@ impl Stack {
     /// Paint the whole stack into the window buffer (already zeroed).
     pub fn render(&self, cv: &mut Canvas, font: &fontdue::Font, accent: u32, now: Instant) {
         let (lw, lh) = (cv.w as f64 / cv.scale, cv.h as f64 / cv.scale);
-        let t = Txt { font, scale: cv.scale };
+        let t = Txt {
+            font,
+            scale: cv.scale,
+        };
 
         if let Some(i) = self.lightbox {
             // backdrop dim fades in; the shot scales up from 94% —
@@ -886,16 +1255,32 @@ impl Stack {
             cv.buf.fill(dim);
             if self.shot(i).is_some() {
                 let grow = 0.94 + 0.06 * ease_out_back(bp);
-                let fit = (lw * 0.8 / self.box_iw as f64)
-                    .min(lh * 0.8 / self.box_ih as f64);
+                let fit = (lw * 0.8 / self.box_iw as f64).min(lh * 0.8 / self.box_ih as f64);
                 let dw = self.box_iw as f64 * fit * grow;
                 let dh = self.box_ih as f64 * fit * grow;
-                let r = FRect { x: (lw - dw) / 2.0, y: (lh - dh) / 2.0 - 10.0, w: dw, h: dh };
+                let r = FRect {
+                    x: (lw - dw) / 2.0,
+                    y: (lh - dh) / 2.0 - 10.0,
+                    w: dw,
+                    h: dh,
+                };
                 blit_img(cv, &self.box_img, self.box_iw, self.box_ih, r, 8.0);
-                let fr = FRect { x: r.x - 1.0, y: r.y - 1.0, w: r.w + 2.0, h: r.h + 2.0 };
+                let fr = FRect {
+                    x: r.x - 1.0,
+                    y: r.y - 1.0,
+                    w: r.w + 2.0,
+                    h: r.h + 2.0,
+                };
                 rrect(cv, fr, 9.0, CARD, 0.0, Some(LINE));
                 if bp >= 1.0 {
-                    t.draw_over(cv, r.x, r.y + r.h + 24.0, 11.0, "ESC / CLICK TO CLOSE", MUTED);
+                    t.draw_over(
+                        cv,
+                        r.x,
+                        r.y + r.h + 24.0,
+                        11.0,
+                        "ESC / CLICK TO CLOSE",
+                        MUTED,
+                    );
                 }
             }
             return;
@@ -907,15 +1292,27 @@ impl Stack {
             rrect(cv, cr, 10.0, CARD, 0.92, Some(LINE));
             let label = format!("{} SHOTS", self.shots.len());
             let tw = t.width(9.5, &label);
-            t.draw_over(cv, cr.x + (cr.w - tw) / 2.0, cr.y + 14.0, 9.5, &label, MUTED);
+            t.draw_over(
+                cv,
+                cr.x + (cr.w - tw) / 2.0,
+                cr.y + 14.0,
+                9.5,
+                &label,
+                MUTED,
+            );
         }
 
         // thumbs, oldest first so newest draws on top
-        let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        let n = self
+            .shots
+            .len()
+            .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
         for i in (0..n).rev() {
             // hit index i counts from newest; draw order is reverse
             let idx = self.shots.len() - 1 - i; // storage idx
-            let Some(shot) = self.shots.get(idx) else { continue };
+            let Some(shot) = self.shots.get(idx) else {
+                continue;
+            };
             let in_flight = self.fly.is_some() && idx == self.shots.len() - 1;
             if in_flight {
                 continue; // its pixels are mid-flight
@@ -935,14 +1332,28 @@ impl Stack {
             };
             let (bx, by) = (r.x + 6.0, r.y + r.h - 6.0);
             disc(cv, bx, by, 8.0, bg, 0.95);
-            t.draw_over(cv, bx - t.width(9.0, glyph) / 2.0, by + 3.4, 9.0, glyph, 0x000000);
+            t.draw_over(
+                cv,
+                bx - t.width(9.0, glyph) / 2.0,
+                by + 3.4,
+                9.0,
+                glyph,
+                0x000000,
+            );
 
             // × on hover
             if self.hover == Some(Hit::Thumb(i)) || self.hover == Some(Hit::Del(i)) {
                 let (dx, dy) = self.del_pos(r);
                 disc(cv, dx, dy, 8.0, CARD, 0.95);
                 let del_hot = self.hover == Some(Hit::Del(i));
-                t.draw_over(cv, dx - t.width(10.0, "×") / 2.0, dy + 3.6, 10.0, "×", if del_hot { RED } else { MUTED });
+                t.draw_over(
+                    cv,
+                    dx - t.width(10.0, "×") / 2.0,
+                    dy + 3.6,
+                    10.0,
+                    "×",
+                    if del_hot { RED } else { MUTED },
+                );
             }
         }
 
@@ -951,7 +1362,14 @@ impl Stack {
         if let Some(cr) = self.clear_rect(lw, lh) {
             let a = ((self.fan_t - 0.4) / 0.6).clamp(0.0, 1.0);
             let hot = self.hover == Some(Hit::ClearAll);
-            rrect(cv, cr, 11.0, CARD, 0.92 * a, Some(if hot { accent } else { LINE }));
+            rrect(
+                cv,
+                cr,
+                11.0,
+                CARD,
+                0.92 * a,
+                Some(if hot { accent } else { LINE }),
+            );
             let label = "× CLEAR ALL";
             let tw = t.width(9.5, label);
             t.draw_over(
@@ -980,6 +1398,40 @@ impl Stack {
             let border = if p < 0.6 { accent } else { LINE };
             rrect(cv, r, 5.0, CARD, 0.0, Some(border));
         }
+
+        // context menu floats above everything in the layer
+        if self.menu.is_some() {
+            if let Some(p) = self.menu_rect(lw, lh) {
+                // dim everything behind the menu slightly so it pops
+                // (backdrop clicks close it — hit() handles routing)
+                rrect(cv, p, 10.0, CARD, 0.96, Some(LINE));
+                let m = self.menu.as_ref().unwrap();
+                for (i, &(id, enabled)) in m.rows.iter().enumerate() {
+                    let Some(rr) = self.menu_row_rect(i, lw, lh) else {
+                        continue;
+                    };
+                    let hot = self.hover == Some(Hit::MenuRow(i)) && enabled;
+                    if hot {
+                        rrect(cv, rr, 6.0, accent, 0.22, None);
+                    }
+                    let col = if !enabled {
+                        LINE
+                    } else if hot {
+                        0xFFFFFF
+                    } else {
+                        MUTED
+                    };
+                    t.draw_over(
+                        cv,
+                        rr.x + 10.0,
+                        rr.y + 19.0,
+                        10.5,
+                        Self::menu_label(id),
+                        col,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -988,10 +1440,7 @@ fn pack_image(img: &RgbaImage) -> Vec<u32> {
     img.pixels()
         .map(|p| {
             let (r, g, b, a) = (p[0] as u32, p[1] as u32, p[2] as u32, p[3] as u32);
-            (a << 24)
-                | ((b * a / 255) << 16)
-                | ((g * a / 255) << 8)
-                | (r * a / 255)
+            (a << 24) | ((b * a / 255) << 16) | ((g * a / 255) << 8) | (r * a / 255)
         })
         .collect()
 }
@@ -1015,7 +1464,8 @@ fn make_thumb(img: &RgbaImage, kind: ShotKind, scale: f64) -> (Vec<u32>, usize, 
         let (ox, oy) = ((tw - dw) / 2, (th - dh) / 2);
         for y in 0..dh {
             for x in 0..dw {
-                out[(oy + y) * tw + ox + x] = pack((x as f64 / fit) as usize, (y as f64 / fit) as usize);
+                out[(oy + y) * tw + ox + x] =
+                    pack((x as f64 / fit) as usize, (y as f64 / fit) as usize);
             }
         }
     } else {
@@ -1078,8 +1528,14 @@ impl Chrome {
     }
 
     /// Window events (redraw, cursor-left). Returns true if consumed.
-    pub fn window_event(&mut self, id: winit::window::WindowId, ev: &winit::event::WindowEvent) -> bool {
-        self.wins.iter_mut().any(|w| w.id() == id && w.window_event(ev))
+    pub fn window_event(
+        &mut self,
+        id: winit::window::WindowId,
+        ev: &winit::event::WindowEvent,
+    ) -> bool {
+        self.wins
+            .iter_mut()
+            .any(|w| w.id() == id && w.window_event(ev))
     }
 
     /// Events raised by the platform view (mouse, keys). Internal Redraw
@@ -1253,7 +1709,12 @@ pub fn standalone(pos: &str, accent: u32) -> anyhow::Result<()> {
         fn resumed(&mut self, el: &ActiveEventLoop) {
             self.drop(el);
         }
-        fn window_event(&mut self, _el: &ActiveEventLoop, id: WindowId, ev: winit::event::WindowEvent) {
+        fn window_event(
+            &mut self,
+            _el: &ActiveEventLoop,
+            id: WindowId,
+            ev: winit::event::WindowEvent,
+        ) {
             self.chrome.window_event(id, &ev);
         }
         fn user_event(&mut self, _el: &ActiveEventLoop, ev: Ev) {
@@ -1268,7 +1729,8 @@ pub fn standalone(pos: &str, accent: u32) -> anyhow::Result<()> {
                         self.chrome.clear_all(wid);
                         self.chrome.sweep();
                     }
-                    ChromeCmd::Menu { idx, x, y } => eprintln!("menu: thumb {idx} @ {x},{y}"),
+                    ChromeCmd::MenuAction { idx, id } => eprintln!("menu: thumb {idx} → {id}"),
+                    ChromeCmd::DragBegin { idx, .. } => eprintln!("drag: thumb {idx}"),
                     ChromeCmd::Redraw => {}
                 }
             }
@@ -1319,7 +1781,12 @@ mod tests {
         // gradient blocks so thumbnails read as distinct captures
         RgbaImage::from_fn(w, h, |x, y| {
             let t = ((x * 255 / w) as u8).wrapping_add((y * 255 / h) as u8);
-            Rgba([rgb[0].saturating_add(t / 3), rgb[1], rgb[2].saturating_sub(t / 4), 255])
+            Rgba([
+                rgb[0].saturating_add(t / 3),
+                rgb[1],
+                rgb[2].saturating_sub(t / 4),
+                255,
+            ])
         })
     }
 
@@ -1337,7 +1804,12 @@ mod tests {
                 shot_img(1200, 800, rgb),
                 kind,
                 None,
-                FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+                FRect {
+                    x: 100.0,
+                    y: 100.0,
+                    w: 400.0,
+                    h: 300.0,
+                },
                 true,
                 2.0,
             );
@@ -1345,7 +1817,12 @@ mod tests {
         let (lw, lh) = (1440.0, 900.0);
         let mut buf = vec![0u32; (lw * 2.0) as usize * (lh * 2.0) as usize];
         {
-            let mut cv = Canvas { buf: &mut buf, w: 2880, h: 1800, scale: 2.0 };
+            let mut cv = Canvas {
+                buf: &mut buf,
+                w: 2880,
+                h: 1800,
+                scale: 2.0,
+            };
             let font = crate::settings::system_font().expect("font");
             st.render(&mut cv, &font, 0x52C7EA, Instant::now());
         }
@@ -1354,9 +1831,18 @@ mod tests {
             let p = buf[(y as usize) * 2880 + x as usize];
             let a = ((p >> 24) & 0xFF) as u32;
             let unprem = |c: u32| -> u8 {
-                if a == 0 { 0 } else { ((c * 255 / a).min(255)) as u8 }
+                if a == 0 {
+                    0
+                } else {
+                    ((c * 255 / a).min(255)) as u8
+                }
             };
-            Rgba([unprem(p & 0xFF), unprem((p >> 8) & 0xFF), unprem((p >> 16) & 0xFF), a as u8])
+            Rgba([
+                unprem(p & 0xFF),
+                unprem((p >> 8) & 0xFF),
+                unprem((p >> 16) & 0xFF),
+                a as u8,
+            ])
         });
         img.save("/tmp/qs-chrome.png").unwrap();
 
@@ -1372,16 +1858,30 @@ mod tests {
         // step the fan tween to its end
         st.settle(Instant::now() + Duration::from_millis(400));
         let mut buf = vec![0u32; 2880 * 1800];
-        let mut cv = Canvas { buf: &mut buf, w: 2880, h: 1800, scale: 2.0 };
+        let mut cv = Canvas {
+            buf: &mut buf,
+            w: 2880,
+            h: 1800,
+            scale: 2.0,
+        };
         let font = crate::settings::system_font().expect("font");
         st.render(&mut cv, &font, 0x52C7EA, Instant::now());
         let img = RgbaImage::from_fn(2880, 1800, |x, y| {
             let p = buf[(y as usize) * 2880 + x as usize];
             let a = ((p >> 24) & 0xFF) as u32;
             let unprem = |c: u32| -> u8 {
-                if a == 0 { 0 } else { ((c * 255 / a).min(255)) as u8 }
+                if a == 0 {
+                    0
+                } else {
+                    ((c * 255 / a).min(255)) as u8
+                }
             };
-            Rgba([unprem(p & 0xFF), unprem((p >> 8) & 0xFF), unprem((p >> 16) & 0xFF), a as u8])
+            Rgba([
+                unprem(p & 0xFF),
+                unprem((p >> 8) & 0xFF),
+                unprem((p >> 16) & 0xFF),
+                a as u8,
+            ])
         });
         img.save("/tmp/qs-chrome-hover.png").unwrap();
     }
@@ -1396,7 +1896,12 @@ mod tests {
                 shot_img(1200, 800, [40 + i * 40, 60, 90]),
                 ShotKind::Saved,
                 None,
-                FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+                FRect {
+                    x: 100.0,
+                    y: 100.0,
+                    w: 400.0,
+                    h: 300.0,
+                },
                 true,
                 2.0,
             );
@@ -1404,7 +1909,10 @@ mod tests {
         // wind the idle clock back past the threshold
         st.idle_since = Instant::now() - Duration::from_secs(10);
         st.settle(Instant::now());
-        assert!(st.hide_anim, "idle past the deadline must start the hide tween");
+        assert!(
+            st.hide_anim,
+            "idle past the deadline must start the hide tween"
+        );
         st.settle(Instant::now() + Duration::from_millis(400));
         assert_eq!(st.hide_t, 1.0);
 
@@ -1429,16 +1937,30 @@ mod tests {
         // mid-hide frame for eyeballing the slide path
         st.hide_t = 0.5;
         let mut buf = vec![0u32; 2880 * 1800];
-        let mut cv = Canvas { buf: &mut buf, w: 2880, h: 1800, scale: 2.0 };
+        let mut cv = Canvas {
+            buf: &mut buf,
+            w: 2880,
+            h: 1800,
+            scale: 2.0,
+        };
         let font = crate::settings::system_font().expect("font");
         st.render(&mut cv, &font, 0x52C7EA, Instant::now());
         let img = RgbaImage::from_fn(2880, 1800, |x, y| {
             let p = buf[(y as usize) * 2880 + x as usize];
             let a = ((p >> 24) & 0xFF) as u32;
             let unprem = |c: u32| -> u8 {
-                if a == 0 { 0 } else { ((c * 255 / a).min(255)) as u8 }
+                if a == 0 {
+                    0
+                } else {
+                    ((c * 255 / a).min(255)) as u8
+                }
             };
-            Rgba([unprem(p & 0xFF), unprem((p >> 8) & 0xFF), unprem((p >> 16) & 0xFF), a as u8])
+            Rgba([
+                unprem(p & 0xFF),
+                unprem((p >> 8) & 0xFF),
+                unprem((p >> 16) & 0xFF),
+                a as u8,
+            ])
         });
         img.save("/tmp/qs-chrome-midhide.png").unwrap();
     }
@@ -1453,7 +1975,12 @@ mod tests {
             shot_img(1200, 800, [90, 60, 40]),
             ShotKind::Saved,
             None,
-            FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+            FRect {
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 300.0,
+            },
             true,
             2.0,
         );
@@ -1461,7 +1988,12 @@ mod tests {
         let (bw, bh) = (2880usize, 1800usize);
         let mut buf = vec![0u32; bw * bh];
         {
-            let mut cv = Canvas { buf: &mut buf, w: bw, h: bh, scale: 2.0 };
+            let mut cv = Canvas {
+                buf: &mut buf,
+                w: bw,
+                h: bh,
+                scale: 2.0,
+            };
             let font = crate::settings::system_font().expect("font");
             st.render(&mut cv, &font, 0x52C7EA, Instant::now());
         }
@@ -1470,7 +2002,8 @@ mod tests {
         for y in 0..bh {
             for x in 0..bw / 2 {
                 assert_eq!(
-                    buf[y * bw + x], 0,
+                    buf[y * bw + x],
+                    0,
                     "hidden thumb wrapped to left edge at phys ({x},{y})"
                 );
             }
@@ -1489,7 +2022,12 @@ mod tests {
                 shot_img(1200, 800, [40 + i * 40, 60, 90]),
                 ShotKind::Saved,
                 None,
-                FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+                FRect {
+                    x: 100.0,
+                    y: 100.0,
+                    w: 400.0,
+                    h: 300.0,
+                },
                 true,
                 2.0,
             );
@@ -1499,7 +2037,10 @@ mod tests {
         let r2 = st.thumb_rect_at(2, 1440.0, 900.0, 0.0, 0.0);
         let (cx, cy) = (r2.x + r2.w / 2.0, r2.y + r2.h + 10.0); // just below
         let _ = st.pointer(ChromeEv::Move { x: cx, y: cy }, 1440.0, 900.0);
-        assert!(st.inside, "cursor on the cascade edge should engage the zone");
+        assert!(
+            st.inside,
+            "cursor on the cascade edge should engage the zone"
+        );
         // run the fan open to its end — the cascade's dy is gone now
         st.settle(Instant::now() + Duration::from_millis(400));
         assert_eq!(st.fan_t, 1.0);
@@ -1517,20 +2058,88 @@ mod tests {
             shot_img(1200, 800, [40, 60, 90]),
             ShotKind::Saved,
             None,
-            FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+            FRect {
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 300.0,
+            },
             true,
             2.0,
         );
         let r = st.thumb_rect(0, 1440.0, 900.0);
+        // a click resolves on release — press alone must not open the
+        // lightbox, or drag-out could never preempt it
         let cmd = st.pointer(
-            ChromeEv::Down { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 },
+            ChromeEv::Down {
+                x: r.x + r.w / 2.0,
+                y: r.y + r.h / 2.0,
+            },
             1440.0,
             900.0,
         );
         assert!(matches!(cmd, Some(ChromeCmd::Redraw)));
+        assert!(st.lightbox.is_none());
+        st.pointer(
+            ChromeEv::Up {
+                x: r.x + r.w / 2.0,
+                y: r.y + r.h / 2.0,
+            },
+            1440.0,
+            900.0,
+        );
         assert!(st.lightbox.is_some());
         st.pointer(ChromeEv::Down { x: 700.0, y: 450.0 }, 1440.0, 900.0);
         assert!(st.lightbox.is_none());
+    }
+
+    /// A thumb press that drifts ≥4px before release becomes a drag —
+    /// `DragBegin` fires and no lightbox opens; a sub-threshold wobble
+    /// stays a click.
+    #[test]
+    fn thumb_drag_emits_drag_begin_not_lightbox() {
+        let mut st = Stack::new(Corner::TR);
+        st.land(
+            shot_img(1200, 800, [40, 60, 90]),
+            ShotKind::Saved,
+            None,
+            FRect {
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 300.0,
+            },
+            true,
+            2.0,
+        );
+        let r = st.thumb_rect(0, 1440.0, 900.0);
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        st.pointer(ChromeEv::Down { x: cx, y: cy }, 1440.0, 900.0);
+        let cmd = st.pointer(
+            ChromeEv::Dragged {
+                x: cx + 12.0,
+                y: cy,
+            },
+            1440.0,
+            900.0,
+        );
+        assert!(matches!(cmd, Some(ChromeCmd::DragBegin { idx: 0 })));
+        assert!(st.lightbox.is_none());
+        // release must not resurrect the click
+        st.pointer(
+            ChromeEv::Up {
+                x: cx + 12.0,
+                y: cy,
+            },
+            1440.0,
+            900.0,
+        );
+        assert!(st.lightbox.is_none());
+        // a sub-threshold wobble stays a click
+        st.pointer(ChromeEv::Down { x: cx, y: cy }, 1440.0, 900.0);
+        st.pointer(ChromeEv::Dragged { x: cx + 2.0, y: cy }, 1440.0, 900.0);
+        st.pointer(ChromeEv::Up { x: cx + 2.0, y: cy }, 1440.0, 900.0);
+        assert!(st.lightbox.is_some());
     }
 
     /// The "CLEAR ALL" pill rides the far end of the fanned row: it only
@@ -1545,7 +2154,12 @@ mod tests {
                 shot_img(1200, 800, [40 + i * 40, 60, 90]),
                 ShotKind::Saved,
                 None,
-                FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+                FRect {
+                    x: 100.0,
+                    y: 100.0,
+                    w: 400.0,
+                    h: 300.0,
+                },
                 true,
                 2.0,
             );
@@ -1555,7 +2169,10 @@ mod tests {
         // hover → fan open to the end
         let r0 = st.thumb_rect_at(0, lw, lh, 0.0, 0.0);
         let _ = st.pointer(
-            ChromeEv::Move { x: r0.x + r0.w / 2.0, y: r0.y + r0.h / 2.0 },
+            ChromeEv::Move {
+                x: r0.x + r0.w / 2.0,
+                y: r0.y + r0.h / 2.0,
+            },
             lw,
             lh,
         );
@@ -1568,7 +2185,10 @@ mod tests {
         assert!(cr.y >= row.y + row.h, "pill must sit below the row");
         assert!(cr.x + cr.w / 2.0 > row.x - 400.0 && cr.x + cr.w / 2.0 < row.x + row.w + 1.0);
         let cmd = st.pointer(
-            ChromeEv::Down { x: cr.x + cr.w / 2.0, y: cr.y + cr.h / 2.0 },
+            ChromeEv::Down {
+                x: cr.x + cr.w / 2.0,
+                y: cr.y + cr.h / 2.0,
+            },
             lw,
             lh,
         );
@@ -1588,7 +2208,12 @@ mod tests {
                 shot_img(1200, 800, [40, 60, 90]),
                 ShotKind::Saved,
                 None,
-                FRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+                FRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
                 true,
                 2.0,
             );
@@ -1599,5 +2224,122 @@ mod tests {
         assert!(st.is_empty());
         assert!(st.lightbox.is_none());
         assert!(!st.pinned);
+    }
+
+    /// Right-click opens the in-chrome menu; a row click emits the row's
+    /// MenuAction; Esc/backdrop dismiss without acting.
+    #[test]
+    fn context_menu_lifecycle() {
+        let (lw, lh) = (1440.0, 900.0);
+        let mut st = Stack::new(Corner::TR);
+        for i in 0..2u8 {
+            st.land(
+                shot_img(1200, 800, [40 + i * 40, 60, 90]),
+                ShotKind::Saved,
+                Some(PathBuf::from(format!("/tmp/shot{i}.png"))),
+                FRect {
+                    x: 100.0,
+                    y: 100.0,
+                    w: 400.0,
+                    h: 300.0,
+                },
+                true,
+                2.0,
+            );
+        }
+        let r = st.thumb_rect(0, lw, lh);
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+
+        // right-click on the newest thumb opens the menu — and widens
+        // the input region to the whole screen for the dismiss-outside
+        st.pointer(ChromeEv::RightDown { x: cx, y: cy }, lw, lh);
+        assert!(st.menu.is_some());
+        assert_eq!(
+            st.zone_rects(lw, lh).len(),
+            1,
+            "menu should cover the screen"
+        );
+        assert!(matches!(st.hit(5.0, 5.0, lw, lh), Some(Hit::Backdrop)));
+
+        // a row click emits the row's action and closes the menu
+        let m = st.menu.as_ref().unwrap();
+        let copy_row = m.rows.iter().position(|(id, _)| *id == MENU_COPY).unwrap();
+        let rr = st.menu_row_rect(copy_row, lw, lh).unwrap();
+        let cmd = st.pointer(
+            ChromeEv::Down {
+                x: rr.x + rr.w / 2.0,
+                y: rr.y + rr.h / 2.0,
+            },
+            lw,
+            lh,
+        );
+        assert!(
+            matches!(
+                cmd,
+                Some(ChromeCmd::MenuAction {
+                    idx: 0,
+                    id: MENU_COPY
+                })
+            ),
+            "row click must emit MenuAction, got {cmd:?}"
+        );
+        assert!(st.menu.is_none());
+
+        // reopen, then Esc peels the menu off without touching the stack
+        st.pointer(ChromeEv::RightDown { x: cx, y: cy }, lw, lh);
+        assert!(st.menu.is_some());
+        let cmd = st.key(Key::Esc);
+        assert!(matches!(cmd, Some(ChromeCmd::Redraw)));
+        assert!(st.menu.is_none());
+        assert_eq!(st.shots.len(), 2);
+
+        // a disabled row never emits — Reveal needs a saved path
+        let mut st = Stack::new(Corner::TR);
+        st.land(
+            shot_img(1200, 800, [40, 60, 90]),
+            ShotKind::Copied,
+            None,
+            FRect {
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 300.0,
+            },
+            true,
+            2.0,
+        );
+        let r = st.thumb_rect(0, lw, lh);
+        st.pointer(
+            ChromeEv::RightDown {
+                x: r.x + r.w / 2.0,
+                y: r.y + r.h / 2.0,
+            },
+            lw,
+            lh,
+        );
+        let m = st.menu.as_ref().unwrap();
+        let reveal_row = m
+            .rows
+            .iter()
+            .position(|(id, _)| *id == MENU_REVEAL)
+            .unwrap();
+        assert!(
+            !m.rows[reveal_row].1,
+            "Reveal must be disabled without a path"
+        );
+        let rr = st.menu_row_rect(reveal_row, lw, lh).unwrap();
+        let cmd = st.pointer(
+            ChromeEv::Down {
+                x: rr.x + rr.w / 2.0,
+                y: rr.y + rr.h / 2.0,
+            },
+            lw,
+            lh,
+        );
+        assert!(
+            matches!(cmd, Some(ChromeCmd::Redraw)),
+            "disabled row must not act"
+        );
+        assert!(st.menu.is_some(), "disabled row leaves the menu open");
     }
 }

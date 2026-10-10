@@ -22,11 +22,16 @@ use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBitmapFormat, NSBitmapImageRep, NSColor, NSEvent, NSEventMask,
-    NSScreen, NSStatusWindowLevel, NSView, NSWindowButton, NSWindowCollectionBehavior,
-    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSAutoresizingMaskOptions, NSBitmapFormat, NSBitmapImageRep, NSColor, NSDragOperation,
+    NSDraggingContext, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent, NSEventMask,
+    NSEventModifierFlags, NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSImage, NSScreen,
+    NSStatusWindowLevel, NSView, NSWindowButton, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWindowTitleVisibility, NSWorkspace,
 };
-use objc2_foundation::{NSDictionary, NSNull, NSPoint, NSRect, NSString};
+use objc2_foundation::{
+    NSArray, NSDictionary, NSError, NSLocalizedDescriptionKey, NSNull, NSObject, NSPoint, NSRect,
+    NSSize, NSString, NSURL,
+};
 use objc2_quartz_core::CAAction;
 use qs_overlay::sdf::Canvas;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -36,7 +41,7 @@ use winit::monitor::MonitorHandle;
 use winit::platform::macos::MonitorHandleExtMacOS;
 use winit::window::{Window, WindowId};
 
-use super::{Chrome, ChromeCmd, ChromeEv, Corner, FRect, Key, Land, ShotKind, Stack};
+use super::{ChromeCmd, ChromeEv, Corner, FRect, Key, Land, Stack};
 
 /* ==================== NSView subclass ==================== */
 
@@ -47,6 +52,10 @@ struct Ivars {
     rects: RefCell<Vec<FRect>>,
     /// event sink wired to the host's EventLoopProxy
     handler: RefCell<Option<Rc<dyn Fn(ChromeEv)>>>,
+    /// the press event that became a drag — `beginDraggingSession` needs
+    /// the original NSEvent, which is gone by the time the host-side
+    /// DragBegin command arrives
+    drag_ev: RefCell<Option<Retained<NSEvent>>>,
 }
 
 define_class!(
@@ -57,6 +66,18 @@ define_class!(
     struct ChromeView;
 
     unsafe impl NSObjectProtocol for ChromeView {}
+
+    /// Drag source: file-promises only, copy-only, left-hold-drag.
+    unsafe impl NSDraggingSource for ChromeView {
+        #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
+        fn drag_source_mask(
+            &self,
+            _s: &NSDraggingSession,
+            _ctx: NSDraggingContext,
+        ) -> NSDragOperation {
+            NSDragOperation::Copy
+        }
+    }
 
     impl ChromeView {
         #[unsafe(method_id(initWithFrame:))]
@@ -112,7 +133,20 @@ define_class!(
 
         #[unsafe(method(leftMouseDragged:))]
         fn left_dragged(&self, e: &NSEvent) {
-            self.cursor_event(e);
+            // stash the press event — beginDraggingSession needs it
+            // after the DragBegin command round-trips through the host
+            if let Some(ev) = unsafe { Retained::retain(e as *const NSEvent as *mut NSEvent) } {
+                *self.ivars().drag_ev.borrow_mut() = Some(ev);
+            }
+            let (x, y) = self.point(e);
+            self.emit(ChromeEv::Dragged { x, y });
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, e: &NSEvent) {
+            *self.ivars().drag_ev.borrow_mut() = None;
+            let (x, y) = self.point(e);
+            self.emit(ChromeEv::Up { x, y });
         }
 
         #[unsafe(method(rightMouseDragged:))]
@@ -138,12 +172,15 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, e: &NSEvent) {
+            let cmd = e.modifierFlags().contains(NSEventModifierFlags::Command);
             let k = match e.keyCode() {
                 53 => Key::Esc,
                 123 => Key::Left,
                 124 => Key::Right,
                 36 | 76 => Key::Enter,
                 51 => Key::Back,
+                49 => Key::Space,
+                8 if cmd => Key::Copy,
                 _ => return,
             };
             self.emit(ChromeEv::Key(k));
@@ -289,9 +326,10 @@ impl ChromeWin {
         for screen in NSScreen::screens(mtm).iter() {
             let desc = screen.deviceDescription();
             let key = NSString::from_str("NSScreenNumber");
-            let id = desc
-                .objectForKey(&key)
-                .and_then(|o| o.downcast_ref::<objc2_foundation::NSNumber>().map(|n| n.as_u32()));
+            let id = desc.objectForKey(&key).and_then(|o| {
+                o.downcast_ref::<objc2_foundation::NSNumber>()
+                    .map(|n| n.as_u32())
+            });
             if id == Some(mon.native_id()) {
                 ns_win.setFrame_display(screen.frame(), true);
                 found = true;
@@ -442,7 +480,8 @@ impl ChromeWin {
                 scale: self.scale,
             };
             let font = self.font.clone();
-            self.stack.render(&mut cv, &font, self.accent, Instant::now());
+            self.stack
+                .render(&mut cv, &font, self.accent, Instant::now());
         }
         unsafe {
             std::ptr::copy_nonoverlapping(
@@ -455,8 +494,7 @@ impl ChromeWin {
             // CGImage straight off the rep — the actions dict disables
             // implicit animations so setContents is non-blocking
             if let Some(cg) = self.rep.CGImage() {
-                let obj: &AnyObject =
-                    unsafe { &*(Retained::as_ptr(&cg) as *const AnyObject) };
+                let obj: &AnyObject = unsafe { &*(Retained::as_ptr(&cg) as *const AnyObject) };
                 unsafe { layer.setContents(Some(obj)) };
             }
         }
@@ -491,13 +529,138 @@ impl ChromeWin {
         self.present();
     }
 
+    /// A thumb got dragged past the threshold — start a real drag
+    /// session. Saved or not, the shot goes out as an
+    /// `NSFilePromiseProvider` so the PNG materializes wherever the
+    /// drop lands (Finder, an editor, a composer) — no save-first step.
+    fn begin_drag(&mut self, idx: usize) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some((img, name)) = self.stack.shot(idx).map(|s| {
+            let name = s
+                .path
+                .as_ref()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| format!("quickshort-{}.png", unix_ts()));
+            (s.img.clone(), name)
+        }) else {
+            return;
+        };
+        // drag image: the thumbnail the cursor grabbed, rebuilt as an
+        // NSImage (de-premultiplied into a fresh rep)
+        let (pixels, tw, th) = match self.stack.shot(idx).map(|s| s.thumb()) {
+            Some(t) => t,
+            None => return,
+        };
+        let rep = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+                mtm.alloc::<NSBitmapImageRep>(),
+                std::ptr::null_mut(),
+                tw as isize,
+                th as isize,
+                8,
+                4,
+                true,
+                false,
+                objc2_app_kit::NSCalibratedRGBColorSpace,
+                NSBitmapFormat::ThirtyTwoBitLittleEndian,
+                (tw * 4) as isize,
+                32,
+            )
+        };
+        let Some(rep) = rep else { return };
+        // packed thumb is premul A<<24|B<<16|G<<8|R → de-premultiply into
+        // the rep's RGBA bytes so the drag image matches what's on screen
+        unsafe {
+            let dst = rep.bitmapData();
+            for (i, px) in pixels.iter().enumerate() {
+                let (a, b, g, r) = (px >> 24, (px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff);
+                let (r, g, b) = if a > 0 {
+                    (r * 255 / a, g * 255 / a, b * 255 / a)
+                } else {
+                    (0, 0, 0)
+                };
+                *dst.add(i * 4) = r as u8;
+                *dst.add(i * 4 + 1) = g as u8;
+                *dst.add(i * 4 + 2) = b as u8;
+                *dst.add(i * 4 + 3) = a as u8;
+            }
+        }
+        let size = NSSize::new(tw as f64 / self.scale, th as f64 / self.scale);
+        let nsimg = NSImage::initWithSize(mtm.alloc::<NSImage>(), size);
+        nsimg.addRepresentation(&rep);
+
+        let delegate = PromiseWriter::new(mtm, name, encode_png(&img));
+        let provider = NSFilePromiseProvider::initWithFileType_delegate(
+            mtm.alloc::<NSFilePromiseProvider>(),
+            &NSString::from_str("public.png"),
+            ProtocolObject::from_ref(&*delegate),
+        );
+        let item = NSDraggingItem::initWithPasteboardWriter(
+            mtm.alloc::<NSDraggingItem>(),
+            ProtocolObject::from_ref(&*provider),
+        );
+        // anchor the drag image under the cursor — a small offset past
+        // the press point reads as "the thumb came along"
+        let f = NSRect::new(NSPoint::new(-size.width / 2.0, -size.height / 2.0), size);
+        unsafe { item.setDraggingFrame_contents(f, Some(&*nsimg)) };
+        let stashed = self.view.ivars().drag_ev.borrow().clone();
+        let ev = match stashed {
+            Some(e) => e,
+            // scriptable tools (cliclick & friends) deliver down/up but
+            // never leftMouseDragged — synthesize one so the session
+            // still starts
+            None => {
+                let p = self
+                    .view
+                    .window()
+                    .map(|w| w.convertPointToScreen(NSPoint::new(0.0, 0.0)))
+                    .unwrap_or(NSPoint::new(0.0, 0.0));
+                let wnum = self.view.window().map(|w| w.windowNumber()).unwrap_or(0);
+                let wnum = wnum as isize;
+                let ev: Option<Retained<NSEvent>> = unsafe {
+                    msg_send![
+                        objc2::class!(NSEvent),
+                        mouseEventWithType: objc2_app_kit::NSEventType::LeftMouseDragged,
+                        location: NSPoint::new(p.x + self.lw - 60.0, p.y + 60.0),
+                        modifierFlags: NSEventModifierFlags::empty(),
+                        timestamp: 0.0_f64,
+                        windowNumber: wnum,
+                        context: std::ptr::null::<AnyObject>(),
+                        eventNumber: 0_isize,
+                        clickCount: 1_isize,
+                        pressure: 0.0_f32
+                    ]
+                };
+                match ev {
+                    Some(e) => e,
+                    None => return, // can't even build the event — skip
+                }
+            }
+        };
+        let items = NSArray::from_retained_slice(&[item]);
+        self.view.beginDraggingSessionWithItems_event_source(
+            &items,
+            &ev,
+            ProtocolObject::from_ref(&*self.view),
+        );
+    }
+
     /// Platform event → stack → optional host command. Redraw is handled
     /// by the caller (Chrome::event) via `redraw`.
     pub fn event(&mut self, ev: ChromeEv) -> Option<ChromeCmd> {
-        match ev {
+        let cmd = match ev {
             ChromeEv::Key(k) => self.stack.key(k),
             e => self.stack.pointer(e, self.lw, self.lh),
+        };
+        // a drag-out starts the OS session here — the command never
+        // reaches the host
+        if let Some(ChromeCmd::DragBegin { idx, .. }) = cmd {
+            self.begin_drag(idx);
+            return None;
         }
+        cmd
     }
 
     pub fn redraw(&mut self) {
@@ -530,18 +693,111 @@ impl ChromeWin {
             self.stack.idle_deadline()
         }
     }
-
-    /// muda needs the NSView for popUpMenuPositioningItem.
-    pub fn view_ptr(&self) -> *const std::ffi::c_void {
-        Retained::as_ptr(&self.view) as *const std::ffi::c_void
-    }
 }
 
 impl Drop for ChromeWin {
     fn drop(&mut self) {
-        for m in [&self.mon_token, &self.local_mon_token].into_iter().flatten() {
+        for m in [&self.mon_token, &self.local_mon_token]
+            .into_iter()
+            .flatten()
+        {
             unsafe { NSEvent::removeMonitor(m) };
         }
     }
 }
 
+/* ==================== file-promise delegate ==================== */
+
+/// Writes the promised PNG when the drop destination asks for it.
+/// Bytes are pre-encoded (the promise callback can run off-main on
+/// whatever queue AppKit picks).
+struct WriterIvars {
+    name: String,
+    png: Vec<u8>,
+    /// pre-built write-failure error — AppKit may call the delegate
+    /// off-main, where NSError isn't allocatable
+    err: Option<Retained<NSError>>,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "QSPromiseWriter"]
+    #[ivars = WriterIvars]
+    struct PromiseWriter;
+
+    unsafe impl NSObjectProtocol for PromiseWriter {}
+
+    unsafe impl NSFilePromiseProviderDelegate for PromiseWriter {
+        #[unsafe(method_id(filePromiseProvider:fileNameForType:))]
+        fn file_name_for_type(
+            &self,
+            _p: &NSFilePromiseProvider,
+            _t: &NSString,
+        ) -> Retained<NSString> {
+            NSString::from_str(&self.ivars().name)
+        }
+
+        #[unsafe(method(filePromiseProvider:writePromiseToURL:completionHandler:))]
+        fn write_promise(
+            &self,
+            _p: &NSFilePromiseProvider,
+            url: &NSURL,
+            done: &block2::Block<dyn Fn(*mut NSError)>,
+        ) {
+            let wrote = url
+                .path()
+                .map(|p| std::fs::write(p.to_string(), &self.ivars().png))
+                .is_some_and(|r| r.is_ok());
+            let err = if wrote {
+                std::ptr::null_mut()
+            } else {
+                self.ivars()
+                    .err
+                    .as_ref()
+                    .map(|e| Retained::as_ptr(e) as *mut NSError)
+                    .unwrap_or(std::ptr::null_mut())
+            };
+            done.call((err,));
+        }
+    }
+);
+
+impl PromiseWriter {
+    fn new(mtm: MainThreadMarker, name: String, png: Vec<u8>) -> Retained<Self> {
+        // the generic write-failure error is built now — alloc needs
+        // the main thread, which `new` always runs on
+        let desc = NSString::from_str("Couldn't write the promised file");
+        let dict = NSDictionary::from_slices(
+            &[unsafe { NSLocalizedDescriptionKey }],
+            &[unsafe { &*(Retained::as_ptr(&desc) as *const AnyObject) }],
+        );
+        let err = unsafe {
+            NSError::initWithDomain_code_userInfo(
+                mtm.alloc::<NSError>(),
+                &NSString::from_str("QSQuickshortError"),
+                1,
+                Some(&dict),
+            )
+        };
+        let this = mtm.alloc::<Self>().set_ivars(WriterIvars {
+            name,
+            png,
+            err: Some(err),
+        });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// PNG-encode for the promise — same encoder `actions` uses.
+fn encode_png(img: &image::RgbaImage) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    let _ = img.write_to(&mut out, image::ImageFormat::Png);
+    out.into_inner()
+}
+
+fn unix_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
