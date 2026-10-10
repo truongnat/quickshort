@@ -352,7 +352,7 @@ use wayland_client::protocol::{
     wl_shm::{self, WlShm},
     wl_shm_pool::{self, WlShmPool},
 };
-use wayland_client::{Connection as WlConn, Dispatch, EventQueue, Proxy, QueueHandle};
+use wayland_client::{Connection as WlConn, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_sys::client::{wayland_client_handle, wl_proxy};
 
 /// wl_surface request opcodes (the core protocol is wire-stable).
@@ -385,8 +385,9 @@ struct WlBuf {
     size: usize,
     w: i32,
     h: i32,
-    pool: WlShmPool,
     buf: WlBuffer,
+    /// the pixel conversion the buffer's format demands
+    argb: bool,
     busy: bool,
     dead: bool,
 }
@@ -398,7 +399,10 @@ struct WlBuf {
 struct WlState {
     compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
-    /// never renumber — dead slots stay `None` until swept
+    /// formats the compositor advertised on wl_shm — argb8888/xrgb8888
+    /// are the only guaranteed ones; abgr8888 (our native packing) is
+    /// optional and weston refuses create_buffer with it
+    shm_formats: Vec<wl_shm::Format>,
     bufs: Vec<Option<WlBuf>>,
     /// slot indices released by the server since the last dispatch
     released: Vec<usize>,
@@ -492,17 +496,15 @@ impl Wl {
                 qh,
                 (),
             );
-            let buf = pool.create_buffer(
-                0,
-                w,
-                h,
-                w * 4,
-                // ABGR8888 = little-endian A<<24|B<<16|G<<8|R =
-                // memory R,G,B,A — our buffer's exact packing
-                wl_shm::Format::Abgr8888,
-                qh,
-                idx,
-            );
+            // only argb8888/xrgb8888 are spec-guaranteed; our buffer is
+            // packed ABGR so that format wins when offered, else we pay
+            // an R↔B swap for ARGB
+            let fmt = if self.state.shm_formats.contains(&wl_shm::Format::Abgr8888) {
+                wl_shm::Format::Abgr8888
+            } else {
+                wl_shm::Format::Argb8888
+            };
+            let buf = pool.create_buffer(0, w, h, w * 4, fmt, qh, idx);
             self.state.bufs[idx] = Some(WlBuf {
                 fd,
                 size: need,
@@ -510,12 +512,13 @@ impl Wl {
                 h,
                 pool,
                 buf,
+                argb: fmt == wl_shm::Format::Argb8888,
                 busy: false,
                 dead: false,
             });
         }
         let b = self.state.bufs[idx].as_mut()?;
-        write_shm(b.fd, pixels, b.size)?;
+        write_shm(b.fd, pixels, b.size, b.argb)?;
         b.busy = true;
         Some(idx)
     }
@@ -615,7 +618,10 @@ fn shm_fd(size: usize) -> Option<RawFd> {
     }
 }
 
-fn write_shm(fd: RawFd, pixels: &[u32], size: usize) -> Option<()> {
+/// Write pixels into the shm fd. `argb` selects the channel order:
+/// our buffer is ABGR (A<<24|B<<16|G<<8|R = memory R,G,B,A) while
+/// wl_shm Argb8888 wants A<<24|R<<16|G<<8|B — swap R↔B per pixel.
+fn write_shm(fd: RawFd, pixels: &[u32], size: usize, argb: bool) -> Option<()> {
     unsafe {
         let p = libc::mmap(
             std::ptr::null_mut(),
@@ -628,7 +634,15 @@ fn write_shm(fd: RawFd, pixels: &[u32], size: usize) -> Option<()> {
         if p == libc::MAP_FAILED {
             return None;
         }
-        std::ptr::copy_nonoverlapping(pixels.as_ptr(), p.cast(), pixels.len());
+        let dst = p.cast::<u32>();
+        if argb {
+            for (i, &px) in pixels.iter().enumerate() {
+                let v = px & 0xff00_ff00 | (px >> 16) & 0xff | (px << 16) & 0x00ff_0000;
+                dst.add(i).write_unaligned(v);
+            }
+        } else {
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), dst.cast(), pixels.len());
+        }
         libc::munmap(p, size);
     }
     Some(())
@@ -674,7 +688,20 @@ impl Dispatch<WlCompositor, ()> for WlState {
     }
 }
 impl Dispatch<WlShm, ()> for WlState {
-    fn event(_: &mut Self, _: &WlShm, _: wl_shm::Event, _: &(), _: &WlConn, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlShm,
+        ev: wl_shm::Event,
+        _: &(),
+        _: &WlConn,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_shm::Event::Format {
+            format: WEnum::Value(f),
+        } = ev
+        {
+            state.shm_formats.push(f);
+        }
     }
 }
 impl Dispatch<WlShmPool, ()> for WlState {
