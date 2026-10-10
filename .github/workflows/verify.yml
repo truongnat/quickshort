@@ -79,41 +79,35 @@ jobs:
           sudo apt-get install -y \
             libgtk-3-dev libayatana-appindicator3-dev \
             libpipewire-0.3-dev libclang-dev pkg-config \
-            weston imagemagick fonts-dejavu-core gdb wayland-utils strace
+            weston xvfb imagemagick fonts-dejavu-core wayland-utils
       - name: build
         run: cargo build -p qs-app
       - name: run the album demo under Weston
         run: |
           export XDG_RUNTIME_DIR=/tmp/xdg
           mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
-          weston --debug --backend=headless --socket=wl-test --width=1024 --height=768 --idle-time=0 > /tmp/weston.log 2>&1 &
-          WESTON=$!
-          sleep 3
-          ls -la "$XDG_RUNTIME_DIR" > /tmp/env.log 2>&1
-          WAYLAND_DISPLAY=wl-test wayland-info >> /tmp/env.log 2>&1 | head -30
-          # weston-debug binds the debug protocol (--debug above) and
-          # prints every client request plus the kill reason
-          WAYLAND_DISPLAY=wl-test weston-debug proto > /tmp/proto.log 2>&1 &
-          WDBG=$!
-          ( cd /tmp && WAYLAND_DEBUG=1 WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
-            strace -f -o /tmp/strace.log "$GITHUB_WORKSPACE/target/debug/quickshort" --chrome > /tmp/chrome-wl.log 2>&1 ) &
-          APP=$!
-          # shots land at 0/1/2s; capture at ~3s while the fan is open
-          sleep 3
-          ( cd /tmp && WAYLAND_DISPLAY=wl-test weston-screenshooter -S wl-test 2>> /tmp/chrome-wl.log || true )
-          sleep 1
-          mv /tmp/wayland-screenshot*.png /tmp/chrome-wl.png || true
+          # nested weston inside Xvfb — weston-screenshooter crashes on
+          # the headless backend, but the X11 backend paints the
+          # output into an X window `import` can capture
+          xvfb-run -a -s "-screen 0 1024x768x24" bash -c '
+            weston --backend=x11 --socket=wl-test --width=1024 --height=768 \
+              --idle-time=0 > /tmp/weston.log 2>&1 &
+            WESTON=$!
+            sleep 3
+            ( cd /tmp && WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
+              "$GITHUB_WORKSPACE/target/debug/quickshort" --chrome > /tmp/chrome-wl.log 2>&1 ) &
+            APP=$!
+            # shots land at 0/1/2s; capture at ~3s while the fan is open
+            sleep 3
+            import -window root /tmp/chrome-wl.png
+            kill $APP $WESTON 2>/dev/null || true
+          '
           identify /tmp/chrome-wl.png || true
           cat /tmp/chrome-wl.log
           echo "--- weston ---"
           cat /tmp/weston.log
           echo "--- env ---"
-          cat /tmp/env.log
-          echo "--- strace tail ---"
-          tail -40 /tmp/strace.log 2>/dev/null || true
-          echo "--- proto tail ---"
-          tail -80 /tmp/proto.log 2>/dev/null || true
-          kill $APP $WDBG $WESTON 2>/dev/null || true
+          cat /tmp/env.log 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: chrome-wayland-smoke
@@ -122,8 +116,6 @@ jobs:
             /tmp/chrome-wl.log
             /tmp/weston.log
             /tmp/env.log
-            /tmp/strace.log
-            /tmp/proto.log
           if-no-files-found: warn
       - name: dump logs on failure
         if: failure()
