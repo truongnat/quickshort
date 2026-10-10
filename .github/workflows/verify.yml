@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y \
             libgtk-3-dev libayatana-appindicator3-dev \
             libpipewire-0.3-dev libclang-dev pkg-config \
-            xvfb x11-apps x11-utils imagemagick fonts-dejavu-core libxkbcommon-x11-0
+            xvfb x11-apps x11-utils xdotool imagemagick fonts-dejavu-core libxkbcommon-x11-0
       - name: build
         run: cargo build -p qs-app
       - name: run the album demo under Xvfb
@@ -50,12 +50,13 @@ jobs:
             xdpyinfo | grep -iE "depths|XShape|COMPOSITE" > /tmp/chrome-app.log
             ./target/debug/quickshort --chrome >> /tmp/chrome-app.log 2>&1 &
             APP=$!
-            sleep 6
+            sleep 4
+            # hover the edge sliver to re-open the fan, then shoot
+            xdotool mousemove 795 90 mousemove 790 90 sleep 1.5
             xwininfo -root -tree >> /tmp/chrome-app.log
             import -window root /tmp/chrome-x11.png
             kill $APP 2>/dev/null || true
           '
-          identify /tmp/chrome-x11.png
           cat /tmp/chrome-app.log
       - uses: actions/upload-artifact@v4
         with:
