@@ -720,8 +720,8 @@ fn blit_img(cv: &mut Canvas, src: &[u32], sw: usize, sh: usize, dst: FRect, rad:
     );
     for py in y0..y1 {
         for px in x0..x1 {
-            let lx = px as f64 / s;
-            let ly = py as f64 / s;
+            let lx = px as f64 / s + 0.5 / s;
+            let ly = py as f64 / s + 0.5 / s;
             if rad > 0.0 {
                 let d = rrect_sdf(lx, ly, dst.x + dst.w / 2.0, dst.y + dst.h / 2.0, dst.w / 2.0, dst.h / 2.0, rad);
                 if d > 0.0 {
@@ -742,9 +742,12 @@ fn blit_img(cv: &mut Canvas, src: &[u32], sw: usize, sh: usize, dst: FRect, rad:
 
 fn rrect(cv: &mut Canvas, r: FRect, rad: f64, fill: u32, fa: f64, border: Option<u32>) {
     let s = cv.scale;
+    // +0.5/s: evaluate the SDF at pixel CENTERS like glass_card — corner
+    // sampling lands the edge exactly on the top/left boundary but half
+    // a pixel past it on bottom/right, so the hairline dies there
     for py in (r.y * s) as i32..((r.y + r.h) * s) as i32 {
         for px in (r.x * s) as i32..((r.x + r.w) * s) as i32 {
-            let d = rrect_sdf(px as f64 / s, py as f64 / s, r.x + r.w / 2.0, r.y + r.h / 2.0, r.w / 2.0, r.h / 2.0, rad);
+            let d = rrect_sdf(px as f64 / s + 0.5 / s, py as f64 / s + 0.5 / s, r.x + r.w / 2.0, r.y + r.h / 2.0, r.w / 2.0, r.h / 2.0, rad);
             if d <= 0.0 {
                 cv.blend_over(px, py, fill, fill_cov(d, s) * fa);
             }
@@ -762,7 +765,7 @@ fn disc(cv: &mut Canvas, cx: f64, cy: f64, r: f64, fill: u32, fa: f64) {
     let s = cv.scale;
     for py in ((cy - r) * s) as i32..((cy + r) * s) as i32 {
         for px in ((cx - r) * s) as i32..((cx + r) * s) as i32 {
-            let d = ellipse_sdf(px as f64 / s, py as f64 / s, cx, cy, r, r);
+            let d = ellipse_sdf(px as f64 / s + 0.5 / s, py as f64 / s + 0.5 / s, cx, cy, r, r);
             if d <= 0.0 {
                 cv.blend_over(px, py, fill, fill_cov(d, s) * fa);
             }
