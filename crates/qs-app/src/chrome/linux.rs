@@ -385,6 +385,7 @@ struct WlBuf {
     size: usize,
     w: i32,
     h: i32,
+    pool: WlShmPool,
     buf: WlBuffer,
     /// the pixel conversion the buffer's format demands
     argb: bool,
@@ -422,10 +423,9 @@ impl Wl {
             .context("wl registry roundtrip")?;
         // wl_registry has no destroy request — dropping it is enough
         drop(registry);
-        let compositor = state
-            .compositor
-            .clone()
-            .context("compositor offers no wl_compositor")?;
+        if state.compositor.is_none() {
+            anyhow::bail!("compositor offers no wl_compositor");
+        }
         if state.shm.is_none() {
             anyhow::bail!("compositor offers no wl_shm");
         }
