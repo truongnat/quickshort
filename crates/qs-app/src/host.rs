@@ -1107,4 +1107,11 @@ impl ApplicationHandler<HostEvent> for Host {
             None => ControlFlow::Wait,
         });
     }
+
+    fn exiting(&mut self, _el: &ActiveEventLoop) {
+        // Wl::drop sends wl_buffer/wl_region destroys over winit's
+        // wl_display — valid only while the loop is still connected,
+        // so the windows must die here, not in Demo/Host teardown.
+        self.chrome.wins.clear();
+    }
 }

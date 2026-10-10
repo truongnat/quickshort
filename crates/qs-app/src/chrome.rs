@@ -1789,6 +1789,12 @@ pub fn standalone(pos: &str, accent: u32) -> anyhow::Result<()> {
                 None => ControlFlow::Wait,
             });
         }
+
+        fn exiting(&mut self, _el: &ActiveEventLoop) {
+            // Wl::drop marshals destroys over winit's wl_display —
+            // only safe before the loop disconnects it.
+            self.chrome.wins.clear();
+        }
     }
 
     let el = EventLoop::<Ev>::with_user_event().build()?;
