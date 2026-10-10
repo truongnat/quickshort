@@ -47,17 +47,22 @@ jobs:
       - name: run the album demo under Xvfb
         run: |
           xvfb-run -a -s "-screen 0 1024x768x24" bash -c '
-            ./target/debug/quickshort --chrome &
+            xdpyinfo | grep -iE "depths|XShape|COMPOSITE" > /tmp/chrome-app.log
+            ./target/debug/quickshort --chrome >> /tmp/chrome-app.log 2>&1 &
             APP=$!
             sleep 6
+            xwininfo -root -tree >> /tmp/chrome-app.log
             import -window root /tmp/chrome-x11.png
             kill $APP 2>/dev/null || true
           '
           identify /tmp/chrome-x11.png
+          cat /tmp/chrome-app.log
       - uses: actions/upload-artifact@v4
         with:
           name: chrome-x11-smoke
-          path: /tmp/chrome-x11.png
+          path: |
+            /tmp/chrome-x11.png
+            /tmp/chrome-app.log
           if-no-files-found: error
 
   windows:
