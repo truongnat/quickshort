@@ -210,8 +210,9 @@ impl ChromeView {
 pub struct ChromeWin {
     win: Window,
     view: Retained<ChromeView>,
-    /// keeps the global mouse monitor alive — removed in Drop
+    /// keeps the mouse monitors alive — removed in Drop
     mon_token: Option<Retained<AnyObject>>,
+    local_mon_token: Option<Retained<AnyObject>>,
     pub stack: Stack,
     rep: Retained<NSBitmapImageRep>,
     buf: Vec<u32>,
@@ -238,13 +239,6 @@ impl ChromeWin {
         sink: Rc<dyn Fn(ChromeEv)>,
     ) -> Result<Self> {
         let sf = mon.scale_factor();
-        let (mw, mh) = {
-            let s = mon.size();
-            (s.width as f64 / sf, s.height as f64 / sf)
-        };
-        let mpos = mon.position();
-        let (mx, my) = (mpos.x as f64 / sf, mpos.y as f64 / sf);
-        let (pw, ph) = ((mw * sf).round() as usize, (mh * sf).round() as usize);
 
         let attrs = Window::default_attributes()
             .with_title("quickshort chrome")
@@ -308,6 +302,21 @@ impl ChromeWin {
         if !found {
             anyhow::bail!("no NSScreen for monitor {}", mon.native_id());
         }
+        // macOS clamps a titled window's frame to the screen's
+        // visibleFrame — the menu bar strip is unreachable. Read the
+        // clamped frame back and lay out inside it, so hit-tests match
+        // pixels and bottom-corner stacks aren't clipped.
+        let f = ns_win.frame();
+        // primary screen height converts the AppKit bottom-left frame
+        // into the winit virtual top-left space `sel` lives in
+        let pri_h = NSScreen::screens(mtm)
+            .iter()
+            .next()
+            .map(|s| s.frame().size.height)
+            .unwrap_or(0.0);
+        let (mx, my) = (f.origin.x, pri_h - f.origin.y - f.size.height);
+        let (mw, mh) = (f.size.width, f.size.height);
+        let (pw, ph) = ((mw * sf).round() as usize, (mh * sf).round() as usize);
 
         // our drawing surface replaces none of winit's view — it sits on
         // top as a subview and answers hitTest only inside live rects
@@ -368,11 +377,28 @@ impl ChromeWin {
             | NSEventMask::OtherMouseDragged;
         let mon_token = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block);
 
+        ns_win.setAcceptsMouseMovedEvents(true);
+
+        // local monitor: while the window is NOT ignoring (cursor was
+        // inside a rect) move events bound for *us* — including points
+        // where hitTest returns nil — land on the window, unseen by both
+        // the view and the global monitor. Without this the hover never
+        // clears when the cursor leaves a rect (stuck hover → no hide).
+        let v2 = view.clone();
+        let local_block = RcBlock::new(move |e: NonNull<NSEvent>| {
+            let p = NSEvent::mouseLocation();
+            v2.cursor_at_screen(p);
+            e.as_ptr()
+        });
+        let local_token =
+            unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local_block) };
+
         win.set_visible(true);
         Ok(Self {
             win,
             view,
             mon_token,
+            local_mon_token: local_token,
             stack: Stack::new(corner),
             rep,
             buf: vec![0; pw * ph],
@@ -509,8 +535,8 @@ impl ChromeWin {
 
 impl Drop for ChromeWin {
     fn drop(&mut self) {
-        if let Some(mon) = &self.mon_token {
-            unsafe { NSEvent::removeMonitor(mon) };
+        for m in [&self.mon_token, &self.local_mon_token].into_iter().flatten() {
+            unsafe { NSEvent::removeMonitor(m) };
         }
     }
 }

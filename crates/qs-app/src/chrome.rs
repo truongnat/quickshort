@@ -255,11 +255,9 @@ impl Stack {
         } else {
             MARGIN
         };
-        let y = if self.corner.bottom() {
-            h - MARGIN - TH
-        } else {
-            MARGIN + 26.0 // top corners sit below the menu bar line
-        };
+        let y = if self.corner.bottom() { h - MARGIN - TH } else { MARGIN };
+        // (the chrome view already starts below the menu bar — macOS
+        // clamps the window to visibleFrame — so no extra top inset)
         (x, y)
     }
 
@@ -1075,5 +1073,29 @@ mod tests {
         st.touch();
         st.settle(Instant::now() + Duration::from_millis(400));
         assert_eq!(st.hide_t, 0.0);
+    }
+
+    /// Click thumb0 → lightbox opens; backdrop click closes it.
+    #[test]
+    fn lightbox_opens_on_thumb_click() {
+        let mut st = Stack::new(Corner::TR);
+        st.land(
+            shot_img(1200, 800, [40, 60, 90]),
+            ShotKind::Saved,
+            None,
+            FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+            true,
+            2.0,
+        );
+        let r = st.thumb_rect(0, 1440.0, 900.0);
+        let cmd = st.pointer(
+            ChromeEv::Down { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 },
+            1440.0,
+            900.0,
+        );
+        assert!(matches!(cmd, Some(ChromeCmd::Redraw)));
+        assert!(st.lightbox.is_some());
+        st.pointer(ChromeEv::Down { x: 700.0, y: 450.0 }, 1440.0, 900.0);
+        assert!(st.lightbox.is_none());
     }
 }
