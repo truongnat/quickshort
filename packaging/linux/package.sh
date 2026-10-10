@@ -29,7 +29,7 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: truongnat <noreply@github.com>
-Depends: libgtk-3-0, libayatana-appindicator3-1, libpipewire-0.3-0, tesseract-ocr, tesseract-ocr-eng, wl-clipboard, libnotify-bin, openssh-client
+Depends: libgtk-3-0, libayatana-appindicator3-1, libpipewire-0.3-0, libxkbcommon-x11-0, tesseract-ocr, tesseract-ocr-eng, wl-clipboard, libnotify-bin, openssh-client
 Recommends: tesseract-ocr-jpn, tesseract-ocr-vie, ffmpeg
 Description: Region screenshot tool with annotations and native OCR
  A pure-Rust desktop utility: multi-monitor region capture, annotation
@@ -57,6 +57,12 @@ cp docs/assets/icon.png "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/quicksho
 # linuxdeploy wants the desktop file + icon at the appdir root too
 cp packaging/linux/quickshort.desktop "$APPDIR/quickshort.desktop"
 cp docs/assets/icon.png "$APPDIR/quickshort.png"
+
+# xkbcommon-dl dlopens libxkbcommon-x11 at runtime for X11 keymaps —
+# no DT_NEEDED for linuxdeploy to trace, so it must land by hand
+mkdir -p "$APPDIR/usr/lib/x86_64-linux-gnu"
+LIBXKB="$(ldconfig -p | awk '/libxkbcommon-x11\.so\.0/ {print $NF; exit}')"
+[ -n "$LIBXKB" ] && cp "$LIBXKB" "$APPDIR/usr/lib/x86_64-linux-gnu/"
 
 # AppImages can't self-exec on FUSE-less hosts without this env; CI has none
 export APPIMAGE_EXTRACT_AND_RUN=1
