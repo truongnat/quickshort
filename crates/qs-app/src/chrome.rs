@@ -854,6 +854,12 @@ impl Stack {
                 }
                 None => None,
             },
+            // Enter inside a lightbox copies the previewed shot — the
+            // macshot mapping the r2 spec steals
+            (Key::Enter, Some(_)) => self.key_target(n).map(|i| ChromeCmd::MenuAction {
+                idx: i,
+                id: MENU_COPY,
+            }),
             (Key::Copy, _) => self.key_target(n).map(|i| ChromeCmd::MenuAction {
                 idx: i,
                 id: MENU_COPY,
@@ -870,8 +876,11 @@ impl Stack {
     /// a hovered thumb, falling back to the newest — matches the
     /// hover-and-arrows-share-one-ring contract.
     fn key_target(&self, n: usize) -> Option<usize> {
-        self.ring
+        // an open lightbox owns the action — ⌘C/⌫ apply to the shot
+        // being previewed, not whatever sits under the ring
+        self.lightbox
             .filter(|i| *i < n)
+            .or(self.ring.filter(|i| *i < n))
             .or_else(|| {
                 self.hover.and_then(|h| match h {
                     Hit::Thumb(i) | Hit::Del(i) => Some(i),
