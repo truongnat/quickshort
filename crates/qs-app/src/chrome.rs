@@ -323,25 +323,26 @@ impl Stack {
         FRect { x, y, w: cw, h: ch }
     }
 
-    /// "CLEAR ALL" pill riding the far end of the fanned row —
-    /// Notification-Centre style. Only exists once the fan is mostly
-    /// open (hit/live gating matches `input_rects`).
+    /// "CLEAR ALL" pill centred under the fanned row — like the
+    /// Clear All at the edge of Notification Centre's list, it only
+    /// dismisses the shelf; files on disk are untouched. Exists once
+    /// the fan is mostly open (hit/live gating matches `input_rects`).
     fn clear_rect(&self, w: f64, h: f64) -> Option<FRect> {
         if self.shots.len() < 2 || self.fan_t < 0.5 {
             return None;
         }
         let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        let first = self.thumb_rect_at(0, w, h, self.fan_t, self.hide_t);
         let last = self.thumb_rect_at(n - 1, w, h, self.fan_t, self.hide_t);
         let (pw, ph) = (92.0, 22.0);
-        let (_, ay) = self.anchor(w, h);
-        let y = ay + TH / 2.0 - ph / 2.0;
-        // the row's far end: left of the leftmost for right corners,
-        // right of the rightmost otherwise
-        let x = if self.corner.right() {
-            last.x - pw - 12.0
+        let (left, right) = if first.x < last.x {
+            (first.x, last.x + last.w)
         } else {
-            last.x + last.w + 12.0
+            (last.x, first.x + first.w)
         };
+        let x = (left + right) / 2.0 - pw / 2.0;
+        // below the row for top corners, above it for bottom ones
+        let y = if self.corner.bottom() { first.y - ph - 10.0 } else { first.y + first.h + 10.0 };
         Some(FRect { x, y, w: pw, h: ph })
     }
 
@@ -353,6 +354,10 @@ impl Stack {
             return vec![(FRect { x: 0.0, y: 0.0, w, h }, Hit::Backdrop)];
         }
         let mut v = Vec::new();
+        // the pill sits in the thumbs' hit padding — first so it wins
+        if let Some(c) = self.clear_rect(w, h) {
+            v.push((c, Hit::ClearAll));
+        }
         let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
         for i in 0..n {
             let mut r = self.thumb_rect(i, w, h);
@@ -364,9 +369,6 @@ impl Stack {
         }
         if self.shots.len() >= 2 {
             v.push((self.chip_rect(w, h), Hit::Chip));
-        }
-        if let Some(c) = self.clear_rect(w, h) {
-            v.push((c, Hit::ClearAll));
         }
         v
     }
@@ -905,8 +907,8 @@ impl Stack {
             }
         }
 
-        // "CLEAR ALL" pill fading in with the fan — red text on hover
-        // like the per-thumb × (same dismiss affordance, whole row)
+        // "CLEAR ALL" pill under the row, fading in with the fan —
+        // red text on hover like the per-thumb × (dismiss-only)
         if let Some(cr) = self.clear_rect(lw, lh) {
             let a = ((self.fan_t - 0.4) / 0.6).clamp(0.0, 1.0);
             let hot = self.hover == Some(Hit::ClearAll);
@@ -1360,10 +1362,11 @@ mod tests {
         st.settle(Instant::now() + Duration::from_millis(400));
         assert_eq!(st.fan_t, 1.0);
 
-        // the pill sits just past the far end of the row
+        // the pill sits centred under the fanned row
         let cr = st.clear_rect(lw, lh).expect("pill exists when fanned");
-        let last = st.thumb_rect_at(2, lw, lh, 1.0, 0.0);
-        assert!(cr.x + cr.w < last.x, "pill must be inward of the row end");
+        let row = st.thumb_rect_at(0, lw, lh, 1.0, 0.0);
+        assert!(cr.y >= row.y + row.h, "pill must sit below the row");
+        assert!(cr.x + cr.w / 2.0 > row.x - 400.0 && cr.x + cr.w / 2.0 < row.x + row.w + 1.0);
         let cmd = st.pointer(
             ChromeEv::Down { x: cr.x + cr.w / 2.0, y: cr.y + cr.h / 2.0 },
             lw,
