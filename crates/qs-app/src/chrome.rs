@@ -159,6 +159,10 @@ pub struct Stack {
     pub shots: Vec<Shot>, // newest LAST
     fly: Option<Fly>,
     hover: Option<Hit>,
+    /// cursor within the wider retention zone — hover hysteresis so a
+    /// moving rect can't slide out from under a resting cursor (fan
+    /// closes → thumb returns under the cursor → opens → jitter loop)
+    inside: bool,
     /// stacked↔fanned blend — time-based tween toward `fan_to`
     fan_t: f64,
     fan_from: f64,
@@ -192,6 +196,7 @@ impl Stack {
             shots: Vec::new(),
             fly: None,
             hover: None,
+            inside: false,
             fan_t: 0.0,
             fan_from: 0.0,
             fan_to: 0.0,
@@ -264,20 +269,26 @@ impl Stack {
     /// Rect of the thumb `i` positions behind the newest (0 = newest).
     /// Hover/pinned fans them horizontally toward the screen middle.
     fn thumb_rect(&self, i: usize, w: f64, h: f64) -> FRect {
+        self.thumb_rect_at(i, w, h, self.fan_t, self.hide_t)
+    }
+
+    /// Same math with explicit tween values — `zone_hit` tests the
+    /// endpoints so a rect mid-sweep can't flap the retention zone.
+    fn thumb_rect_at(&self, i: usize, w: f64, h: f64, fan_t: f64, hide_t: f64) -> FRect {
         let (ax, ay) = self.anchor(w, h);
         let inward = if self.corner.right() { -1.0 } else { 1.0 };
         // hiding collapses every offset so the edge shows ONE sliver
         // (the newest thumb) instead of a diagonal trail of peeks
-        let collapse = 1.0 - self.hide_t;
-        let dx = inward * (STACK_DX + (FAN - STACK_DX) * self.fan_t) * i as f64 * collapse;
+        let collapse = 1.0 - hide_t;
+        let dx = inward * (STACK_DX + (FAN - STACK_DX) * fan_t) * i as f64 * collapse;
         // edge-hidden slides thumbs fully off-screen — the docked chip
         // is the only visible handle (a sliver + floating chip read as
         // two disjoint artifacts)
-        let hide_dx = -inward * self.hide_t * (TW + MARGIN);
+        let hide_dx = -inward * hide_t * (TW + MARGIN);
         // the fan is a straight horizontal row — the cascade's vertical
         // offset collapses as fan_t opens (was spreading diagonally)
         let dy = if self.corner.bottom() { -STACK_DY } else { STACK_DY }
-            * i as f64 * (1.0 - self.fan_t) * collapse;
+            * i as f64 * (1.0 - fan_t) * collapse;
         FRect {
             x: ax + dx + hide_dx,
             y: ay + dy,
@@ -287,6 +298,10 @@ impl Stack {
     }
 
     fn chip_rect(&self, w: f64, h: f64) -> FRect {
+        self.chip_rect_at(w, h, self.hide_t)
+    }
+
+    fn chip_rect_at(&self, w: f64, h: f64, hide_t: f64) -> FRect {
         let (ax, ay) = self.anchor(w, h);
         let (cw, ch) = (64.0, 20.0);
         // beside the newest thumb, aligned to its far edge — never
@@ -294,7 +309,7 @@ impl Stack {
         let shown = if self.corner.right() { ax - cw - 8.0 } else { ax + TW + 8.0 };
         // hidden: dock flush against the screen edge as the sole handle
         let docked = if self.corner.right() { w - cw - 2.0 } else { 2.0 };
-        let x = shown + (docked - shown) * self.hide_t;
+        let x = shown + (docked - shown) * hide_t;
         let y = if self.corner.bottom() {
             ay + TH - ch
         } else {
@@ -324,6 +339,41 @@ impl Stack {
             v.push((self.chip_rect(w, h), Hit::Chip));
         }
         v
+    }
+
+    /// Retention zone around the interactive rects — while `wide` the
+    /// fan/hide tweens only collapse once the cursor leaves the union of
+    /// BOTH animation endpoints (the union covers the swept path, so
+    /// mid-tween geometry can never flip the answer). Without the union
+    /// a thumb can slide out from under a resting cursor, hover drops,
+    /// the tween reverses, the thumb slides back — a jitter loop.
+    /// Acquire (`wide` = false) stays at current geometry so the
+    /// hover area doesn't swallow the screen.
+    fn zone_hit(&self, x: f64, y: f64, w: f64, h: f64, wide: bool) -> bool {
+        if self.lightbox.is_some() {
+            return true;
+        }
+        let pad = if wide { 28.0 } else { 12.0 };
+        let fan_opts: &[f64] = if wide { &[self.fan_t, 0.0, 1.0][..] } else { &[self.fan_t][..] };
+        let hide_opts: &[f64] = if wide { &[self.hide_t, 0.0, 1.0][..] } else { &[self.hide_t][..] };
+        let n = self.shots.len().min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        for &ht in hide_opts {
+            for &ft in fan_opts {
+                for i in 0..n {
+                    let r = self.thumb_rect_at(i, w, h, ft, ht);
+                    if x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad {
+                        return true;
+                    }
+                }
+                if self.shots.len() >= 2 {
+                    let c = self.chip_rect_at(w, h, ht);
+                    if x >= c.x - pad && x <= c.x + c.w + pad && y >= c.y - pad && y <= c.y + c.h + pad {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Point (logical) → role.
@@ -360,11 +410,13 @@ impl Stack {
         match ev {
             ChromeEv::Move { x, y } => {
                 let hit = self.hit(x, y, w, h);
-                if hit != self.hover {
+                let inside = hit.is_some() || self.zone_hit(x, y, w, h, self.inside);
+                if hit != self.hover || inside != self.inside {
                     // real hover transitions are activity — synthetic
                     // Move re-emits (sync_input, global monitor) aren't
                     self.touch();
                     self.hover = hit;
+                    self.inside = inside;
                     self.retarget_fan();
                     // hover drives the keyboard ring (macshot parity)
                     self.ring = match hit {
@@ -376,10 +428,12 @@ impl Stack {
                 None
             }
             ChromeEv::Leave => {
+                self.inside = false;
                 if self.hover.take().is_some() {
                     self.retarget_fan();
                     return Some(ChromeCmd::Redraw);
                 }
+                self.retarget_fan();
                 None
             }
             ChromeEv::Down { x, y } => {
@@ -460,7 +514,7 @@ impl Stack {
     /// overshoots slightly (ease-out-back, ~280ms) like a native
     /// popover; closing is a quicker plain ease-out (~180ms).
     fn retarget_fan(&mut self) {
-        let t = if self.pinned || self.hover.is_some() { 1.0 } else { 0.0 };
+        let t = if self.pinned || self.inside { 1.0 } else { 0.0 };
         if t != self.fan_to {
             self.fan_from = self.fan_t;
             self.fan_to = t;
@@ -485,7 +539,7 @@ impl Stack {
     /// until this when nothing is animating. None while hidden.
     pub fn idle_deadline(&self) -> Option<Instant> {
         if self.hide_to == 0.0
-            && self.hover.is_none()
+            && !self.inside
             && !self.pinned
             && self.lightbox.is_none()
             && !self.shots.is_empty()
@@ -541,7 +595,7 @@ impl Stack {
         // idle → slide into the edge (a fresh shot resets the clock at land)
         if self.hide_to == 0.0
             && self.hide_t == 0.0
-            && self.hover.is_none()
+            && !self.inside
             && !self.pinned
             && self.lightbox.is_none()
             && self.fly.is_none()
@@ -1136,6 +1190,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The retention zone covers BOTH fan endpoints — a cursor resting
+    /// inside the cascade's overhang keeps `inside` after the fan opens
+    /// and slides the thumb away. Without it the hover flapped
+    /// open/closed every tween (the reported bottom-edge jitter).
+    #[test]
+    fn hover_survives_fan_sweep() {
+        let mut st = Stack::new(Corner::TR);
+        for i in 0..3u8 {
+            st.land(
+                shot_img(1200, 800, [40 + i * 40, 60, 90]),
+                ShotKind::Saved,
+                None,
+                FRect { x: 100.0, y: 100.0, w: 400.0, h: 300.0 },
+                true,
+                2.0,
+            );
+        }
+        // cursor parked inside the collapsed cascade's low edge — a spot
+        // the fanned row vacates (cascade dy collapses on open)
+        let r2 = st.thumb_rect_at(2, 1440.0, 900.0, 0.0, 0.0);
+        let (cx, cy) = (r2.x + r2.w / 2.0, r2.y + r2.h + 10.0); // just below
+        let _ = st.pointer(ChromeEv::Move { x: cx, y: cy }, 1440.0, 900.0);
+        assert!(st.inside, "cursor on the cascade edge should engage the zone");
+        // run the fan open to its end — the cascade's dy is gone now
+        st.settle(Instant::now() + Duration::from_millis(400));
+        assert_eq!(st.fan_t, 1.0);
+        // same resting cursor: still inside via the union, no flap
+        let _ = st.pointer(ChromeEv::Move { x: cx, y: cy }, 1440.0, 900.0);
+        assert!(st.inside, "fan sweep must not drop the hover zone");
+        assert_eq!(st.fan_to, 1.0, "fan must stay open under a resting cursor");
     }
 
     /// Click thumb0 → lightbox opens; backdrop click closes it.
