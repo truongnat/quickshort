@@ -100,7 +100,7 @@ jobs:
           APP=$!
           # shots land at 0/1/2s; capture at ~3s while the fan is open
           sleep 3
-          ( cd /tmp && weston-screenshooter -S wl-test 2>> /tmp/chrome-wl.log || true )
+          ( cd /tmp && WAYLAND_DISPLAY=wl-test weston-screenshooter -S wl-test 2>> /tmp/chrome-wl.log || true )
           sleep 1
           mv /tmp/wayland-screenshot*.png /tmp/chrome-wl.png || true
           identify /tmp/chrome-wl.png || true
