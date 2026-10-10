@@ -17,8 +17,9 @@ use std::time::Duration;
 const FPS: u64 = 15;
 
 /// Frames → mp4 in `dir` until `stop` flips. Returns (first cropped
-/// frame, path) so the UI can show a thumbnail without re-reading.
-pub fn run(sel: Rect, dir: &Path, stop: Arc<AtomicBool>) -> Result<(RgbaImage, PathBuf)> {
+/// frame, path, wall-clock seconds) so the UI can badge the thumb.
+pub fn run(sel: Rect, dir: &Path, stop: Arc<AtomicBool>) -> Result<(RgbaImage, PathBuf, u64)> {
+    let t0 = std::time::Instant::now();
     let live = qs_capture::record_start(sel)?;
     let crop = crop_px(sel, live.logical, live.scale);
     let enc = Encoder::spawn(dir, crop.2, crop.3)?;
@@ -68,7 +69,7 @@ pub fn run(sel: Rect, dir: &Path, stop: Arc<AtomicBool>) -> Result<(RgbaImage, P
     drop(live); // stops the producer and joins its thread before encode-wrap
     let path = enc.finish()?;
     match first {
-        Some(f) => Ok((f, path)),
+        Some(f) => Ok((f, path, t0.elapsed().as_secs().max(1))),
         None => bail!("no frames captured before stop"),
     }
 }
@@ -216,7 +217,8 @@ mod tests {
             std::thread::sleep(Duration::from_secs(3));
             s2.store(true, Ordering::Relaxed);
         });
-        let (_thumb, path) = run(mon, Path::new("/tmp"), stop).unwrap();
+        let (_thumb, path, dur) = run(mon, Path::new("/tmp"), stop).unwrap();
+        assert!(dur >= 2);
         let out = Command::new("ffprobe")
             .args([
                 "-v",

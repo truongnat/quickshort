@@ -25,7 +25,7 @@ use crate::toast::Toast;
 enum Ev {
     Done(Result<Dispatch, String>),
     ScrollDone(Result<RgbaImage, String>),
-    RecDone(Result<(RgbaImage, PathBuf), String>),
+    RecDone(Result<(RgbaImage, PathBuf, u64), String>),
     ShareDone(Result<crate::share::SharedLink, String>),
 }
 
@@ -131,7 +131,7 @@ impl ApplicationHandler<Ev> for Run {
                 self.workers -= 1;
                 self.rec = None;
                 match res {
-                    Ok((img, path)) => self.open_card(el, img, "Recording saved", Some(path)),
+                    Ok((img, path, _dur)) => self.open_card(el, img, "Recording saved", Some(path)),
                     Err(e) => self.notify(el, &format!("Recording failed: {e}"), false),
                 }
             }

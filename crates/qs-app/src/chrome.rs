@@ -83,6 +83,8 @@ pub struct Shot {
     /// on disk already → Reveal; None → unsaved (Copy-only provenance)
     pub path: Option<PathBuf>,
     kind: ShotKind,
+    /// seconds recorded — the ▶ thumb gets a `m:ss` duration badge
+    pub dur_s: Option<u64>,
 }
 
 impl Shot {
@@ -287,6 +289,7 @@ impl Stack {
         from: FRect,
         rm: bool,
         scale: f64,
+        dur_s: Option<u64>,
     ) {
         self.touch(); // a landing shot is activity — reveal the stack
         let img = Rc::new(img);
@@ -298,6 +301,7 @@ impl Stack {
             th,
             path,
             kind,
+            dur_s,
         };
         if rm {
             self.shots.push(shot);
@@ -1341,6 +1345,30 @@ impl Stack {
                 0x000000,
             );
 
+            // recordings also carry their length — a `m:ss` pill hugging
+            // the ▶ disc, bottom-left like CleanShot's duration label
+            if shot.kind == ShotKind::Record {
+                if let Some(d) = shot.dur_s {
+                    let label = format!("{}:{:02}", d / 60, d % 60);
+                    let tw = t.width(8.5, &label);
+                    let (px, py) = (bx + 10.0, by + 5.5);
+                    rrect(
+                        cv,
+                        FRect {
+                            x: px - 4.0,
+                            y: py - 5.0,
+                            w: tw + 8.0,
+                            h: 11.0,
+                        },
+                        5.5,
+                        CARD,
+                        0.9,
+                        None,
+                    );
+                    t.draw_over(cv, px, py, 8.5, &label, 0xFFFFFF);
+                }
+            }
+
             // × on hover
             if self.hover == Some(Hit::Thumb(i)) || self.hover == Some(Hit::Del(i)) {
                 let (dx, dy) = self.del_pos(r);
@@ -1505,6 +1533,9 @@ pub struct Land {
     pub sel: Option<qs_core::Rect>,
     /// skip the fly-in (rehydrated shots land already settled)
     pub instant: bool,
+    /// recording length in seconds — drives the `m:ss` badge on ▶
+    /// thumbs; ignored for other kinds
+    pub dur_s: Option<u64>,
 }
 
 impl Chrome {
@@ -1689,6 +1720,7 @@ pub fn standalone(pos: &str, accent: u32) -> anyhow::Result<()> {
             path: None,
             sel: Some(qs_core::Rect::new(200, 200, 400, 300)),
             instant: false,
+            dur_s: None,
         }
     }
 
@@ -1812,6 +1844,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
             );
         }
         let (lw, lh) = (1440.0, 900.0);
@@ -1904,6 +1937,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
             );
         }
         // wind the idle clock back past the threshold
@@ -1983,6 +2017,7 @@ mod tests {
             },
             true,
             2.0,
+            None,
         );
         st.hide_t = 1.0; // fully slid off the right edge
         let (bw, bh) = (2880usize, 1800usize);
@@ -2030,6 +2065,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
             );
         }
         // cursor parked inside the collapsed cascade's low edge — a spot
@@ -2066,6 +2102,7 @@ mod tests {
             },
             true,
             2.0,
+            None,
         );
         let r = st.thumb_rect(0, 1440.0, 900.0);
         // a click resolves on release — press alone must not open the
@@ -2111,6 +2148,7 @@ mod tests {
             },
             true,
             2.0,
+            None,
         );
         let r = st.thumb_rect(0, 1440.0, 900.0);
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
@@ -2162,6 +2200,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
             );
         }
         // no pill while the stack sits collapsed
@@ -2216,6 +2255,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
             );
         }
         st.pinned = true;
@@ -2245,6 +2285,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
             );
         }
         let r = st.thumb_rect(0, lw, lh);
@@ -2307,6 +2348,7 @@ mod tests {
             },
             true,
             2.0,
+            None,
         );
         let r = st.thumb_rect(0, lw, lh);
         st.pointer(

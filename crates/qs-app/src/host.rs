@@ -40,7 +40,7 @@ pub(crate) enum HostEvent {
     /// Recording worker finished — (first frame, mp4 path) or error, plus
     /// the selection.
     RecDone(
-        Result<(image::RgbaImage, std::path::PathBuf), String>,
+        Result<(image::RgbaImage, std::path::PathBuf, u64), String>,
         qs_core::Rect,
     ),
     /// Release check finished — `manual` gates the "up to date" toast.
@@ -385,6 +385,7 @@ impl Host {
         img: image::RgbaImage,
         kind: ShotKind,
         saved: Option<PathBuf>,
+        dur_s: Option<u64>,
         msg: &str,
     ) {
         self.toast = None;
@@ -395,6 +396,7 @@ impl Host {
                 path: saved,
                 sel,
                 instant: false,
+                dur_s,
             };
             match self.chrome.land(el, l) {
                 Ok(()) => return,
@@ -458,6 +460,7 @@ impl Host {
                             path: None,
                             sel: None,
                             instant: false,
+                            dur_s: None,
                         },
                     );
                 }
@@ -646,6 +649,7 @@ impl ApplicationHandler<HostEvent> for Host {
                         path: Some(p.clone()),
                         sel: None,
                         instant: true,
+                        dur_s: None,
                     },
                 );
             }
@@ -786,6 +790,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 d.img,
                                 ShotKind::Saved,
                                 Some(p),
+                                None,
                                 &format!("Saved {name}"),
                             );
                         }
@@ -795,6 +800,7 @@ impl ApplicationHandler<HostEvent> for Host {
                             d.img,
                             ShotKind::Copied,
                             None,
+                            None,
                             "Copied to clipboard",
                         ),
                         Outcome::Shared(link) => {
@@ -803,6 +809,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 Some(d.sel),
                                 d.img,
                                 ShotKind::Shared,
+                                None,
                                 None,
                                 "Shared",
                             );
@@ -819,6 +826,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 d.img,
                                 ShotKind::Ocr,
                                 None,
+                                None,
                                 &format!("Copied {n} chars"),
                             );
                             self.toast_done(el, format!("Copied {n} chars"), true);
@@ -829,6 +837,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 Some(d.sel),
                                 d.img,
                                 ShotKind::Ocr,
+                                None,
                                 None,
                                 "No text found",
                             );
@@ -845,6 +854,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     img,
                     ShotKind::Scroll,
                     None,
+                    None,
                     "Captured — pick an action",
                 ),
                 Err(e) => self.toast_done(el, format!("Scroll failed: {e}"), false),
@@ -852,12 +862,13 @@ impl ApplicationHandler<HostEvent> for Host {
             HostEvent::RecDone(res, sel) => {
                 self.rec = None;
                 match res {
-                    Ok((img, path)) => self.land_shot(
+                    Ok((img, path, dur_s)) => self.land_shot(
                         el,
                         Some(sel),
                         img,
                         ShotKind::Record,
                         Some(path),
+                        Some(dur_s),
                         "Recording saved",
                     ),
                     Err(e) => self.toast_done(el, format!("Recording failed: {e}"), false),
