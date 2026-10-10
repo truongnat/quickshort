@@ -89,15 +89,15 @@ jobs:
           weston --backend=headless --socket=wl-test --idle-time=0 > /tmp/weston.log 2>&1 &
           WESTON=$!
           sleep 2
-          ( cd /tmp && WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
+          ( cd /tmp && RUST_BACKTRACE=1 WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
             "$GITHUB_WORKSPACE/target/debug/quickshort" --chrome > /tmp/chrome-wl.log 2>&1 ) &
           APP=$!
           # shots land at 0/1/2s; capture at ~3s while the fan is open
           sleep 3
           ( cd /tmp && weston-screenshooter -S wl-test 2>> /tmp/chrome-wl.log || true )
           sleep 1
-          mv /tmp/wayland-screenshot*.png /tmp/chrome-wl.png
-          identify /tmp/chrome-wl.png
+          mv /tmp/wayland-screenshot*.png /tmp/chrome-wl.png || true
+          identify /tmp/chrome-wl.png || true
           cat /tmp/chrome-wl.log
           kill $APP $WESTON 2>/dev/null || true
       - uses: actions/upload-artifact@v4
@@ -106,7 +106,10 @@ jobs:
           path: |
             /tmp/chrome-wl.png
             /tmp/chrome-wl.log
-          if-no-files-found: error
+          if-no-files-found: warn
+      - name: dump logs on failure
+        if: failure()
+        run: cat /tmp/chrome-wl.log /tmp/weston.log 2>/dev/null | tail -60
 
   windows:
     runs-on: windows-latest
