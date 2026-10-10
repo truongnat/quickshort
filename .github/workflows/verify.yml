@@ -91,7 +91,7 @@ jobs:
           sleep 3
           ls -la "$XDG_RUNTIME_DIR" > /tmp/env.log 2>&1
           WAYLAND_DISPLAY=wl-test wayland-info >> /tmp/env.log 2>&1 | head -30
-          ( cd /tmp && WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
+          ( cd /tmp && WAYLAND_DEBUG=1 WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
             strace -f -o /tmp/strace.log "$GITHUB_WORKSPACE/target/debug/quickshort" --chrome > /tmp/chrome-wl.log 2>&1 ) &
           APP=$!
           # shots land at 0/1/2s; capture at ~3s while the fan is open
