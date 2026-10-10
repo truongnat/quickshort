@@ -79,7 +79,7 @@ jobs:
           sudo apt-get install -y \
             libgtk-3-dev libayatana-appindicator3-dev \
             libpipewire-0.3-dev libclang-dev pkg-config \
-            weston imagemagick fonts-dejavu-core
+            weston imagemagick fonts-dejavu-core gdb
       - name: build
         run: cargo build -p qs-app
       - name: run the album demo under Weston
@@ -89,7 +89,8 @@ jobs:
           weston --backend=headless --socket=wl-test --idle-time=0 > /tmp/weston.log 2>&1 &
           WESTON=$!
           sleep 2
-          ( cd /tmp && RUST_BACKTRACE=1 WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
+          ( cd /tmp && WAYLAND_DISPLAY=wl-test XDG_SESSION_TYPE=wayland \
+            gdb -batch -ex run -ex bt --args \
             "$GITHUB_WORKSPACE/target/debug/quickshort" --chrome > /tmp/chrome-wl.log 2>&1 ) &
           APP=$!
           # shots land at 0/1/2s; capture at ~3s while the fan is open
