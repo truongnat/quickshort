@@ -1,0 +1,28 @@
+# Maintainer: truongdq <truongdq.dev@gmail.com>
+# AUR -bin package: repacks the GitHub-release .deb — no build deps,
+# installs to /usr/bin with the upstream .desktop entry + icon.
+pkgname=quickshort-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Region screenshots with annotations and OCR - native, no Electron"
+arch=('x86_64')
+url="https://github.com/truongnat/quickshort"
+license=('MIT')
+depends=('gtk3' 'libayatana-appindicator')
+optdepends=(
+    'ffmpeg: screen recording (Cmd+R equivalent)'
+    'wl-clipboard: clipboard on Wayland'
+    'tesseract: additional OCR languages via tesseract-data'
+)
+provides=('quickshort')
+conflicts=('quickshort')
+source=("${pkgname}-${pkgver}.deb::https://github.com/truongnat/quickshort/releases/download/v${pkgver}/quickshort_amd64.deb")
+# regenerate with: makepkg -g (shasum of the release deb)
+sha256sums=('SKIP')
+
+package() {
+    # deb is an ar archive; data.tar.* holds the filesystem payload
+    cd "${srcdir}"
+    ar x "${pkgname}-${pkgver}.deb"
+    tar -xf data.tar.* -C "${pkgdir}"
+}

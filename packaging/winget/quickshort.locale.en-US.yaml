@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+PackageIdentifier: truongnat.quickshort
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: truongnat
+PublisherUrl: https://github.com/truongnat/quickshort
+PackageName: Quickshort
+PackageUrl: https://github.com/truongnat/quickshort
+License: MIT
+LicenseUrl: https://github.com/truongnat/quickshort/blob/main/LICENSE
+ShortDescription: Region screenshots with annotations and OCR - native Rust, no Electron.
+Description: |-
+  Press the global hotkey, drag a region - even across monitors - then save a
+  pixel-perfect PNG, copy it, pull its text out with the OS-native OCR engine,
+  or share it via an expiring link. Draw annotations, record the screen to
+  MP4, scroll-capture long pages, pin and beautify captures. Runs as a tray
+  app; no runtime, no model downloads.
+Moniker: quickshort
+Tags:
+  - screenshot
+  - screen-capture
+  - ocr
+  - annotation
+  - rust
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

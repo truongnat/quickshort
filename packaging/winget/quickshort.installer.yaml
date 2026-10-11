@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+PackageIdentifier: truongnat.quickshort
+PackageVersion: 1.0.0
+InstallerType: nullsoft
+Scope: machine
+InstallModes:
+  - silent
+UpgradeBehavior: install
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/truongnat/quickshort/releases/download/v1.0.0/Quickshort-Windows-Setup.exe
+    # sha256 of the release asset — regenerate per release:
+    #   curl -sL <url> | sha256sum | cut -d' ' -f1 | tr a-f A-F
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S
+ManifestType: installer
+ManifestVersion: 1.9.0

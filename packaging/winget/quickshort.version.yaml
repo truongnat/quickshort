@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.9.0.schema.json
+# Submit to microsoft/winget-pkgs after the v1.0.0 release — update
+# PackageVersion, the download URL and InstallerSha256 first.
+PackageIdentifier: truongnat.quickshort
+PackageVersion: 1.0.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.9.0
