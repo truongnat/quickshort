@@ -293,7 +293,7 @@ impl Run {
                 Some(p.clone()),
             ),
             Outcome::Copied => ("Copied to clipboard".to_string(), None),
-            Outcome::Shared(l) => {
+            Outcome::Shared(l, _) => {
                 self.notify(
                     el,
                     &format!(
@@ -360,7 +360,9 @@ impl Run {
             }
             QaAction::Beautify => c.beautify(),
             QaAction::Pin => unreachable!(),
-            QaAction::Share => {
+            QaAction::Share | QaAction::Revoke => {
+                // one-shot keeps no revoke ledger — Share is all it
+                // offers; Revoke can't be produced (shared stays false)
                 let (sm, img, px) = (self.sm.clone(), c.image().clone(), self.proxy.clone());
                 c.set_sharing(true);
                 std::thread::spawn(move || {

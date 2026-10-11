@@ -64,12 +64,17 @@
   <p>Pressing <strong>Share</strong> uploads that one image, encoded as WebP, to
   a Cloudflare Worker (<code>quickshort-share</code>). The worker stores it in
   Workers KV and returns a random 128-bit URL (<code>/s/&lt;id&gt;.webp</code>).
-  Anyone holding the link can view the image until it expires.</p>
+  Anyone holding the link can view the image until it expires — or until
+  you delete it yourself: every upload also mints a one-time delete key,
+  kept on your device in <code>shares.json</code>. Right-click a shared
+  thumbnail in the album and choose <strong>Revoke Link</strong> to take
+  the image down before the 3 days are up.</p>
   <table>
     <tr><th>Data</th><th>Where</th><th>Retention</th></tr>
     <tr><td>Shared image</td><td>Cloudflare KV</td><td>Auto-deleted after <strong>3 days</strong></td></tr>
     <tr><td>Uploader IP (rate-limit key <code>rl:&lt;ip&gt;:&lt;date&gt;</code>)</td><td>Cloudflare KV</td><td>Auto-deleted after 2 days</td></tr>
     <tr><td>Local archive copy (<code>shared/</code> subfolder)</td><td>Your disk</td><td>Until you delete it</td></tr>
+    <tr><td>Delete key (<code>shares.json</code>, next to <code>config.toml</code>)</td><td>Your disk; worker keeps only its SHA-256</td><td>Until the link is revoked or expires</td></tr>
   </table>
   <p>Limits are 12 MB per upload and 30 shares per IP per day. Shared images are
   not indexed or listed anywhere. The unguessable ID is the only protection, so
@@ -81,7 +86,8 @@
   bundle, and your note to the <code>quickshort-report</code> worker, which
   files it as a <strong>public GitHub issue</strong> on
   <code>truongnat/quickshort</code>. The issue is visible to everyone and stays
-  up, so keep secrets and private screenshots out of the note.</p>
+  up, so keep secrets and private screenshots out of the note. Reports
+  are limited to 10 per IP per day.</p>
 
   <h3>Update check</h3>
   <p>At most once a day the app queries

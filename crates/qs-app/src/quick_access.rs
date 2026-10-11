@@ -41,6 +41,8 @@ pub enum QaAction {
     /// card shows Open (image is already on disk)
     Reveal,
     Share,
+    /// kill the link Share just minted — same pill, flipped label
+    Revoke,
     /// pad + gradient + shadow — mutates the image the card holds
     Beautify,
     /// float the image in an always-on-top window (resident app only)
@@ -66,7 +68,7 @@ impl Btn {
             Btn::Pin => (372.0, 66.0, 44.0, 26.0),
         }
     }
-    fn label(&self, saved: bool) -> &'static str {
+    fn label(&self, saved: bool, shared: bool) -> &'static str {
         match self {
             Btn::Copy => "Copy",
             Btn::SaveOrReveal => {
@@ -76,12 +78,18 @@ impl Btn {
                     "Save"
                 }
             }
-            Btn::Share => "Share",
+            Btn::Share => {
+                if shared {
+                    "Revoke"
+                } else {
+                    "Share"
+                }
+            }
             Btn::Beautify => "Beautify",
             Btn::Pin => "Pin",
         }
     }
-    fn action(&self, saved: bool) -> QaAction {
+    fn action(&self, saved: bool, shared: bool) -> QaAction {
         match self {
             Btn::Copy => QaAction::Copy,
             Btn::SaveOrReveal => {
@@ -91,7 +99,13 @@ impl Btn {
                     QaAction::SaveNow
                 }
             }
-            Btn::Share => QaAction::Share,
+            Btn::Share => {
+                if shared {
+                    QaAction::Revoke
+                } else {
+                    QaAction::Share
+                }
+            }
             Btn::Beautify => QaAction::Beautify,
             Btn::Pin => QaAction::Pin,
         }
@@ -119,6 +133,8 @@ struct CardState {
     saved: Option<PathBuf>,
     /// a share upload is in flight — Share stays dimmed
     sharing: bool,
+    /// a live link exists for this shot — Share pill reads Revoke
+    shared: bool,
     deadline: Instant,
     /// which pills to show — Pin only exists where the host outlives it
     btns: &'static [Btn],
@@ -167,6 +183,7 @@ impl QuickAccess {
                 accent,
                 saved,
                 sharing: false,
+                shared: false,
                 deadline: Instant::now() + TTL,
                 btns: if pin { BTNS_PIN } else { BTNS },
                 hover: None,
@@ -218,6 +235,12 @@ impl QuickAccess {
         self.win.request_redraw();
     }
 
+    /// A link was minted/killed — flip the Share pill to Revoke/back.
+    pub fn set_shared(&mut self, on: bool) {
+        self.st.shared = on;
+        self.win.request_redraw();
+    }
+
     /// Host's `about_to_wait` hook — `None` means the card expired.
     pub fn pump(&mut self) -> Option<Instant> {
         if Instant::now() >= self.st.deadline {
@@ -253,7 +276,7 @@ impl QuickAccess {
                 Some(99) => Some(QaAction::Close),
                 // a share already in flight must not spawn a second upload
                 Some(i) if matches!(self.st.btns[i], Btn::Share) && self.st.sharing => None,
-                Some(i) => Some(self.st.btns[i].action(self.st.saved.is_some())),
+                Some(i) => Some(self.st.btns[i].action(self.st.saved.is_some(), self.st.shared)),
                 None => None,
             },
             _ => None,
@@ -362,7 +385,7 @@ impl CardState {
             let label = if dim {
                 "…"
             } else {
-                b.label(self.saved.is_some())
+                b.label(self.saved.is_some(), self.shared)
             };
             let tw = t.width(11.0, label);
             t.draw(&mut cv, bx + (bw - tw) / 2.0, by + 17.5, 11.0, label, FG);
@@ -478,7 +501,9 @@ pub fn standalone(
                 QaAction::Beautify => c.beautify(),
                 // Pin is resident-only — the pill isn't rendered here
                 QaAction::Pin => unreachable!(),
-                QaAction::Share => {
+                QaAction::Share | QaAction::Revoke => {
+                    // one-shot keeps no revoke ledger — Share is all it
+                    // offers; Revoke can't be produced (shared stays false)
                     let (sm, img, px) = (self.sm.clone(), c.image().clone(), self.proxy.clone());
                     c.set_sharing(true);
                     std::thread::spawn(move || {
@@ -568,6 +593,7 @@ mod tests {
             accent: 0x1677DF,
             saved: Some("/tmp/x.png".into()),
             sharing: false,
+            shared: false,
             deadline: Instant::now() + Duration::from_secs(6),
             btns: BTNS_PIN,
             hover: Some(0),

@@ -21,8 +21,8 @@ pub enum SaveTarget {
 pub enum Outcome {
     Saved(PathBuf),
     Copied,
-    /// public URL of the shared file, already on the clipboard
-    Shared(crate::share::SharedLink),
+    /// public URL of the shared file + where it was saved locally
+    Shared(crate::share::SharedLink, PathBuf),
     /// chars of extracted text put on the clipboard
     TextCopied(usize),
     /// OCR ran but found no text
@@ -82,10 +82,11 @@ pub fn dispatch(
             let dir = base.join("shared");
             std::fs::create_dir_all(&dir)?;
             let name = format!("quickshort-{}-{}.png", unix_ts()?, rand_hex()?);
-            save(&img, &SaveTarget::File(dir.join(name)))?;
+            let p = dir.join(name);
+            save(&img, &SaveTarget::File(p.clone()))?;
             let link = sm.share(&img)?;
             copy_text_to_clipboard(&link.url, wait_clipboard);
-            Outcome::Shared(link)
+            Outcome::Shared(link, p)
         }
         Action::Copy => {
             copy_image_to_clipboard(&img, wait_clipboard);
@@ -232,7 +233,7 @@ pub fn cleanup_captures(dir: &Path, keep_days: u32) -> usize {
 /// Bug-report relay (Cloudflare Worker, see `relay/report/`) — files the
 /// issue under the maintainer's account so users don't need a GitHub
 /// login. QS_REPORT_URL overrides it for testing a fresh deploy.
-const REPORT_ENDPOINT: &str = "https://quickshort-report.tx001-dev.workers.dev";
+const REPORT_ENDPOINT: &str = "https://report.2tsoftware.app";
 
 /// Collect diagnostics and file a GitHub issue via the relay worker —
 /// no GitHub login required on the user's side. Runs off-thread so the

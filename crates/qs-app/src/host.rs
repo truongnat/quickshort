@@ -31,9 +31,16 @@ pub(crate) enum HostEvent {
     Done(Result<Dispatch, String>),
     /// A share upload kicked off from the quick-access card finished.
     QuickShare(Result<crate::share::SharedLink, String>),
-    /// A share upload kicked off from an album thumb finished — no card
-    /// to notify, so the result lands in a toast instead.
-    ShareDone(Result<crate::share::SharedLink, String>),
+    /// A share upload kicked off from an album thumb finished — carries
+    /// the shot coords so the ↗ chip can light up on the right thumb.
+    ShareDone(Result<crate::share::SharedLink, String>, WindowId, usize),
+    /// A revoke finished — Ok carries the share URL so the ledger +
+    /// the shot's ↗ chip can both drop it.
+    RevokeDone(
+        Result<(), String>,
+        crate::share::ShareEntry,
+        Option<(WindowId, usize)>,
+    ),
     /// Scroll-capture worker finished — the stitched tall image or error,
     /// plus the selection for the fly-in origin.
     ScrollDone(Result<image::RgbaImage, String>, qs_core::Rect),
@@ -121,6 +128,11 @@ struct Host {
     pending_update: Option<Release>,
     /// Lazy — the listener + ssh tunnel only spawn on the first Share.
     share: Option<std::sync::Arc<crate::share::ShareManager>>,
+    /// Live share links — backs the ↗ chip, the Revoke row, and undoing
+    /// a card share. Loaded lazily, flushed after every mutation.
+    shares: crate::share::ShareStore,
+    /// The link the open card just minted — what its Revoke pill kills.
+    card_share: Option<crate::share::ShareEntry>,
 }
 
 impl Host {
@@ -155,6 +167,8 @@ impl Host {
             rec: None,
             pending_update: None,
             share: None,
+            shares: crate::share::ShareStore::load(),
+            card_share: None,
         }
     }
 
@@ -386,6 +400,7 @@ impl Host {
         kind: ShotKind,
         saved: Option<PathBuf>,
         dur_s: Option<u64>,
+        shared: Option<crate::share::ShareEntry>,
         msg: &str,
     ) {
         self.toast = None;
@@ -397,6 +412,7 @@ impl Host {
                 sel,
                 instant: false,
                 dur_s,
+                shared,
             };
             match self.chrome.land(el, l) {
                 Ok(()) => return,
@@ -461,6 +477,7 @@ impl Host {
                             sel: None,
                             instant: false,
                             dur_s: None,
+                            shared: None,
                         },
                     );
                 }
@@ -474,8 +491,13 @@ impl Host {
                     let px = self.proxy.clone();
                     std::thread::spawn(move || {
                         let res = sm.share(&img).map_err(|e| e.to_string());
-                        let _ = px.send_event(HostEvent::ShareDone(res));
+                        let _ = px.send_event(HostEvent::ShareDone(res, wid, idx));
                     });
+                }
+            }
+            chrome::MENU_REVOKE => {
+                if let Some(e) = self.chrome.shot(wid, idx).and_then(|s| s.shared.clone()) {
+                    self.revoke(el, e, Some((wid, idx)));
                 }
             }
             chrome::MENU_DEL => {
@@ -560,6 +582,11 @@ impl Host {
                         let _ = px.send_event(HostEvent::QuickShare(res));
                     });
                 }
+                QaAction::Revoke => {
+                    if let Some(e) = self.card_share.take() {
+                        self.revoke(el, e, None);
+                    }
+                }
                 QaAction::Close => unreachable!(),
             }
         }
@@ -589,6 +616,28 @@ impl Host {
                 Err(e) => eprintln!("toast: {e:#}"),
             },
         }
+    }
+
+    /// Kill a live share link off-thread; `shot` (if any) gets its ↗
+    /// chip cleared when the result lands. The ledger entry drops
+    /// regardless of network success — a dead link is a dead link.
+    fn revoke(
+        &mut self,
+        _el: &ActiveEventLoop,
+        e: crate::share::ShareEntry,
+        shot: Option<(WindowId, usize)>,
+    ) {
+        let sm = self
+            .share
+            .get_or_insert_with(crate::share::ShareManager::new)
+            .clone();
+        let px = self.proxy.clone();
+        std::thread::spawn(move || {
+            let res = sm
+                .revoke(&e.url, &e.delete_key)
+                .map_err(|err| err.to_string());
+            let _ = px.send_event(HostEvent::RevokeDone(res, e, shot));
+        });
     }
 }
 
@@ -650,6 +699,8 @@ impl ApplicationHandler<HostEvent> for Host {
                         sel: None,
                         instant: true,
                         dur_s: None,
+                        // a share that outlived the app restores its chip
+                        shared: self.shares.get(p).cloned(),
                     },
                 );
             }
@@ -791,6 +842,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 ShotKind::Saved,
                                 Some(p),
                                 None,
+                                None,
                                 &format!("Saved {name}"),
                             );
                         }
@@ -801,16 +853,21 @@ impl ApplicationHandler<HostEvent> for Host {
                             ShotKind::Copied,
                             None,
                             None,
+                            None,
                             "Copied to clipboard",
                         ),
-                        Outcome::Shared(link) => {
+                        Outcome::Shared(link, path) => {
+                            let e = crate::share::entry(path.clone(), &link);
+                            self.shares.put(e.clone());
+                            self.shares.save();
                             self.land_shot(
                                 el,
                                 Some(d.sel),
                                 d.img,
                                 ShotKind::Shared,
+                                Some(path),
                                 None,
-                                None,
+                                Some(e),
                                 "Shared",
                             );
                             self.toast_done(
@@ -827,6 +884,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 ShotKind::Ocr,
                                 None,
                                 None,
+                                None,
                                 &format!("Copied {n} chars"),
                             );
                             self.toast_done(el, format!("Copied {n} chars"), true);
@@ -837,6 +895,7 @@ impl ApplicationHandler<HostEvent> for Host {
                                 Some(d.sel),
                                 d.img,
                                 ShotKind::Ocr,
+                                None,
                                 None,
                                 None,
                                 "No text found",
@@ -855,6 +914,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     ShotKind::Scroll,
                     None,
                     None,
+                    None,
                     "Captured — pick an action",
                 ),
                 Err(e) => self.toast_done(el, format!("Scroll failed: {e}"), false),
@@ -869,6 +929,7 @@ impl ApplicationHandler<HostEvent> for Host {
                         ShotKind::Record,
                         Some(path),
                         Some(dur_s),
+                        None,
                         "Recording saved",
                     ),
                     Err(e) => self.toast_done(el, format!("Recording failed: {e}"), false),
@@ -880,17 +941,39 @@ impl ApplicationHandler<HostEvent> for Host {
                 match res {
                     Ok(link) => {
                         actions::copy_text(&link.url, false);
+                        // card shots may be unsaved — the keyless path
+                        // just won't rehydrate after a restart
+                        let e = crate::share::entry(c.saved_path().unwrap_or_default(), &link);
+                        self.card_share = Some(e.clone());
+                        if !e.path.as_os_str().is_empty() {
+                            self.shares.put(e);
+                            self.shares.save();
+                        }
+                        c.set_shared(true);
                         c.notify(&format!(
-                            "Link copied — expires in {}d",
+                            "Link copied — expires in {}d (Share again to revoke)",
                             link.expires_s / 86400
                         ));
                     }
                     Err(e) => c.notify(&format!("Share failed: {e}")),
                 }
             }
-            HostEvent::ShareDone(res) => match res {
+            HostEvent::ShareDone(res, wid, idx) => match res {
                 Ok(link) => {
                     actions::copy_text(&link.url, false);
+                    if let Some(s) = self.chrome.shot_mut(wid, idx) {
+                        if let Some(p) = s.path.clone() {
+                            let e = crate::share::entry(p, &link);
+                            self.shares.put(e.clone());
+                            self.shares.save();
+                            s.shared = Some(e);
+                        } else {
+                            // unsaved shot — the link lives but there's
+                            // nothing to rehydrate; keep it in memory
+                            s.shared = Some(crate::share::entry(PathBuf::new(), &link));
+                        }
+                        self.chrome.redraw(wid);
+                    }
                     self.toast_done(
                         el,
                         format!("Link copied — expires in {}d", link.expires_s / 86400),
@@ -899,6 +982,30 @@ impl ApplicationHandler<HostEvent> for Host {
                 }
                 Err(e) => self.toast_done(el, format!("Share failed: {e}"), false),
             },
+            HostEvent::RevokeDone(res, e, shot) => {
+                self.shares.remove_url(&e.url);
+                self.shares.save();
+                if self.card_share.as_ref().is_some_and(|c| c.url == e.url) {
+                    self.card_share = None;
+                    if let Some(c) = &mut self.card {
+                        c.set_shared(false);
+                    }
+                }
+                if let Some((wid, idx)) = shot {
+                    if let Some(s) = self.chrome.shot_mut(wid, idx) {
+                        if s.shared.as_ref().is_some_and(|x| x.url == e.url) {
+                            s.shared = None;
+                        }
+                    }
+                    self.chrome.redraw(wid);
+                }
+                match res {
+                    Ok(()) => self.toast_done(el, "Link revoked".to_string(), true),
+                    // still drop local state — a 404 means it's already
+                    // gone, anything else is transient
+                    Err(err) => self.toast_done(el, format!("Revoke: {err}"), false),
+                }
+            }
             HostEvent::Chrome(id, ev) => {
                 let Some((wid, cmd)) = self.chrome.event(id, ev) else {
                     return;

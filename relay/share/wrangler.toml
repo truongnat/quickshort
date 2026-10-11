@@ -1,7 +1,18 @@
 name = "quickshort-share"
 main = "worker.js"
 compatibility_date = "2026-01-01"
+# keep the workers.dev URL live — older clients hardcode it
+workers_dev = true
 
+# Custom domain on the 2tsoftware.app zone (same account) — serves
+# share.2tsoftware.app/s/<id>.<ext>; custom_domain lets wrangler
+# create the proxied DNS record + cert itself. Top-level key: must
+# precede the [[kv_namespaces]] table.
+routes = [
+  { pattern = "share.2tsoftware.app", custom_domain = true, zone_name = "2tsoftware.app" },
+]
+
+# KV namespace lives on this account; id is stable across deploys.
 [[kv_namespaces]]
 binding = "SHARE"
-id = "9ecf1a5ff389485baeb47859ba56da06"
+id = "7611e57597ef4ae1929668e4bfe751c6"

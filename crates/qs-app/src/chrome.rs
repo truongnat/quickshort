@@ -85,6 +85,9 @@ pub struct Shot {
     kind: ShotKind,
     /// seconds recorded — the ▶ thumb gets a `m:ss` duration badge
     pub dur_s: Option<u64>,
+    /// live share link for this shot — draws the 🔗 chip and enables
+    /// the "Revoke Link" menu row; set/cleared by the host
+    pub shared: Option<crate::share::ShareEntry>,
 }
 
 impl Shot {
@@ -159,6 +162,7 @@ pub const MENU_SAVE: &str = "qs-chrome.save";
 pub const MENU_PIN: &str = "qs-chrome.pin";
 pub const MENU_BEAUTIFY: &str = "qs-chrome.beautify";
 pub const MENU_SHARE: &str = "qs-chrome.share";
+pub const MENU_REVOKE: &str = "qs-chrome.revoke";
 pub const MENU_DEL: &str = "qs-chrome.del";
 pub const MENU_CLEAR: &str = "qs-chrome.clear";
 
@@ -290,6 +294,7 @@ impl Stack {
         rm: bool,
         scale: f64,
         dur_s: Option<u64>,
+        shared: Option<crate::share::ShareEntry>,
     ) {
         self.touch(); // a landing shot is activity — reveal the stack
         let img = Rc::new(img);
@@ -302,6 +307,7 @@ impl Stack {
             path,
             kind,
             dur_s,
+            shared,
         };
         if rm {
             self.shots.push(shot);
@@ -441,6 +447,10 @@ impl Stack {
     /// consts; the host answers `MenuAction` events.
     fn open_menu(&mut self, idx: usize, x: f64, y: f64) {
         let has_path = self.shot(idx).and_then(|s| s.path.as_ref()).is_some();
+        let revocable = self
+            .shot(idx)
+            .and_then(|s| s.shared.as_ref())
+            .is_some_and(|e| !e.delete_key.is_empty());
         self.menu = Some(Menu {
             idx,
             anchor: FRect {
@@ -455,7 +465,8 @@ impl Stack {
                 (MENU_COPY, true),
                 (MENU_PIN, true),
                 (MENU_BEAUTIFY, true),
-                (MENU_SHARE, true),
+                (MENU_SHARE, !revocable),
+                (MENU_REVOKE, revocable),
                 (MENU_DEL, true),
                 (MENU_CLEAR, true),
             ],
@@ -517,6 +528,7 @@ impl Stack {
             MENU_PIN => "Pin",
             MENU_BEAUTIFY => "Beautify",
             MENU_SHARE => "Share Link",
+            MENU_REVOKE => "Revoke Link",
             MENU_DEL => "Delete",
             MENU_CLEAR => "Clear All",
             _ => "?",
@@ -1354,6 +1366,23 @@ impl Stack {
                 0x000000,
             );
 
+            // a live share link gets its own chip on the opposite
+            // corner — the kind badge marks provenance, ↗ marks "this
+            // file is still public until revoked/expired"
+            if shot.shared.is_some() {
+                let lx = r.x + r.w - 6.0;
+                let ly = r.y + r.h - 6.0;
+                disc(cv, lx, ly, 8.0, accent, 0.95);
+                t.draw_over(
+                    cv,
+                    lx - t.width(9.0, "↗") / 2.0,
+                    ly + 3.4,
+                    9.0,
+                    "↗",
+                    0x000000,
+                );
+            }
+
             // recordings also carry their length — a `m:ss` pill hugging
             // the ▶ disc, bottom-left like CleanShot's duration label
             if shot.kind == ShotKind::Record {
@@ -1545,6 +1574,9 @@ pub struct Land {
     /// recording length in seconds — drives the `m:ss` badge on ▶
     /// thumbs; ignored for other kinds
     pub dur_s: Option<u64>,
+    /// live share link — drawn as the ↗ chip; set by the host when the
+    /// shot already has one (rehydrate, or Share ran before the fly-in)
+    pub shared: Option<crate::share::ShareEntry>,
 }
 
 impl Chrome {
@@ -1609,6 +1641,22 @@ impl Chrome {
     /// Look up a stack shot for context-menu actions.
     pub fn shot(&self, id: winit::window::WindowId, idx: usize) -> Option<&Shot> {
         self.wins.iter().find(|w| w.id() == id)?.stack().shot(idx)
+    }
+
+    /// Mutable variant — the host flips `shared` on share/revoke.
+    pub fn shot_mut(&mut self, id: winit::window::WindowId, idx: usize) -> Option<&mut Shot> {
+        self.wins
+            .iter_mut()
+            .find(|w| w.id() == id)?
+            .stack_mut()
+            .shot_mut(idx)
+    }
+
+    /// Repaint one stack window (badge/chip state changed).
+    pub fn redraw(&mut self, id: winit::window::WindowId) {
+        if let Some(w) = self.wins.iter_mut().find(|w| w.id() == id) {
+            w.redraw();
+        }
     }
 
     pub fn remove(&mut self, id: winit::window::WindowId, idx: usize) {
@@ -1730,6 +1778,7 @@ pub fn standalone(pos: &str, accent: u32) -> anyhow::Result<()> {
             sel: Some(qs_core::Rect::new(200, 200, 400, 300)),
             instant: false,
             dur_s: None,
+            shared: None,
         }
     }
 
@@ -1860,6 +1909,7 @@ mod tests {
                 true,
                 2.0,
                 None,
+                None,
             );
         }
         let (lw, lh) = (1440.0, 900.0);
@@ -1953,6 +2003,7 @@ mod tests {
                 true,
                 2.0,
                 None,
+                None,
             );
         }
         // wind the idle clock back past the threshold
@@ -2033,6 +2084,7 @@ mod tests {
             true,
             2.0,
             None,
+            None,
         );
         st.hide_t = 1.0; // fully slid off the right edge
         let (bw, bh) = (2880usize, 1800usize);
@@ -2081,6 +2133,7 @@ mod tests {
                 true,
                 2.0,
                 None,
+                None,
             );
         }
         // cursor parked inside the collapsed cascade's low edge — a spot
@@ -2117,6 +2170,7 @@ mod tests {
             },
             true,
             2.0,
+            None,
             None,
         );
         let r = st.thumb_rect(0, 1440.0, 900.0);
@@ -2163,6 +2217,7 @@ mod tests {
             },
             true,
             2.0,
+            None,
             None,
         );
         let r = st.thumb_rect(0, 1440.0, 900.0);
@@ -2215,6 +2270,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
                 None,
             );
         }
@@ -2271,6 +2327,7 @@ mod tests {
                 true,
                 2.0,
                 None,
+                None,
             );
         }
         st.pinned = true;
@@ -2300,6 +2357,7 @@ mod tests {
                 },
                 true,
                 2.0,
+                None,
                 None,
             );
         }
@@ -2363,6 +2421,7 @@ mod tests {
             },
             true,
             2.0,
+            None,
             None,
         );
         let r = st.thumb_rect(0, lw, lh);

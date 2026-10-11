@@ -110,7 +110,7 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
   const form = document.getElementById("reqForm");
   if (!form) return;
   const status = document.getElementById("reqStatus");
-  const ENDPOINT = "https://quickshort-report.truongnat.workers.dev";
+  const ENDPOINT = "https://report.2tsoftware.app";
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -144,7 +144,7 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
   const form = document.getElementById("supForm");
   if (!names || !form) return;
   const status = document.getElementById("supStatus");
-  const ENDPOINT = "https://quickshort-report.truongnat.workers.dev";
+  const ENDPOINT = "https://report.2tsoftware.app";
 
   const render = async () => {
     try {

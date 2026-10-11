@@ -1,3 +1,18 @@
 name = "quickshort-report"
 main = "worker.js"
 compatibility_date = "2025-10-01"
+
+# keep the workers.dev URL live — the landing-page form + older
+# clients hardcode it
+workers_dev = true
+
+# Custom domain on the 2tsoftware.app zone (same account). Top-level
+# key: must precede the [[kv_namespaces]] table.
+routes = [
+  { pattern = "report.2tsoftware.app", custom_domain = true, zone_name = "2tsoftware.app" },
+]
+
+# Per-IP daily report quota (RL keys only; no user data).
+[[kv_namespaces]]
+binding = "REPORT_RL"
+id = "2d4591f93c5a49989525cd80c33edd7c"

@@ -192,7 +192,7 @@ impl ChromeWin {
         let rm = l.instant;
         let scale = self.scale;
         self.stack
-            .land(l.img, l.kind, l.path, from, rm, scale, l.dur_s);
+            .land(l.img, l.kind, l.path, from, rm, scale, l.dur_s, l.shared);
         self.present();
     }
 

@@ -14,6 +14,9 @@
 const REPO = "truongnat/quickshort";
 const MAX_FIELD = 30000;
 const ALLOW_ORIGIN = "https://truongnat.github.io";
+// unauthenticated POST files GitHub issues — cap it or one curl loop
+// spams the tracker. Soft KV counter; good enough for the abuse we see.
+const RATE_PER_DAY = 10;
 
 const str = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
 
@@ -25,7 +28,7 @@ const cors = (res) => {
 };
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     if (req.method === "OPTIONS") {
       return cors(new Response(null, { status: 204 }));
     }
@@ -38,6 +41,14 @@ export default {
     } catch {
       return cors(new Response("expected json", { status: 400 }));
     }
+
+    const ip = req.headers.get("cf-connecting-ip") || "unknown";
+    const rk = `rl:${ip}:${new Date().toISOString().slice(0, 10)}`;
+    const n = Number((await env.REPORT_RL.get(rk)) || 0);
+    if (n >= RATE_PER_DAY) {
+      return cors(new Response("daily report limit reached", { status: 429 }));
+    }
+
 
     let title, body, labels;
     if (str(data.type, 20) === "supporter") {
@@ -100,6 +111,8 @@ export default {
       );
     }
     const issue = await gh.json();
+    // only a filed issue costs the quota — rejected payloads don't
+    ctx.waitUntil(env.REPORT_RL.put(rk, String(n + 1), { expirationTtl: 2 * 86400 }));
     return cors(Response.json({ ok: true, url: issue.html_url }));
   },
 };
