@@ -29,9 +29,11 @@ mod widgets;
 use actions::SaveTarget;
 use anyhow::{Context, Result};
 
-/// quickshort [--capture] [--delay SECS] [--out FILE.png] [--settings]
+/// quickshort [--capture|--capture-full] [--delay SECS] [--out FILE.png]
 struct Args {
     capture_now: bool,
+    /// stitch the whole virtual screen and save — no overlay
+    capture_full: bool,
     settings_only: bool,
     toast_demo: bool,
     card_demo: bool,
@@ -43,6 +45,7 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut args = Args {
         capture_now: false,
+        capture_full: false,
         settings_only: false,
         toast_demo: false,
         card_demo: false,
@@ -54,6 +57,7 @@ fn parse_args() -> Result<Args> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--capture" => args.capture_now = true,
+            "--capture-full" => args.capture_full = true,
             "--settings" => args.settings_only = true,
             "--toast" => args.toast_demo = true,
             "--card" => args.card_demo = true,
@@ -69,7 +73,7 @@ fn parse_args() -> Result<Args> {
             }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: quickshort [--capture [--delay SECS] [--out FILE.png]]\n\
+                    "usage: quickshort [--capture|--capture-full [--delay SECS] [--out FILE.png]]\n\
                      no args: resident tray app (menu + global hotkey)"
                 );
                 std::process::exit(0);
@@ -106,7 +110,7 @@ fn main() -> Result<()> {
         let cfg = config::Config::load();
         return chrome::standalone(&cfg.popup_pos, cfg.accent_rgb());
     }
-    if !args.capture_now {
+    if !(args.capture_now || args.capture_full) {
         // one resident app per user — a second launch (LaunchAgent plus a
         // manual `open`, etc.) would double-register the global hotkey and
         // stack two overlays on every press
@@ -177,12 +181,32 @@ fn run_one_shot(args: Args) -> Result<()> {
 
     let cfg = config::Config::load();
 
-    // winit permits one event loop per process, so overlay + action
-    // workers + result card all share the oneshot loop; the capture
-    // lock rides along and drops when the overlay closes
     let target = match args.out {
         Some(p) => SaveTarget::File(p),
         None => SaveTarget::Dir(cfg.save_dir()),
     };
+
+    if args.capture_full {
+        // no overlay: stitch the whole virtual screen and save — what
+        // the compositor bindings spawn for the fullscreen hotkey. No
+        // event loop needed; wait_clipboard covers copy_after_save.
+        let d = actions::dispatch(
+            frames,
+            bounds,
+            qs_overlay::Action::Save,
+            &[],
+            &target,
+            true,
+            None,
+            cfg.copy_after_save,
+            &cfg.ocr_lang,
+        )?;
+        eprintln!("fullscreen saved, {:?} outcome", d.outcome);
+        return Ok(());
+    }
+
+    // winit permits one event loop per process, so overlay + action
+    // workers + result card all share the oneshot loop; the capture
+    // lock rides along and drops when the overlay closes
     oneshot::run(frames, bounds, target, &cfg, lock)
 }

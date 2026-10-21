@@ -10,6 +10,10 @@ use std::path::PathBuf;
 pub struct Config {
     /// Global hotkey in `global-hotkey` syntax, e.g. "CmdOrCtrl+Shift+S".
     pub hotkey: String,
+    /// Global hotkey that captures the whole virtual screen without the
+    /// region overlay — "CmdOrCtrl+Shift+F" by default. Empty string
+    /// disables the second grab.
+    pub hotkey_full: String,
     /// Screenshot folder override; `None` = `~/Pictures/quickshort`.
     pub save_dir: Option<PathBuf>,
     pub launch_at_login: bool,
@@ -54,6 +58,8 @@ impl Default for Config {
                 "CmdOrCtrl+Shift+S"
             }
             .into(),
+            // same chord, F for "full screen" — free on all three desktops
+            hotkey_full: "CmdOrCtrl+Shift+F".into(),
             save_dir: None,
             launch_at_login: false,
             auto_update: true,

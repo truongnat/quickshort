@@ -130,11 +130,13 @@ quickshort                              # resident tray app (default)
 quickshort --capture                    # one-shot: select -> action -> exit
 quickshort --capture --delay 2          # wait first (menus, tooltips)
 quickshort --capture --out ~/shots/a.png
+quickshort --capture-full               # save the whole screen, no selection
 ```
 
 | Context | Shortcut | Action |
 |---|---|---|
 | Anywhere | `⌘⇧S` macOS/Linux, `PrintScreen` Windows (configurable) | Start a selection |
+| Anywhere | `⌘⇧F` (configurable, `hotkey_full`) | Save the whole screen — no overlay |
 | Selection made | `⌘S` / `⌘C` / `⌘T` / `⌘L` (rebindable) | Save / copy / OCR / share link → clipboard |
 | Selection made | `⌘G` / `⌘R` (rebindable) | Scrolling capture / record region to mp4 |
 | Selection made | `⌘Z` / `⌘⇧Z` (rebindable key) | Undo / redo an edit |
@@ -143,14 +145,16 @@ quickshort --capture --out ~/shots/a.png
 | Text draft | `⌘A`, `⇧`+arrows, `←→`, `⌫`/`⌦` | Select, move caret, delete |
 | Selection made | `Esc` | Cancel |
 
-The tray menu offers Capture Region, Recent Captures, Open Screenshots
-Folder, Check for Updates, Launch at Login, Settings and Quit. Settings
-also live in `~/.config/quickshort/config.toml`:
+The tray menu offers Capture Region, Capture Full Screen, Recent Captures,
+Open Screenshots Folder, Check for Updates, Launch at Login, Settings and
+Quit. Settings also live in `~/.config/quickshort/config.toml`:
 
 ```toml
 hotkey = "CmdOrCtrl+Shift+S"   # global-hotkey syntax; "PrintScreen" is
                                # the Windows default — falls back to
                                # Ctrl+Shift+S if the shell owns it
+hotkey_full = "CmdOrCtrl+Shift+F" # second chord: saves the whole screen;
+                               # empty string disables it
 # save_dir = "~/Pictures/quickshort"
 launch_at_login = false
 auto_update = true

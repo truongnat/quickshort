@@ -9,6 +9,8 @@ use tray_icon::Icon;
 use crate::config::Config;
 
 pub const ID_CAPTURE: &str = "capture";
+/// Saves the whole virtual screen — no region overlay.
+pub const ID_CAPTURE_FULL: &str = "capture_full";
 pub const ID_OPEN_DIR: &str = "open_dir";
 pub const ID_SETTINGS: &str = "settings";
 pub const ID_LOGIN: &str = "launch_at_login";
@@ -26,6 +28,12 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf], pending_update: Option<&str
     let capture = MenuItem::with_id(
         ID_CAPTURE,
         format!("Capture Region    {}", cfg.hotkey),
+        true,
+        None,
+    );
+    let capture_full = MenuItem::with_id(
+        ID_CAPTURE_FULL,
+        format!("Capture Full Screen    {}", cfg.hotkey_full),
         true,
         None,
     );
@@ -60,6 +68,7 @@ pub fn build_menu(cfg: &Config, recents: &[PathBuf], pending_update: Option<&str
     let quit = MenuItem::with_id(ID_QUIT, "Quit Quickshort", true, None);
     let _ = menu.append_items(&[
         &capture,
+        &capture_full,
         &recent,
         &PredefinedMenuItem::separator(),
         &open,

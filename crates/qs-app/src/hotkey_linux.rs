@@ -51,74 +51,143 @@ fn desktop() -> Option<De> {
 
 /// Owns whatever keeps the registration alive and rebindable. Only KDE's
 /// portal session is a real resource (a dbus connection + listener
-/// thread); the spawned-command desktops just need the chord remembered
+/// thread); the spawned-command desktops just need the chords remembered
 /// for suspend/rebind.
 pub struct Guard {
     de: De,
-    /// The `cfg.hotkey` string currently bound.
+    /// The `cfg.hotkey` (region) and `cfg.hotkey_full` strings currently
+    /// bound — the latter may be empty (no fullscreen binding).
     chord: String,
+    chord_full: String,
     kde: Option<kde::KdeHotkey>,
 }
 
-/// Register `chord` (global-hotkey syntax, e.g. "Ctrl+Shift+S").
+/// Register both chords (global-hotkey syntax, e.g. "Ctrl+Shift+S").
+/// `full` = the no-overlay fullscreen chord; empty disables it.
 /// Ok(None) = desktop has no programmatic mechanism — caller falls back
 /// to the manual-bind hint (+ the X11 manager, as before).
-pub fn register(proxy: EventLoopProxy<HostEvent>, chord: &str) -> Result<Option<Guard>> {
+pub fn register(
+    proxy: EventLoopProxy<HostEvent>,
+    chord: &str,
+    full: &str,
+) -> Result<Option<Guard>> {
     let Some(de) = desktop() else {
         return Ok(None);
     };
     let hk: HotKey = chord
         .parse()
         .with_context(|| format!("bad hotkey {chord:?}"))?;
+    let hk_full: Option<HotKey> = if full.trim().is_empty() {
+        None
+    } else {
+        Some(
+            full.parse()
+                .with_context(|| format!("bad fullscreen hotkey {full:?}"))?,
+        )
+    };
     let kde = match de {
         De::Gnome => {
             gnome::bind(&hk)?;
+            if let Some(h) = hk_full {
+                if let Err(e) = gnome::bind_full(&h) {
+                    eprintln!("fullscreen gsettings bind: {e:#}");
+                }
+            }
             None
         }
         De::Sway => {
             sway::bind(&hk)?;
+            if let Some(h) = hk_full {
+                if let Err(e) = sway::bind_full(&h) {
+                    eprintln!("fullscreen swaymsg bind: {e:#}");
+                }
+            }
             None
         }
         De::Hyprland => {
             hypr::bind(&hk)?;
+            if let Some(h) = hk_full {
+                if let Err(e) = hypr::bind_full(&h) {
+                    eprintln!("fullscreen hyprctl bind: {e:#}");
+                }
+            }
             None
         }
-        De::Kde => Some(kde::KdeHotkey::start(proxy, &hk)?),
+        De::Kde => Some(kde::KdeHotkey::start(proxy, &hk, hk_full.as_ref())?),
     };
     Ok(Some(Guard {
         de,
         chord: chord.to_owned(),
+        chord_full: full.to_owned(),
         kde,
     }))
 }
 
 impl Guard {
-    /// Rebind to a new chord — settings recorded a different hotkey.
+    /// Rebind to new chords — settings recorded different hotkeys.
     /// gsettings/swaymsg/hyprctl bindings simply re-issue; KDE re-sends
-    /// BindShortcuts on the live portal session.
-    pub fn rebind(&mut self, chord: &str) -> Result<()> {
-        if chord == self.chord {
+    /// BindShortcuts on the live portal session. `full` empty disables
+    /// the fullscreen binding.
+    pub fn rebind(&mut self, chord: &str, full: &str) -> Result<()> {
+        if chord == self.chord && full == self.chord_full {
             return Ok(());
         }
         let hk: HotKey = chord
             .parse()
             .with_context(|| format!("bad hotkey {chord:?}"))?;
+        let hk_full: Option<HotKey> = if full.trim().is_empty() {
+            None
+        } else {
+            Some(
+                full.parse()
+                    .with_context(|| format!("bad fullscreen hotkey {full:?}"))?,
+            )
+        };
+        // a cleared fullscreen chord must drop its stale grab — each
+        // desktop's disable differs: sway/hypr unbind the old chord,
+        // GNOME blanks the binding, KDE's BindShortcuts replaces all rows
+        if hk_full.is_none() && !self.chord_full.trim().is_empty() {
+            if let Ok(old) = self.chord_full.parse::<HotKey>() {
+                let _ = match self.de {
+                    De::Gnome => gnome::set_binding_full(""),
+                    De::Sway => sway::unbind(&old),
+                    De::Hyprland => hypr::unbind(&old),
+                    De::Kde => Ok(()), // set_bound rebuilds without it
+                };
+            }
+        }
         match self.de {
-            De::Gnome => gnome::bind(&hk)?,
-            De::Sway => sway::bind(&hk)?,
-            De::Hyprland => hypr::bind(&hk)?,
+            De::Gnome => {
+                gnome::bind(&hk)?;
+                if let Some(h) = hk_full {
+                    gnome::bind_full(&h)?;
+                }
+            }
+            De::Sway => {
+                sway::bind(&hk)?;
+                if let Some(h) = hk_full {
+                    sway::bind_full(&h)?;
+                }
+            }
+            De::Hyprland => {
+                hypr::bind(&hk)?;
+                if let Some(h) = hk_full {
+                    hypr::bind_full(&h)?;
+                }
+            }
             De::Kde => self
                 .kde
                 .as_mut()
                 .context("kde hotkey session lost")?
-                .bind(&hk)?,
+                .bind(&hk, hk_full.as_ref())?,
         }
         self.chord = chord.to_owned();
+        self.chord_full = full.to_owned();
         Ok(())
     }
 
-    /// Drop the compositor grab while the settings recorder is armed so
-    /// the chord reaches the settings window — mirrors what
+    /// Drop the compositor grabs while the settings recorder is armed so
+    /// the chords reach the settings window — mirrors what
     /// `GlobalHotKeyManager::unregister` does on X11.
     pub fn suspend(&mut self, suspended: bool) {
         if let Err(e) = self.suspend_inner(suspended) {
@@ -128,15 +197,56 @@ impl Guard {
 
     fn suspend_inner(&mut self, suspended: bool) -> Result<()> {
         let hk: HotKey = self.chord.parse().context("stored chord")?;
+        let hk_full: Option<HotKey> = if self.chord_full.trim().is_empty() {
+            None
+        } else {
+            Some(self.chord_full.parse().context("stored full chord")?)
+        };
         match (self.de, suspended) {
             // the only per-key switch gsd offers without removing the
             // entry is writing an empty binding
-            (De::Gnome, true) => gnome::set_binding(""),
-            (De::Gnome, false) => gnome::set_binding(&gnome_chord(&hk)?),
-            (De::Sway, true) => sway::unbind(&hk),
-            (De::Sway, false) => sway::bind(&hk),
-            (De::Hyprland, true) => hypr::unbind(&hk),
-            (De::Hyprland, false) => hypr::bind(&hk),
+            (De::Gnome, true) => {
+                gnome::set_binding("")?;
+                if hk_full.is_some() {
+                    gnome::set_binding_full("")?;
+                }
+                Ok(())
+            }
+            (De::Gnome, false) => {
+                gnome::set_binding(&gnome_chord(&hk)?)?;
+                if let Some(h) = hk_full {
+                    gnome::set_binding_full(&gnome_chord(&h)?)?;
+                }
+                Ok(())
+            }
+            (De::Sway, true) => {
+                sway::unbind(&hk)?;
+                if let Some(h) = hk_full {
+                    sway::unbind(&h)?;
+                }
+                Ok(())
+            }
+            (De::Sway, false) => {
+                sway::bind(&hk)?;
+                if let Some(h) = hk_full {
+                    sway::bind_full(&h)?;
+                }
+                Ok(())
+            }
+            (De::Hyprland, true) => {
+                hypr::unbind(&hk)?;
+                if let Some(h) = hk_full {
+                    hypr::unbind(&h)?;
+                }
+                Ok(())
+            }
+            (De::Hyprland, false) => {
+                hypr::bind(&hk)?;
+                if let Some(h) = hk_full {
+                    hypr::bind_full(&h)?;
+                }
+                Ok(())
+            }
             // BindShortcuts([]) unbinds all — the closest the portal
             // has to suspend/resume
             (De::Kde, s) => self
@@ -153,6 +263,13 @@ impl Guard {
 fn cmd() -> Result<String> {
     let exe = std::env::current_exe().context("current_exe")?;
     Ok(format!("\"{}\" --capture", exe.display()))
+}
+
+/// One-shot fullscreen command — the spawned `--capture-full` saves the
+/// whole virtual screen without the overlay.
+fn cmd_full() -> Result<String> {
+    let exe = std::env::current_exe().context("current_exe")?;
+    Ok(format!("\"{}\" --capture-full", exe.display()))
 }
 
 /// X keysym name — what gsettings bindings, `swaymsg bindsym` and
@@ -363,6 +480,8 @@ mod gnome {
     const BIND_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
     const PATH: &str =
         "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/quickshort0/";
+    const PATH_FULL: &str =
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/quickshort1/";
 
     fn gsettings(args: &[&str]) -> Result<String> {
         let out = Command::new("gsettings")
@@ -388,13 +507,14 @@ mod gnome {
             .collect()
     }
 
-    pub fn bind(hk: &HotKey) -> Result<()> {
-        let binding = gnome_chord(hk)?;
-        // our relocatable path must be listed in custom-keybindings
+    /// Write one relocatable custom-keybinding entry: make sure its path
+    /// is registered under custom-keybindings, then set name/binding/
+    /// command. `PATH`/`PATH_FULL` are our two slots.
+    fn write_entry(path: &str, name: &str, binding: &str, command: &str) -> Result<()> {
         let raw = gsettings(&["get", SCHEMA, "custom-keybindings"])?;
         let mut paths = parse_str_list(&raw);
-        if !paths.iter().any(|p| p == PATH) {
-            paths.push(PATH.to_owned());
+        if !paths.iter().any(|p| p == path) {
+            paths.push(path.to_owned());
             let list = format!(
                 "[{}]",
                 paths
@@ -405,19 +525,34 @@ mod gnome {
             );
             gsettings(&["set", SCHEMA, "custom-keybindings", &list])?;
         }
-        let path_arg = format!(":{PATH}");
+        let path_arg = format!(":{path}");
         for (key, val) in [
-            ("name", "'Quickshort capture'".to_owned()),
+            ("name", format!("'{name}'")),
             ("binding", format!("'{binding}'")),
-            ("command", format!("'{}'", cmd()?)),
+            ("command", format!("'{command}'")),
         ] {
             gsettings(&["set", BIND_SCHEMA, &path_arg, key, &val])?;
         }
         Ok(())
     }
 
-    pub fn set_binding(binding: &str) -> Result<()> {
-        let path_arg = format!(":{PATH}");
+    pub fn bind(hk: &HotKey) -> Result<()> {
+        write_entry(PATH, "Quickshort capture", &gnome_chord(hk)?, &cmd()?)
+    }
+
+    /// Fullscreen chord — its own keybinding slot so the two stay
+    /// independent (suspend blanks each separately).
+    pub fn bind_full(hk: &HotKey) -> Result<()> {
+        write_entry(
+            PATH_FULL,
+            "Quickshort fullscreen",
+            &gnome_chord(hk)?,
+            &cmd_full()?,
+        )
+    }
+
+    fn set_binding_at(path: &str, binding: &str) -> Result<()> {
+        let path_arg = format!(":{path}");
         gsettings(&[
             "set",
             BIND_SCHEMA,
@@ -426,6 +561,14 @@ mod gnome {
             &format!("'{binding}'"),
         ])?;
         Ok(())
+    }
+
+    pub fn set_binding(binding: &str) -> Result<()> {
+        set_binding_at(PATH, binding)
+    }
+
+    pub fn set_binding_full(binding: &str) -> Result<()> {
+        set_binding_at(PATH_FULL, binding)
     }
 }
 
@@ -466,6 +609,18 @@ mod sway {
             .arg("unbindsym")
             .arg(sway_chord(hk)?))
     }
+
+    /// Fullscreen chord → `quickshort --capture-full`.
+    pub fn bind_full(hk: &HotKey) -> Result<()> {
+        let chord = sway_chord(hk)?;
+        let c = cmd_full()?;
+        let _ = unbind(hk);
+        run(Command::new("swaymsg")
+            .arg("bindsym")
+            .arg(&chord)
+            .arg("exec")
+            .arg(&c))
+    }
 }
 
 mod hypr {
@@ -484,6 +639,14 @@ mod hypr {
             .arg("keyword")
             .arg("unbind")
             .arg(hypr_chord(hk)?))
+    }
+
+    /// Fullscreen chord → `quickshort --capture-full`.
+    pub fn bind_full(hk: &HotKey) -> Result<()> {
+        run(Command::new("hyprctl")
+            .arg("keyword")
+            .arg("bind")
+            .arg(format!("{}, exec, {}", hypr_chord(hk)?, cmd_full()?)))
     }
 }
 
@@ -514,12 +677,18 @@ mod kde {
     pub struct KdeHotkey {
         conn: Connection,
         session: OwnedObjectPath,
-        /// last chord bound — BindShortcuts([]) unbinds, so resume needs it
+        /// last chords bound — BindShortcuts([]) unbinds, so resume
+        /// needs them. `hk_full` = the fullscreen shortcut (if any).
         hk: HotKey,
+        hk_full: Option<HotKey>,
     }
 
     impl KdeHotkey {
-        pub fn start(proxy: EventLoopProxy<HostEvent>, hk: &HotKey) -> Result<Self> {
+        pub fn start(
+            proxy: EventLoopProxy<HostEvent>,
+            hk: &HotKey,
+            hk_full: Option<&HotKey>,
+        ) -> Result<Self> {
             let conn = Connection::session().context("session dbus")?;
             let gs = Proxy::new(&conn, DESKTOP, ROOT, GS)?;
 
@@ -540,8 +709,8 @@ mod kde {
             .context("bad session_handle")?;
 
             // Activated fires on the session object — one listener
-            // thread for the app's lifetime; "capture" is the only
-            // shortcut we ever bind, so the signal id doesn't matter.
+            // thread for the app's lifetime; the signal's shortcut_id
+            // picks between "capture" (region) and "capture_full".
             let mut sig = async_io::block_on(async {
                 zbus::Proxy::new(conn.inner(), DESKTOP, session.as_str(), GS)
                     .await?
@@ -552,8 +721,22 @@ mod kde {
             std::thread::Builder::new()
                 .name("qs-hotkey".into())
                 .spawn(move || {
-                    while let Some(_msg) = async_io::block_on(sig.next()) {
-                        let _ = proxy.send_event(HostEvent::Trigger);
+                    while let Some(msg) = async_io::block_on(sig.next()) {
+                        // (shortcut_id, timestamp, options) — the session
+                        // path leads the spec signature but kglobalaccel
+                        // omits it; default to the region trigger so an
+                        // unparsed signal still captures something
+                        let id = msg
+                            .body()
+                            .deserialize::<(String, u64, HashMap<String, OwnedValue>)>()
+                            .map(|(id, _, _)| id)
+                            .unwrap_or_else(|_| "capture".to_owned());
+                        let ev = if id == "capture_full" {
+                            HostEvent::TriggerFull
+                        } else {
+                            HostEvent::Trigger
+                        };
+                        let _ = proxy.send_event(ev);
                     }
                 })
                 .context("spawn hotkey listener")?;
@@ -562,15 +745,17 @@ mod kde {
                 conn,
                 session,
                 hk: *hk,
+                hk_full: hk_full.copied(),
             };
-            k.bind(hk)?;
+            k.bind(hk, hk_full)?;
             Ok(k)
         }
 
         /// preferred_trigger is a hint — Plasma honors it when free,
-        /// and remembers it under our shortcut id either way.
-        pub fn bind(&mut self, hk: &HotKey) -> Result<()> {
+        /// and remembers it under our shortcut ids either way.
+        pub fn bind(&mut self, hk: &HotKey, hk_full: Option<&HotKey>) -> Result<()> {
             self.hk = *hk;
+            self.hk_full = hk_full.copied();
             self.set_bound(true)
         }
 
@@ -578,16 +763,24 @@ mod kde {
         /// has to suspend/resume.
         pub fn set_bound(&mut self, bound: bool) -> Result<()> {
             let rows: Vec<ShortcutRow> = if bound {
+                let mut rows = Vec::new();
                 let mut m = Opts::new();
                 m.insert("description".into(), vstr("Capture region"));
                 m.insert("preferred_trigger".into(), vstr(&kde_trigger(&self.hk)?));
-                vec![("capture".to_owned(), m)]
+                rows.push(("capture".to_owned(), m));
+                if let Some(h) = self.hk_full {
+                    let mut m = Opts::new();
+                    m.insert("description".into(), vstr("Capture full screen"));
+                    m.insert("preferred_trigger".into(), vstr(&kde_trigger(&h)?));
+                    rows.push(("capture_full".to_owned(), m));
+                }
+                rows
             } else {
                 Vec::new()
             };
             let gs = Proxy::new(&self.conn, DESKTOP, ROOT, GS)?;
             let tok = token();
-            let mut rx = response_rx(&self.conn, &request_path(&self.conn, &tok))?;
+            let mut rx = response_rx(&self.conn, &request_path(&conn, &tok))?;
             let mut opts = Opts::new();
             opts.insert("handle_token".into(), vstr(&tok));
             let _: OwnedObjectPath = gs

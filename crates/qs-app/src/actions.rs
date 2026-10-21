@@ -113,13 +113,28 @@ pub fn dispatch(
 }
 
 fn save(img: &RgbaImage, target: &SaveTarget) -> Result<PathBuf> {
-    let path = match target {
+    let mut path = match target {
         SaveTarget::File(p) => p.clone(),
         SaveTarget::Dir(dir) => {
             std::fs::create_dir_all(dir)?;
             dir.join(format!("quickshort-{}.png", unix_ts()?))
         }
     };
+    // the timestamp name is second-granularity — two quick saves (e.g.
+    // the fullscreen hotkey pressed twice) must not overwrite each other
+    if matches!(target, SaveTarget::Dir(_)) && path.exists() {
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for n in 1..1000u32 {
+            let alt = path.with_file_name(format!("{stem}-{n}.png"));
+            if !alt.exists() {
+                path = alt;
+                break;
+            }
+        }
+    }
     img.save(&path)
         .with_context(|| format!("save {}", path.display()))?;
     eprintln!("saved {}", path.display());

@@ -24,8 +24,16 @@ use crate::update::{self, Release};
 
 /// Everything that wakes the loop besides window events.
 pub(crate) enum HostEvent {
-    /// Tray "Capture Region" or the global hotkey.
+    /// Tray "Capture Region" or the region global hotkey.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Wayland-only sender
     Trigger,
+    /// Tray "Capture Full Screen" or the fullscreen global hotkey —
+    /// stitches the whole virtual screen and saves without the overlay.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Wayland-only sender
+    TriggerFull,
+    /// A `global-hotkey` manager press, identified by the HotKey's id —
+    /// routed to Trigger/TriggerFull against the registered chords.
+    Hotkey(u32),
     Menu(MenuId),
     /// Action worker finished — refresh the menu, open the result card.
     Done(Result<Dispatch, String>),
@@ -76,11 +84,13 @@ pub fn run(cfg: Config) -> Result<()> {
             }
         }
     });
-    // Hotkey events: forward straight through the proxy.
+    // Hotkey events: forward the HotKey id — the host maps it to the
+    // region or fullscreen chord (ids are per-registration, so they
+    // can't be baked in here).
     let px = proxy.clone();
     GlobalHotKeyEvent::set_event_handler(Some(Box::new(move |e: GlobalHotKeyEvent| {
         if e.state == HotKeyState::Pressed {
-            let _ = px.send_event(HostEvent::Trigger);
+            let _ = px.send_event(HostEvent::Hotkey(e.id));
         }
     })));
 
@@ -102,6 +112,8 @@ struct Host {
     tray: Option<tray_icon::TrayIcon>,
     hotkeys: Option<GlobalHotKeyManager>,
     hotkey: Option<HotKey>,
+    /// the fullscreen-capture chord, registered beside `hotkey`
+    hotkey_full: Option<HotKey>,
     /// hotkey unregistered while the settings recorder is armed
     hotkey_suspended: bool,
     /// Wayland compositor/portal binding — gsettings custom keybinding,
@@ -156,6 +168,7 @@ impl Host {
             tray: None,
             hotkeys: None,
             hotkey: None,
+            hotkey_full: None,
             hotkey_suspended: false,
             #[cfg(target_os = "linux")]
             hotkey_guard: None,
@@ -232,16 +245,16 @@ impl Host {
         });
     }
 
-    /// Capture every monitor and spawn the overlay session.
-    fn trigger(&mut self, el: &ActiveEventLoop) {
-        eprintln!("trigger: overlay={}", self.overlay.is_some());
-        if self.overlay.is_some() {
-            return; // a selection is already in progress
-        }
-        self.card = None; // a stale card owns the previous capture's image
-        let frames = match qs_capture::backend().and_then(|b| b.capture_all()) {
-            Ok(f) if !f.is_empty() => f,
-            Ok(_) => return eprintln!("no monitors captured"),
+    /// Capture every monitor — shared by the region overlay and the
+    /// fullscreen path. Failures toast once; on macOS a denied Screen
+    /// Recording grant also opens its settings pane.
+    fn capture_frames(&mut self, el: &ActiveEventLoop) -> Option<Vec<qs_core::CapturedFrame>> {
+        match qs_capture::backend().and_then(|b| b.capture_all()) {
+            Ok(f) if !f.is_empty() => Some(f),
+            Ok(_) => {
+                eprintln!("no monitors captured");
+                None
+            }
             Err(e) => {
                 eprintln!("capture failed: {e:#}");
                 self.toast_done(el, format!("Capture failed: {e:#}"), false);
@@ -252,8 +265,19 @@ impl Host {
                         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
                         .spawn();
                 }
-                return;
+                None
             }
+        }
+    }
+
+    /// Capture every monitor and spawn the overlay session.
+    fn trigger(&mut self, el: &ActiveEventLoop) {
+        if self.overlay.is_some() {
+            return; // a selection is already in progress
+        }
+        self.card = None; // a stale card owns the previous capture's image
+        let Some(frames) = self.capture_frames(el) else {
+            return;
         };
         let bounds = qs_core::virtual_bounds(&frames);
         let prefs = self.cfg.overlay_prefs();
@@ -266,10 +290,44 @@ impl Host {
         }
     }
 
+    /// Fullscreen hotkey: stitch the whole virtual screen and save it —
+    /// no overlay, no action picker. The PNG lands in the album like a
+    /// region Save so Copy/Share/Pin stay one right-click away.
+    fn trigger_full(&mut self, el: &ActiveEventLoop) {
+        if self.overlay.is_some() {
+            return; // a selection is already in progress
+        }
+        self.card = None;
+        let Some(frames) = self.capture_frames(el) else {
+            return;
+        };
+        let sel = qs_core::virtual_bounds(&frames);
+        let px = self.proxy.clone();
+        let target = SaveTarget::Dir(self.cfg.save_dir());
+        let copy = self.cfg.copy_after_save;
+        let lang = self.cfg.ocr_lang.clone();
+        std::thread::spawn(move || {
+            let res = actions::dispatch(
+                frames,
+                sel,
+                qs_overlay::Action::Save,
+                &[],
+                &target,
+                false,
+                None,
+                copy,
+                &lang,
+            )
+            .map_err(|e| e.to_string());
+            let _ = px.send_event(HostEvent::Done(res));
+        });
+    }
+
     fn on_menu(&mut self, el: &ActiveEventLoop, id: MenuId) {
         let id = id.0.as_str();
         match id {
             tray::ID_CAPTURE => self.trigger(el),
+            tray::ID_CAPTURE_FULL => self.trigger_full(el),
             tray::ID_OPEN_DIR => actions::open_path(&self.cfg.save_dir()),
             tray::ID_QUIT => el.exit(),
             tray::ID_DONATE => actions::open_path(std::path::Path::new(
@@ -316,21 +374,23 @@ impl Host {
         }
     }
 
-    /// While the settings recorder is armed, drop the global grab so the
-    /// chord reaches the settings window instead of triggering capture.
+    /// While the settings recorder is armed, drop the global grabs so the
+    /// chords reach the settings window instead of triggering capture.
     fn suspend_hotkey(&mut self, suspended: bool) {
         if suspended == self.hotkey_suspended {
             return;
         }
-        if let (Some(m), Some(hk)) = (&self.hotkeys, self.hotkey) {
-            let r = if suspended {
-                m.unregister(hk)
-            } else {
-                m.register(hk)
-            };
-            if let Err(e) = r {
-                eprintln!("hotkey suspend: {e:#}");
-                return;
+        if let Some(m) = &self.hotkeys {
+            for hk in [self.hotkey, self.hotkey_full].into_iter().flatten() {
+                let r = if suspended {
+                    m.unregister(hk)
+                } else {
+                    m.register(hk)
+                };
+                if let Err(e) = r {
+                    // keep going — the other slot must not stay grabbed
+                    eprintln!("hotkey suspend: {e:#}");
+                }
             }
         }
         // compositor/portal binding needs the same treatment — otherwise
@@ -342,44 +402,87 @@ impl Host {
         self.hotkey_suspended = suspended;
     }
 
-    /// Persist config, (re)register the hotkey, refresh the tray menu —
-    /// called after the settings window mutates `cfg`.
-    fn apply_cfg(&mut self, el: &ActiveEventLoop) {
-        self.cfg.save();
-        if let (Some(m), Ok(hk)) = (&self.hotkeys, self.cfg.hotkey.parse::<HotKey>()) {
-            if Some(hk) != self.hotkey {
-                if let Some(old) = self.hotkey {
+    /// (Re)register one global chord into `hotkey`/`hotkey_full`. Compares
+    /// chords by key+mods — `HotKey`'s PartialEq includes its per-grab id,
+    /// so `==` would re-register on every settings change. An empty chord
+    /// disables the slot; a chord equal to the other slot is refused
+    /// (both grabs would fire on the same press).
+    fn rebind_slot(&mut self, el: &ActiveEventLoop, chord: &str, full: bool) {
+        let label = if full { "Fullscreen hotkey" } else { "Hotkey" };
+        // toast text decided inside the borrow scope — `toast_done` needs
+        // &mut self, which can't overlap the manager/slot borrows
+        let mut msg: Option<(String, bool)> = None;
+        {
+            let Some(m) = &self.hotkeys else { return };
+            // read the sibling slot before taking &mut on ours
+            let other = if full { self.hotkey } else { self.hotkey_full };
+            let slot = if full {
+                &mut self.hotkey_full
+            } else {
+                &mut self.hotkey
+            };
+            let chord = chord.trim();
+            if chord.is_empty() {
+                if let Some(old) = slot.take() {
+                    let _ = m.unregister(old);
+                }
+                return;
+            }
+            let hk: HotKey = match chord.parse() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("bad {} {chord:?}: {e}", label.to_lowercase());
+                    return;
+                }
+            };
+            if other.is_some_and(|o| o.key == hk.key && o.mods == hk.mods) {
+                let which = if full { "region" } else { "fullscreen" };
+                msg = Some((
+                    format!("{label} {chord} duplicates the {which} hotkey — ignored"),
+                    false,
+                ));
+            } else if !slot.is_some_and(|old| old.key == hk.key && old.mods == hk.mods) {
+                if let Some(old) = *slot {
                     let _ = m.unregister(old);
                 }
                 match m.register(hk) {
                     Ok(()) => {
-                        self.hotkey = Some(hk);
-                        self.toast_done(el, format!("Hotkey set to {}", self.cfg.hotkey), true);
+                        *slot = Some(hk);
+                        msg = Some((format!("{label} set to {chord}"), true));
                     }
                     Err(e) => {
-                        eprintln!("hotkey register failed: {e:#}");
-                        // restore the old grab — a dead hotkey is worse than
-                        // a stale one, and self.hotkey must stay truthful
-                        if let Some(old) = self.hotkey {
+                        eprintln!("{label} register failed: {e:#}");
+                        // restore the old grab — a dead hotkey is worse
+                        // than a stale one, and the slot stays truthful
+                        if let Some(old) = *slot {
                             let _ = m.register(old);
                         }
-                        self.toast_done(
-                            el,
-                            format!(
-                                "Hotkey {} is already in use — kept the old one",
-                                self.cfg.hotkey
-                            ),
+                        msg = Some((
+                            format!("{label} {chord} is already in use — kept the old one"),
                             false,
-                        );
+                        ));
                     }
                 }
             }
         }
-        // Wayland: re-issue the compositor/portal binding for the new chord
-        // (re-BindShortcuts for KDE, gsettings/swaymsg/hyprctl overwrite)
+        if let Some((s, ok)) = msg {
+            self.toast_done(el, s, ok);
+        }
+    }
+
+    /// Persist config, (re)register the hotkeys, refresh the tray menu —
+    /// called after the settings window mutates `cfg`.
+    fn apply_cfg(&mut self, el: &ActiveEventLoop) {
+        self.cfg.save();
+        let (region, full) = (self.cfg.hotkey.clone(), self.cfg.hotkey_full.clone());
+        self.rebind_slot(el, &region, false);
+        self.rebind_slot(el, &full, true);
+        // Wayland: re-issue the compositor/portal bindings for the new
+        // chords (re-BindShortcuts for KDE, gsettings/swaymsg/hyprctl
+        // overwrite)
         #[cfg(target_os = "linux")]
         if let Some(g) = &mut self.hotkey_guard {
-            if let Err(e) = g.rebind(&self.cfg.hotkey) {
+            if let Err(e) = g.rebind(&region, &full) {
                 eprintln!("hotkey rebind failed: {e:#}");
             }
             // a Changed event while the recorder is still armed must not
@@ -659,7 +762,11 @@ impl ApplicationHandler<HostEvent> for Host {
         // hyprctl) and skip the manager entirely when that works.
         #[cfg(target_os = "linux")]
         let try_manager = if crate::hotkey_linux::is_wayland() {
-            match crate::hotkey_linux::register(self.proxy.clone(), &self.cfg.hotkey) {
+            match crate::hotkey_linux::register(
+                self.proxy.clone(),
+                &self.cfg.hotkey,
+                &self.cfg.hotkey_full,
+            ) {
                 Ok(guard) => {
                     self.hotkey_guard = guard;
                     if self.hotkey_guard.is_none() {
@@ -727,16 +834,20 @@ impl ApplicationHandler<HostEvent> for Host {
         }
 
         if try_manager {
+            // the manager survives a failed grab — register both chords on
+            // one instance so a fallback for the region chord doesn't
+            // strand the fullscreen one on a dead manager
+            let manager = GlobalHotKeyManager::new().ok();
             match self.cfg.hotkey.parse::<HotKey>() {
                 Ok(hk) => {
-                    match GlobalHotKeyManager::new().and_then(|m| {
-                        m.register(hk)?;
-                        Ok(m)
-                    }) {
-                        Ok(m) => {
-                            self.hotkey = Some(hk);
-                            self.hotkeys = Some(m);
-                        }
+                    let res = manager
+                        .as_ref()
+                        .map(|m| m.register(hk))
+                        .unwrap_or(Err(global_hotkey::Error::FailedToRegister(
+                            "manager unavailable".into(),
+                        )));
+                    match res {
+                        Ok(()) => self.hotkey = Some(hk),
                         Err(e) => {
                             eprintln!("hotkey register failed: {e:#}");
                             // the configured chord may be shell-owned (Windows
@@ -745,16 +856,14 @@ impl ApplicationHandler<HostEvent> for Host {
                             const FALLBACK: &str = "Ctrl+Shift+S";
                             if self.cfg.hotkey != FALLBACK {
                                 if let Ok(fbk) = FALLBACK.parse::<HotKey>() {
-                                    match GlobalHotKeyManager::new().and_then(|m| {
-                                        m.register(fbk)?;
-                                        Ok(m)
-                                    }) {
-                                        Ok(m) => {
+                                    match manager.as_ref().map(|m| m.register(fbk)) {
+                                        Some(Ok(())) => {
                                             eprintln!("hotkey fell back to {FALLBACK}");
                                             self.hotkey = Some(fbk);
-                                            self.hotkeys = Some(m);
                                         }
-                                        Err(e) => eprintln!("fallback register failed: {e:#}"),
+                                        _ => {
+                                            eprintln!("fallback register failed")
+                                        }
                                     }
                                 }
                             }
@@ -763,6 +872,27 @@ impl ApplicationHandler<HostEvent> for Host {
                 }
                 Err(e) => eprintln!("bad hotkey {:?}: {e}", self.cfg.hotkey),
             }
+            // fullscreen chord — skipped silently when unset or a
+            // duplicate of the region chord
+            let full = self.cfg.hotkey_full.trim();
+            if !full.is_empty() {
+                match full.parse::<HotKey>() {
+                    Ok(hk)
+                        if self
+                            .hotkey
+                            .is_some_and(|r| r.key == hk.key && r.mods == hk.mods) =>
+                    {
+                        eprintln!("fullscreen hotkey {full:?} duplicates the region hotkey");
+                    }
+                    Ok(hk) => match manager.as_ref().map(|m| m.register(hk)) {
+                        Some(Ok(())) => self.hotkey_full = Some(hk),
+                        Some(Err(e)) => eprintln!("fullscreen hotkey register failed: {e:#}"),
+                        None => eprintln!("fullscreen hotkey: manager unavailable"),
+                    },
+                    Err(e) => eprintln!("bad fullscreen hotkey {full:?}: {e}"),
+                }
+            }
+            self.hotkeys = manager;
         }
 
         // honor the retention policy, then the once-a-day update check
@@ -786,6 +916,24 @@ impl ApplicationHandler<HostEvent> for Host {
                 // must honor the recorder suspension the same way an
                 // unregistered X11 grab does
                 if !self.hotkey_suspended {
+                    self.trigger(el);
+                }
+            }
+            HostEvent::TriggerFull => {
+                if !self.hotkey_suspended {
+                    self.trigger_full(el);
+                }
+            }
+            HostEvent::Hotkey(id) => {
+                // the manager's event source carries only the HotKey id —
+                // map it back to the registered chord to pick the path
+                if self.hotkey_full.is_some_and(|h| h.id() == id) {
+                    if !self.hotkey_suspended {
+                        self.trigger_full(el);
+                    }
+                } else if self.hotkey.is_some_and(|h| h.id() == id)
+                    && !self.hotkey_suspended
+                {
                     self.trigger(el);
                 }
             }

@@ -91,6 +91,8 @@ const PAGES: &[(&str, Glyph)] = &[
 #[derive(Clone, Copy, PartialEq)]
 enum Rec {
     Global,
+    /// app-wide fullscreen hotkey — same chord recorder as `Global`
+    GlobalFull,
     Save,
     Copy,
     Ocr,
@@ -404,12 +406,16 @@ impl Settings {
                     return None;
                 }
                 match self.recording {
-                    Some(Rec::Global) => {
+                    Some(Rec::Global) | Some(Rec::GlobalFull) => {
                         if let Some(hk) = self.chord_string(&event.logical_key) {
                             if hk.parse::<global_hotkey::hotkey::HotKey>().is_err() {
                                 return None; // unparsable — keep recording
                             }
-                            cfg.hotkey = hk;
+                            if self.recording == Some(Rec::GlobalFull) {
+                                cfg.hotkey_full = hk;
+                            } else {
+                                cfg.hotkey = hk;
+                            }
                             self.recording = None;
                             self.dirty = true;
                             return Some(SettingsEvent::Changed);
@@ -1064,18 +1070,11 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         "Capture method",
         "Choose hotkey and capture behavior.",
     );
-    let c = card(CX, 146.0, 1);
+    let c = card(CX, 146.0, 2);
     p.card(cv, c);
-    // row 1: global hotkey
+    // row 1: region hotkey
     let r = (c.0, c.1, c.2, ROW);
-    row_label(
-        p,
-        cv,
-        r,
-        Glyph::Keys,
-        "Global hotkey",
-        "Press this shortcut to capture",
-    );
+    row_label(p, cv, r, Glyph::Keys, "Capture hotkey", "Select a region on screen");
     let rb = slot(r.1, 76.0);
     if v.recording == Some(Rec::Global) {
         let a = 0.55 + 0.45 * v.pulse.sin().abs();
@@ -1092,33 +1091,58 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         } else {
             ("Press shortcut", v.cfg.accent_rgb())
         };
-        p.text(
-            cv,
-            rb.0 - p.text_w(msg, 11.5) - 12.0,
-            r.1 + 29.0,
-            11.5,
-            msg,
-            col,
-        );
+        p.text(cv, rb.0 - p.text_w(msg, 11.5) - 12.0, r.1 + 29.0, 11.5, msg, col);
     } else {
-        p.keycaps(
-            cv,
-            &v.cfg.hotkey,
-            rb.0 - keycaps_w(p, &v.cfg.hotkey) - 10.0,
-            r.1 + 12.0,
-        );
+        p.keycaps(cv, &v.cfg.hotkey, rb.0 - keycaps_w(p, &v.cfg.hotkey) - 10.0, r.1 + 12.0);
     }
     p.ghost_button(cv, rb, "Record", v.hover == Some(Hit::Rec(Rec::Global)));
     hits.push((rb, Hit::Rec(Rec::Global)));
 
-    section_title(
+    // row 2: fullscreen hotkey — saves the whole screen, no selection
+    let r = (c.0, c.1 + ROW, c.2, ROW);
+    row_label(
         p,
         cv,
-        228.0,
-        "Save location",
-        "Choose where captured images are saved.",
+        r,
+        Glyph::Keys,
+        "Fullscreen hotkey",
+        "Save the whole screen, no selection",
     );
-    let c = card(CX, 262.0, 1);
+    let rb = slot(r.1, 76.0);
+    if v.recording == Some(Rec::GlobalFull) {
+        let a = 0.55 + 0.45 * v.pulse.sin().abs();
+        p.stroke(
+            cv,
+            (c.0 + 8.0, r.1 + 11.0, c.2 - 16.0, 30.0),
+            7.0,
+            v.cfg.accent_rgb(),
+            a,
+            1.0,
+        );
+        let (msg, col) = if v.want_mod {
+            ("Needs a modifier, e.g. ⌘ ⌥ ⌃", FG_DIM)
+        } else {
+            ("Press shortcut", v.cfg.accent_rgb())
+        };
+        p.text(cv, rb.0 - p.text_w(msg, 11.5) - 12.0, r.1 + 29.0, 11.5, msg, col);
+    } else {
+        p.keycaps(
+            cv,
+            &v.cfg.hotkey_full,
+            rb.0 - keycaps_w(p, &v.cfg.hotkey_full) - 10.0,
+            r.1 + 12.0,
+        );
+    }
+    p.ghost_button(
+        cv,
+        rb,
+        "Record",
+        v.hover == Some(Hit::Rec(Rec::GlobalFull)),
+    );
+    hits.push((rb, Hit::Rec(Rec::GlobalFull)));
+
+    section_title(p, cv, 268.0, "Save location", "Choose where captured images are saved.");
+    let c = card(CX, 302.0, 1);
     p.card(cv, c);
     row_label(
         p,
@@ -1132,14 +1156,8 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     p.ghost_button(cv, bb, "Change…", v.hover == Some(Hit::Browse));
     hits.push((bb, Hit::Browse));
 
-    section_title(
-        p,
-        cv,
-        344.0,
-        "Options",
-        "Additional settings for capture and workflow.",
-    );
-    let c = card(CX, 378.0, 1);
+    section_title(p, cv, 368.0, "Options", "Additional settings for capture and workflow.");
+    let c = card(CX, 402.0, 1);
     p.card(cv, c);
     switch_row(
         p,
@@ -1818,7 +1836,7 @@ fn key_str(cfg: &Config, r: Rec) -> &str {
         Rec::Scroll => &cfg.key_scroll,
         Rec::Record => &cfg.key_record,
         Rec::Undo => &cfg.key_undo,
-        Rec::Global => "",
+        Rec::Global | Rec::GlobalFull => "",
     }
 }
 
@@ -1851,7 +1869,7 @@ fn key_mut(cfg: &mut Config, r: Rec) -> &mut String {
         Rec::Scroll => &mut cfg.key_scroll,
         Rec::Record => &mut cfg.key_record,
         Rec::Undo => &mut cfg.key_undo,
-        Rec::Global => unreachable!(),
+        Rec::Global | Rec::GlobalFull => unreachable!(),
     }
 }
 
