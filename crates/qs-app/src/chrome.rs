@@ -574,6 +574,75 @@ impl Stack {
         v
     }
 
+    /// Union of everything `render` can touch this frame, in logical
+    /// window coords — backends use it as the dirty rect so the layer
+    /// upload covers the moving primitives, not the whole monitor.
+    /// `None` means nothing is on screen (empty + fully hidden).
+    pub fn paint_bounds(&self, w: f64, h: f64, now: Instant) -> Option<FRect> {
+        if self.lightbox.is_some() || self.menu.is_some() {
+            return Some(FRect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            });
+        }
+        let mut b: Option<FRect> = None;
+        let mut acc = |r: FRect| match &mut b {
+            Some(u) => {
+                let x0 = u.x.min(r.x);
+                let y0 = u.y.min(r.y);
+                u.w = (u.x + u.w).max(r.x + r.w) - x0;
+                u.h = (u.y + u.h).max(r.y + r.h) - y0;
+                u.x = x0;
+                u.y = y0;
+            }
+            None => b = Some(r),
+        };
+        // thumbs at both tween ends (fan/hide sweep between them) —
+        // shadows and the × disc live in the pad
+        let n = self
+            .shots
+            .len()
+            .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
+        for i in 0..n {
+            for &ft in &[self.fan_t, self.fan_to] {
+                for &ht in &[self.hide_t, self.hide_to] {
+                    acc(self.thumb_rect_at(i, w, h, ft, ht));
+                }
+            }
+        }
+        for &ht in &[self.hide_t, self.hide_to] {
+            acc(self.chip_rect_at(w, h, ht));
+        }
+        if let Some(r) = self.clear_rect(w, h) {
+            acc(r);
+        }
+        if let Some(f) = &self.fly {
+            // current position; the previous frame's rect is covered by
+            // the caller's prev-dirty union
+            let p = ease_out(self.fly_t(now));
+            let to = self.thumb_rect(0, w, h);
+            acc(FRect {
+                x: f.from.x + (to.x - f.from.x) * p,
+                y: f.from.y + (to.y - f.from.y) * p,
+                w: f.from.w + (to.w - f.from.w) * p,
+                h: f.from.h + (to.h - f.from.h) * p,
+            });
+        }
+        b.map(|mut r| {
+            r.x -= 30.0;
+            r.y -= 30.0;
+            r.w += 60.0;
+            r.h += 60.0;
+            r.x = r.x.max(0.0);
+            r.y = r.y.max(0.0);
+            r.w = r.w.min(w - r.x);
+            r.h = r.h.min(h - r.y);
+            r
+        })
+    }
+
     /// rects are padded so the × disc overhanging the edge stays live.
     pub fn input_rects(&self, w: f64, h: f64) -> Vec<(FRect, Hit)> {
         if self.lightbox.is_some() || self.menu.is_some() {

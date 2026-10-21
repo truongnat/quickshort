@@ -32,6 +32,8 @@ use objc2_foundation::{
     NSArray, NSDictionary, NSError, NSLocalizedDescriptionKey, NSNull, NSObject, NSPoint, NSRect,
     NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSURL,
 };
+use objc2_core_foundation::{CFRetained, CGRect};
+use objc2_core_graphics::CGImage;
 use objc2_quartz_core::{CAAction, CADisplayLink};
 use qs_overlay::sdf::Canvas;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -380,10 +382,15 @@ impl ChromeWin {
             // actions dict disables it once, instead of wrapping every
             // setContents in a CATransaction (whose commit() blocks ~20ms
             // on WindowServer — that stall was the animation jank).
-            let k = NSString::from_str("contents");
+            let (k1, k2, k3) = (
+                NSString::from_str("contents"),
+                NSString::from_str("position"),
+                NSString::from_str("bounds"),
+            );
+            let null = || ProtocolObject::<dyn CAAction>::from_retained(NSNull::null());
             let acts = NSDictionary::from_retained_objects(
-                &[&*k],
-                &[ProtocolObject::<dyn CAAction>::from_retained(NSNull::null())],
+                &[&*k1, &*k2, &*k3],
+                &[null(), null(), null()],
             );
             layer.setActions(Some(&acts));
         }
@@ -503,27 +510,58 @@ impl ChromeWin {
     }
 
     /// Render the stack into the buffer and push it to the layer.
+    /// Only the stack's paint bounds become the layer's frame + a
+    /// cropped CGImage — fullscreen-layer contents meant WindowServer
+    /// re-composited the whole monitor every frame (~20MB @60Hz),
+    /// which was the residual jank even on vsync.
     fn present(&mut self) {
-        self.buf.fill(0);
+        let now = Instant::now();
+        let bounds = self.stack.paint_bounds(self.lw, self.lh, now);
+        let Some(b) = bounds else {
+            if let Some(layer) = self.view.layer() {
+                unsafe { layer.setContents(None) };
+            }
+            self.view.sync_input(Vec::new());
+            return;
+        };
+        // dirty region (physical px) — zero just this band before render
+        let s = self.scale;
+        let pw = (self.lw * s).round() as usize;
+        let ph = (self.lh * s).round() as usize;
+        let x0 = ((b.x * s).floor() as usize).min(pw);
+        let y0 = ((b.y * s).floor() as usize).min(ph);
+        let x1 = (((b.x + b.w) * s).ceil() as usize).min(pw);
+        let y1 = (((b.y + b.h) * s).ceil() as usize).min(ph);
+        for row in &mut self.buf[y0.min(y1) * pw..y1 * pw] {
+            *row = 0;
+        }
         {
             let mut cv = Canvas {
                 buf: &mut self.buf,
-                w: (self.lw * self.scale).round() as usize,
-                h: (self.lh * self.scale).round() as usize,
-                scale: self.scale,
+                w: pw,
+                h: ph,
+                scale: s,
             };
             let font = self.font.clone();
-            self.stack
-                .render(&mut cv, &font, self.accent, Instant::now());
+            self.stack.render(&mut cv, &font, self.accent, now);
         }
-        if let Some(layer) = self.view.layer() {
-            // CGImage straight off the rep — it wraps our buf so the
-            // pixels just rendered are already where it reads; the
-            // actions dict disables implicit animations so setContents
-            // is non-blocking
-            if let Some(cg) = self.rep.CGImage() {
-                let obj: &AnyObject = unsafe { &*(Retained::as_ptr(&cg) as *const AnyObject) };
+        if let (Some(layer), Some(full)) = (self.view.layer(), self.rep.CGImage()) {
+            if let Some(cg) = CGImage::with_image_in_rect(
+                Some(&full),
+                CGRect::new(
+                    objc2_core_foundation::CGPoint::new(x0 as f64, y0 as f64),
+                    objc2_core_foundation::CGSize::new((x1 - x0) as f64, (y1 - y0) as f64),
+                ),
+            ) {
+                let obj: &AnyObject =
+                    unsafe { &*(CFRetained::as_ptr(&cg).cast::<AnyObject>().as_ptr()) };
+                // frame in the backing layer's coords — layers are
+                // unflipped, so convert the top-origin logical rect
                 unsafe { layer.setContents(Some(obj)) };
+                layer.setFrame(CGRect::new(
+                    objc2_core_foundation::CGPoint::new(b.x, self.lh - b.y - b.h),
+                    objc2_core_foundation::CGSize::new(b.w, b.h),
+                ));
             }
         }
         self.view.sync_input(

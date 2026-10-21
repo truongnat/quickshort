@@ -142,9 +142,12 @@ impl ChromeWin {
     }
 
     /// Render the stack into the buffer and push it to the window.
+    /// `paint_bounds` caps the work to the dirty region — a fullscreen
+    /// copy + full-surface damage per frame was the animation jank.
     fn present(&mut self) {
+        let now = Instant::now();
         // track size/scale drift (fractional-scale flips, mode changes)
-        // here instead of a dedicated resize path — buffers simply
+        // here instead of a dedicated resize path - buffers simply
         // follow inner_size each frame
         let size = self.win.inner_size();
         self.scale = self.win.scale_factor();
@@ -154,7 +157,17 @@ impl ChromeWin {
         if self.buf.len() != pw * ph {
             self.buf = vec![0; pw * ph];
         }
-        self.buf.fill(0);
+        let bounds = self.stack.paint_bounds(self.lw, self.lh, now);
+        if let Some(b) = bounds {
+            let s = self.scale;
+            let y0 = ((b.y * s).floor() as usize).min(ph);
+            let y1 = (((b.y + b.h) * s).ceil() as usize).min(ph);
+            for row in &mut self.buf[y0.min(y1) * pw..y1 * pw] {
+                *row = 0;
+            }
+        } else {
+            self.buf.fill(0);
+        }
         {
             let mut cv = Canvas {
                 buf: &mut self.buf,
@@ -163,20 +176,27 @@ impl ChromeWin {
                 scale: self.scale,
             };
             let font = self.font.clone();
-            self.stack
-                .render(&mut cv, &font, self.accent, Instant::now());
+            self.stack.render(&mut cv, &font, self.accent, now);
         }
         // zone rects (not input_rects): the wider retention zone is the
         // hysteresis that keeps hover alive between moving thumbs
         let rects = self.stack.zone_rects(self.lw, self.lh);
         // Wayland: arm winit's wl_surface.frame callback before our raw
         // commit. Without it FrameCallbackState stays None and every
-        // request_redraw delivers RedrawRequested immediately — an
+        // request_redraw delivers RedrawRequested immediately - an
         // unthrottled busy-loop instead of vsync-paced animation.
         if matches!(self.imp, Imp::Wl(_)) {
             self.win.pre_present_notify();
         }
-        self.imp.present(&self.buf, pw, ph, &rects, self.scale);
+        // dirty in physical px for the backends
+        let dirty = bounds.map(|b| FRect {
+            x: b.x * self.scale,
+            y: b.y * self.scale,
+            w: b.w * self.scale,
+            h: b.h * self.scale,
+        });
+        self.imp
+            .present(&self.buf, pw, ph, &rects, self.scale, dirty);
     }
 
     /// Fly a finished shot into this monitor's stack.
@@ -370,10 +390,18 @@ impl Imp {
         }
     }
 
-    fn present(&mut self, buf: &[u32], pw: usize, ph: usize, rects: &[FRect], scale: f64) {
+    fn present(
+        &mut self,
+        buf: &[u32],
+        pw: usize,
+        ph: usize,
+        rects: &[FRect],
+        scale: f64,
+        dirty: Option<FRect>,
+    ) {
         match self {
-            Self::Wl(w) => w.present(buf, pw, ph, rects),
-            Self::X11(x) => x.present(buf, pw, ph, rects, scale),
+            Self::Wl(w) => w.present(buf, pw, ph, rects, dirty),
+            Self::X11(x) => x.present(buf, pw, ph, rects, scale, dirty),
         }
     }
 }
@@ -398,6 +426,9 @@ const SURFACE_ATTACH: u32 = 1;
 const SURFACE_DAMAGE: u32 = 2;
 const SURFACE_SET_INPUT_REGION: u32 = 5;
 const SURFACE_COMMIT: u32 = 6;
+/// damage_buffer arrived at v4; winit binds surfaces at v4+ so buffer
+/// coordinates are safe — but we still gate on the proxy version.
+const SURFACE_DAMAGE_BUFFER: u32 = 9;
 
 /// Requests destined for winit's wl_surface are marshalled raw: the
 /// proxy lives on winit's event queue and adopting it via
@@ -429,6 +460,10 @@ struct WlBuf {
     argb: bool,
     busy: bool,
     dead: bool,
+    /// Physical-px rows dirtied since this slot was last written —
+    /// slots alternate between frames, so a partial write must cover
+    /// the catch-up union or the stale bands ghost.
+    catch_up: Option<FRect>,
 }
 
 /// wayland-client bookkeeping state bound to our private event queue —
@@ -505,7 +540,14 @@ impl Wl {
 
     /// Reuse or create a pooled slot holding `w×h` pixels; the map +
     /// copy happens here, so attach can run immediately after.
-    fn slot(&mut self, qh: &QueueHandle<WlState>, pixels: &[u32], w: i32, h: i32) -> Option<usize> {
+    fn slot(
+        &mut self,
+        qh: &QueueHandle<WlState>,
+        pixels: &[u32],
+        w: i32,
+        h: i32,
+        dirty: Option<FRect>,
+    ) -> Option<usize> {
         let need = (w * h) as usize * 4;
         let free = self.state.bufs.iter().position(|b| {
             b.as_ref().map_or(true, |b| {
@@ -519,7 +561,8 @@ impl Wl {
                 self.state.bufs.len() - 1
             }
         };
-        if self.state.bufs[idx].is_none() {
+        let created = self.state.bufs[idx].is_none();
+        if created {
             // wrong-size survivors become dead weight — `dispatch` frees
             // each once its release arrives
             for b in self.state.bufs.iter_mut().flatten() {
@@ -553,18 +596,74 @@ impl Wl {
                 argb: fmt == wl_shm::Format::Argb8888,
                 busy: false,
                 dead: false,
+                catch_up: None,
             });
         }
-        let b = self.state.bufs[idx].as_mut()?;
-        write_shm(b.fd, pixels, b.size, b.argb)?;
-        b.busy = true;
+        // `dirty` is the physical-px region the caller repainted. This
+        // slot's pixels are from whenever it was last written (usually
+        // two frames back, slots alternate), so a partial write must
+        // cover the union of every dirty band missed since then —
+        // tracked in `catch_up`. Just-created slots always full-write
+        // (their shm is uninitialized).
+        {
+            let b = self.state.bufs[idx].as_mut()?;
+            match (dirty, b.catch_up.take(), created) {
+                (Some(d), catch_up, false) => {
+                    let r = catch_up.map_or(d, |c| {
+                        let x0 = c.x.min(d.x);
+                        let y0 = c.y.min(d.y);
+                        FRect {
+                            x: x0,
+                            y: y0,
+                            w: (c.x + c.w).max(d.x + d.w) - x0,
+                            h: (c.y + c.h).max(d.y + d.h) - y0,
+                        }
+                    });
+                    let y0 = (r.y.floor() as i32).clamp(0, h) as usize;
+                    let y1 = ((r.y + r.h).ceil() as i32).clamp(0, h) as usize;
+                    if y1 > y0 {
+                        write_shm_rows(b.fd, pixels, b.size, w as usize, y0, y1, b.argb)?;
+                    }
+                }
+                _ => write_shm(b.fd, pixels, b.size, b.argb)?,
+            }
+            b.busy = true;
+        }
+        // bands this slot skipped become the siblings' catch-up — each
+        // writes them when its turn comes
+        for (i, other) in self.state.bufs.iter_mut().enumerate() {
+            if i != idx {
+                if let Some(o) = other {
+                    o.catch_up = match (o.catch_up, dirty) {
+                        (Some(c), Some(d)) => Some({
+                            let x0 = c.x.min(d.x);
+                            let y0 = c.y.min(d.y);
+                            FRect {
+                                x: x0,
+                                y: y0,
+                                w: (c.x + c.w).max(d.x + d.w) - x0,
+                                h: (c.y + c.h).max(d.y + d.h) - y0,
+                            }
+                        }),
+                        (c, d) => c.or(d),
+                    };
+                }
+            }
+        }
         Some(idx)
     }
 
-    fn present(&mut self, buf: &[u32], pw: usize, ph: usize, rects: &[FRect]) {
+    fn present(
+        &mut self,
+        buf: &[u32],
+        pw: usize,
+        ph: usize,
+        rects: &[FRect],
+        dirty: Option<FRect>,
+    ) {
         let (w, h) = (pw as i32, ph as i32);
         let qh = self.queue.handle();
-        let Some(idx) = self.slot(&qh, buf, w, h) else {
+        let Some(idx) = self.slot(&qh, buf, w, h, dirty) else {
             return; // shm setup failed — leave the window transparent
         };
         let bufp = self.state.bufs[idx].as_ref().map(|b| b.buf.id().as_ptr());
@@ -597,8 +696,31 @@ impl Wl {
         }
         unsafe {
             let wl = wayland_client_handle();
-            // full-surface damage — the repaint is a whole-buffer swap
-            (wl.wl_proxy_marshal)(self.surface, SURFACE_DAMAGE, 0i32, 0i32, w, h);
+            // damage_buffer (v4) scopes the repaint to the painted band;
+            // fall back to full-surface damage on v3 surfaces — the shm
+            // rows beyond the written band are stale either way and the
+            // damage hint only costs compositor work, never correctness,
+            // because slot() caught up every missed dirty band
+            let ver = (wl.wl_proxy_get_version)(self.surface);
+            match (ver >= 4, dirty) {
+                (true, Some(d)) => {
+                    let x0 = d.x.floor() as i32;
+                    let y0 = d.y.floor() as i32;
+                    let dw = (d.x + d.w).ceil() as i32 - x0;
+                    let dh = (d.y + d.h).ceil() as i32 - y0;
+                    (wl.wl_proxy_marshal)(
+                        self.surface,
+                        SURFACE_DAMAGE_BUFFER,
+                        x0,
+                        y0,
+                        dw.max(1),
+                        dh.max(1),
+                    );
+                }
+                _ => {
+                    (wl.wl_proxy_marshal)(self.surface, SURFACE_DAMAGE, 0i32, 0i32, w, h);
+                }
+            }
             (wl.wl_proxy_marshal)(self.surface, SURFACE_ATTACH, bufp, 0i32, 0i32);
             (wl.wl_proxy_marshal)(self.surface, SURFACE_COMMIT);
         }
@@ -680,6 +802,49 @@ fn write_shm(fd: RawFd, pixels: &[u32], size: usize, argb: bool) -> Option<()> {
             }
         } else {
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), dst.cast(), pixels.len());
+        }
+        libc::munmap(p, size);
+    }
+    Some(())
+}
+
+/// Row-banded variant: only rows `[y0, y1)` of a `w`-wide buffer are
+/// written — the rest of the shm keeps the previous frame's pixels.
+/// Animation frames dirty a corner, not the whole monitor, so this
+/// skips most of the shm memcpy that made wl presents expensive.
+fn write_shm_rows(
+    fd: RawFd,
+    pixels: &[u32],
+    size: usize,
+    w: usize,
+    y0: usize,
+    y1: usize,
+    argb: bool,
+) -> Option<()> {
+    unsafe {
+        let p = libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            fd,
+            0,
+        );
+        if p == libc::MAP_FAILED {
+            return None;
+        }
+        let dst = p.cast::<u32>();
+        for y in y0..y1 {
+            let row = &pixels[y * w..(y + 1) * w];
+            let d = dst.add(y * w);
+            if argb {
+                for (i, &px) in row.iter().enumerate() {
+                    let v = px & 0xff00_ff00 | (px >> 16) & 0xff | (px << 16) & 0x00ff_0000;
+                    d.add(i).write_unaligned(v);
+                }
+            } else {
+                std::ptr::copy_nonoverlapping(row.as_ptr(), d.cast(), row.len());
+            }
         }
         libc::munmap(p, size);
     }
@@ -845,31 +1010,59 @@ impl X11 {
         })
     }
 
-    fn present(&mut self, buf: &[u32], pw: usize, ph: usize, rects: &[FRect], scale: f64) {
+    fn present(
+        &mut self,
+        buf: &[u32],
+        pw: usize,
+        ph: usize,
+        rects: &[FRect],
+        scale: f64,
+        dirty: Option<FRect>,
+    ) {
         // A<<24|B<<16|G<<8|R → A<<24|R<<16|G<<8|B, one pixel per 32-bit
-        // unit regardless of window depth (ZPixmap pads 24bpp to 4B)
-        self.xbuf.resize(buf.len() * 4, 0);
-        for (i, px) in buf.iter().enumerate() {
-            let p = px & 0xff00_ff00 | (px >> 16) & 0xff | (px << 16) & 0x00ff_0000;
-            self.xbuf[i * 4..i * 4 + 4].copy_from_slice(&p.to_ne_bytes());
+        // unit regardless of window depth (ZPixmap pads 24bpp to 4B).
+        // `dirty` (physical px) scopes conversion + upload to the band
+        // that actually changed.
+        let (x0, y0, x1, y1) = match dirty {
+            Some(d) => (
+                (d.x.floor() as usize).min(pw),
+                (d.y.floor() as usize).min(ph),
+                ((d.x + d.w).ceil() as usize).min(pw),
+                ((d.y + d.h).ceil() as usize).min(ph),
+            ),
+            None => (0, 0, pw, ph),
+        };
+        if x1 <= x0 || y1 <= y0 {
+            return;
         }
-        let rows_per_band = (self.max_band / (pw * 4).max(1)).max(1);
+        let dw = x1 - x0;
+        self.xbuf.resize(dw * (y1 - y0) * 4, 0);
+        let mut i = 0;
+        for row in buf[y0 * pw..y1 * pw].chunks_exact(pw) {
+            for &px in &row[x0.min(row.len())..(x0 + dw).min(row.len())] {
+                let p = px & 0xff00_ff00 | (px >> 16) & 0xff | (px << 16) & 0x00ff_0000;
+                self.xbuf[i * 4..i * 4 + 4].copy_from_slice(&p.to_ne_bytes());
+                i += 1;
+            }
+        }
+        let rows_per_band = (self.max_band / (dw * 4).max(1)).max(1);
         let mut y = 0usize;
-        while y < ph {
-            let rows = rows_per_band.min(ph - y);
-            let off = y * pw * 4;
+        let dh = y1 - y0;
+        while y < dh {
+            let rows = rows_per_band.min(dh - y);
+            let off = y * dw * 4;
             let _ = xproto::put_image(
                 &self.conn,
                 xproto::ImageFormat::Z_PIXMAP,
                 self.win,
                 self.gc,
-                pw as u16,
+                dw as u16,
                 rows as u16,
-                0,
-                y as i16,
+                x0 as i16,
+                (y0 + y) as i16,
                 0,
                 self.depth,
-                &self.xbuf[off..off + rows * pw * 4],
+                &self.xbuf[off..off + rows * dw * 4],
             );
             y += rows;
         }

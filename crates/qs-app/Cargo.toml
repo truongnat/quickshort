@@ -53,6 +53,8 @@ x11rb = { version = "0.13", features = ["shape"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["block2"] }
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-quartz-core = "0.3.2"
 block2 = "0.6"
