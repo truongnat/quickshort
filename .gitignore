@@ -7,3 +7,4 @@ Quickshort.app/
 dist/
 demo/out/
 .wrangler/
+.DS_Store

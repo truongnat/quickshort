@@ -825,6 +825,7 @@ impl Stack {
                 }
             }
             ChromeEv::Key(_) => None, // keys go through `key()`
+            ChromeEv::Tick => None, // backend-driven — never enters pointer logic
         }
     }
 
@@ -1113,6 +1114,10 @@ pub enum ChromeEv {
         y: f64,
     },
     Key(Key),
+    /// Native vsync tick — the backend fires this from its display clock
+    /// (CADisplayLink / wl_surface.frame) so animation settles and
+    /// presents on the compositor's cadence instead of a timer.
+    Tick,
 }
 
 #[derive(Clone, Copy, PartialEq)]

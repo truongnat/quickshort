@@ -33,6 +33,7 @@ use qs_overlay::sdf::Canvas;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::core::BOOL;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
+use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, AC_SRC_ALPHA,
     AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
@@ -452,15 +453,24 @@ impl ChromeWin {
 
     /// Animation tick — returns the next wake while a shot is in flight
     /// or, at rest, the idle-hide deadline so the stack slides away.
+    /// `UpdateLayeredWindow` has no vsync of its own, so `DwmFlush`
+    /// blocks until the compositor presents the queued frame — that
+    /// makes each pump land one render per display refresh (the
+    /// deprecated-but-live API is the same clock D3D Present waits on).
     pub fn pump(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let was = self.stack.animating();
         self.stack.settle(now); // may kick off the idle-hide tween
         if was || self.stack.animating() {
+            // flush BEFORE presenting so this frame lands inside the
+            // composite it just unblocked from; a failure (DWM off)
+            // degrades to the old 16ms free-run
+            let _ = unsafe { DwmFlush() };
+            self.stack.settle(Instant::now()); // resample after the wait
             self.present();
         }
         if self.stack.animating() {
-            Some(now + Duration::from_millis(16))
+            Some(Instant::now() + Duration::from_millis(16))
         } else {
             self.stack.idle_deadline()
         }

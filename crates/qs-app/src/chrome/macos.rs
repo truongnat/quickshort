@@ -30,9 +30,9 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSArray, NSDictionary, NSError, NSLocalizedDescriptionKey, NSNull, NSObject, NSPoint, NSRect,
-    NSSize, NSString, NSURL,
+    NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSURL,
 };
-use objc2_quartz_core::CAAction;
+use objc2_quartz_core::{CAAction, CADisplayLink};
 use qs_overlay::sdf::Canvas;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::event::WindowEvent;
@@ -185,6 +185,13 @@ define_class!(
             };
             self.emit(ChromeEv::Key(k));
         }
+
+        /// CADisplayLink callback — one ChromeEv::Tick per display
+        /// refresh, the compositor's own animation clock.
+        #[unsafe(method(frameTick:))]
+        fn frame_tick(&self, _link: &CADisplayLink) {
+            self.emit(ChromeEv::Tick);
+        }
     }
 );
 
@@ -247,6 +254,9 @@ impl ChromeView {
 pub struct ChromeWin {
     win: Window,
     view: Retained<ChromeView>,
+    /// CADisplayLink bound to this view — the animation clock; paused
+    /// at rest so it costs nothing outside fly/fan/hide tweens.
+    link: Retained<CADisplayLink>,
     /// keeps the mouse monitors alive — removed in Drop
     mon_token: Option<Retained<AnyObject>>,
     local_mon_token: Option<Retained<AnyObject>>,
@@ -383,10 +393,17 @@ impl ChromeWin {
         // 32LE without AlphaFirst = memory bytes R,G,B,A — the buffer's
         // A<<24|B<<16|G<<8|R u32 packing. (AlphaFirst would put alpha at
         // byte0 — the little-endian "first" — and eat the R channel.)
+        // The rep wraps our Vec directly: no per-frame memcpy into
+        // AppKit's allocation, and CGImage() reads the same bytes
+        // present() just wrote. The Vec must never reallocate (size is
+        // fixed at create) and must outlive the rep — field order
+        // guarantees it.
+        let mut buf = vec![0u32; pw * ph];
+        let mut planes = [buf.as_mut_ptr() as *mut u8];
         let rep = unsafe {
             NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
                 mtm.alloc::<NSBitmapImageRep>(),
-                std::ptr::null_mut(),
+                planes.as_mut_ptr(),
                 pw as isize,
                 ph as isize,
                 8,
@@ -431,14 +448,30 @@ impl ChromeWin {
             unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local_block) };
 
         win.set_visible(true);
+
+        // The display link is the animation clock: ticks land on the
+        // compositor's vsync (ProMotion-aware), paused while idle. It
+        // must be bound to the view — a link on a detached target still
+        // ticks, but scoping it to the view keeps teardown trivial.
+        let link = unsafe {
+            let l = CADisplayLink::displayLinkWithTarget_selector(
+                &*view as &AnyObject,
+                objc2::sel!(frameTick:),
+            );
+            l.setPaused(true);
+            l.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
+            l
+        };
+
         Ok(Self {
             win,
             view,
+            link,
             mon_token,
             local_mon_token: local_token,
             stack: Stack::new(corner),
             rep,
-            buf: vec![0; pw * ph],
+            buf,
             mon_key: super::mon_key(mon),
             lw: mw,
             lh: mh,
@@ -483,16 +516,11 @@ impl ChromeWin {
             self.stack
                 .render(&mut cv, &font, self.accent, Instant::now());
         }
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                self.buf.as_ptr() as *const u8,
-                self.rep.bitmapData(),
-                self.buf.len() * 4,
-            );
-        }
         if let Some(layer) = self.view.layer() {
-            // CGImage straight off the rep — the actions dict disables
-            // implicit animations so setContents is non-blocking
+            // CGImage straight off the rep — it wraps our buf so the
+            // pixels just rendered are already where it reads; the
+            // actions dict disables implicit animations so setContents
+            // is non-blocking
             if let Some(cg) = self.rep.CGImage() {
                 let obj: &AnyObject = unsafe { &*(Retained::as_ptr(&cg) as *const AnyObject) };
                 unsafe { layer.setContents(Some(obj)) };
@@ -651,6 +679,16 @@ impl ChromeWin {
     /// Platform event → stack → optional host command. Redraw is handled
     /// by the caller (Chrome::event) via `redraw`.
     pub fn event(&mut self, ev: ChromeEv) -> Option<ChromeCmd> {
+        if let ChromeEv::Tick = ev {
+            // one frame per display refresh — settle + present, then
+            // park the link once the tween ends
+            self.stack.settle(Instant::now());
+            self.present();
+            if !self.stack.animating() {
+                self.link.setPaused(true);
+            }
+            return None;
+        }
         let cmd = match ev {
             ChromeEv::Key(k) => self.stack.key(k),
             e => self.stack.pointer(e, self.lw, self.lh),
@@ -668,10 +706,13 @@ impl ChromeWin {
         self.present();
     }
 
-    /// winit window event — repaint requests and scale changes.
+    /// winit window event — repaint requests only; animation frames
+    /// come from the CADisplayLink, not RedrawRequested.
     pub fn window_event(&mut self, ev: &WindowEvent) -> bool {
         match ev {
             WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                self.stack.settle(now);
                 self.present();
                 true
             }
@@ -679,16 +720,16 @@ impl ChromeWin {
         }
     }
 
-    /// Animation tick — returns the next wake while a shot is in flight
-    /// or, at rest, the idle-hide deadline so the stack slides away.
+    /// `about_to_wait` hook — arms the display link while animating and
+    /// returns the idle-hide deadline at rest. The 16ms wake stays as a
+    /// backstop: if the link's screen is occluded or asleep its ticks
+    /// stop, and the host-side settle still advances the tween
+    /// wall-clock so nothing hangs mid-flight.
     pub fn pump(&mut self) -> Option<Instant> {
         let now = Instant::now();
-        let was = self.stack.animating();
         self.stack.settle(now); // may kick off the idle-hide tween
-        if was || self.stack.animating() {
-            self.present();
-        }
         if self.stack.animating() {
+            self.link.setPaused(false);
             Some(now + Duration::from_millis(16))
         } else {
             self.stack.idle_deadline()
@@ -698,6 +739,7 @@ impl ChromeWin {
 
 impl Drop for ChromeWin {
     fn drop(&mut self) {
+        self.link.invalidate();
         for m in [&self.mon_token, &self.local_mon_token]
             .into_iter()
             .flatten()

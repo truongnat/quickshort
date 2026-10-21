@@ -169,6 +169,13 @@ impl ChromeWin {
         // zone rects (not input_rects): the wider retention zone is the
         // hysteresis that keeps hover alive between moving thumbs
         let rects = self.stack.zone_rects(self.lw, self.lh);
+        // Wayland: arm winit's wl_surface.frame callback before our raw
+        // commit. Without it FrameCallbackState stays None and every
+        // request_redraw delivers RedrawRequested immediately — an
+        // unthrottled busy-loop instead of vsync-paced animation.
+        if matches!(self.imp, Imp::Wl(_)) {
+            self.win.pre_present_notify();
+        }
         self.imp.present(&self.buf, pw, ph, &rects, self.scale);
     }
 
@@ -276,14 +283,28 @@ impl ChromeWin {
                     self.emit(ChromeEv::Key(k));
                 }
             }
-            WindowEvent::RedrawRequested => self.present(),
+            WindowEvent::RedrawRequested => {
+                // Wayland: winit gates this event on wl_surface.frame —
+                // it IS the vsync tick, so settle+present+chain. X11
+                // gets the event promptly; the pump's timer drives it.
+                if matches!(self.imp, Imp::Wl(_)) {
+                    self.stack.settle(Instant::now());
+                    self.present();
+                    if self.stack.animating() {
+                        self.win.request_redraw();
+                    }
+                } else {
+                    self.present();
+                }
+            }
             _ => {}
         }
         true // the window exists; nothing else needs handling
     }
 
-    /// Animation tick — returns the next wake while a shot is in flight
-    /// or, at rest, the idle-hide deadline so the stack slides away.
+    /// Animation driver — Wayland ticks on the compositor's frame
+    /// callback (winit throttles RedrawRequested to it), X11 has no
+    /// reliable vsync so it keeps the 16ms timer.
     pub fn pump(&mut self) -> Option<Instant> {
         if let Imp::Wl(wl) = &mut self.imp {
             // winit reads the display fd; our queue's buffered events
@@ -293,13 +314,30 @@ impl ChromeWin {
         let now = Instant::now();
         let was = self.stack.animating();
         self.stack.settle(now); // may kick off the idle-hide tween
-        if was || self.stack.animating() {
-            self.present();
-        }
-        if self.stack.animating() {
-            Some(now + Duration::from_millis(16))
-        } else {
-            self.stack.idle_deadline()
+        match self.imp {
+            Imp::Wl(_) => {
+                if self.stack.animating() {
+                    // vsync chain: RedrawRequested presents, then
+                    // re-requests — the 16ms wake only backstops a
+                    // coalesced-away request (occluded output)
+                    self.win.request_redraw();
+                    Some(now + Duration::from_millis(16))
+                } else {
+                    self.stack.idle_deadline()
+                }
+            }
+            Imp::X11(_) => {
+                // present while flying, plus the one settle that lands
+                // on the end-state — else the tween freezes a frame shy
+                if was || self.stack.animating() {
+                    self.present();
+                }
+                if self.stack.animating() {
+                    Some(now + Duration::from_millis(16))
+                } else {
+                    self.stack.idle_deadline()
+                }
+            }
         }
     }
 
