@@ -35,6 +35,9 @@ muda = "0.21.0"
 tray-icon = "0.26.0"
 # tray-icon/muda call gtk; linux runs them on a dedicated gtk::main() thread
 gtk = "0.18"
+gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
+cairo-rs = { version = "0.18", features = ["v1_16"] }
+gdk = "0.18"
 # kde wayland hotkey goes through the GlobalShortcuts portal (zbus);
 # async-io/futures-lite drive the portal Response/Activated signals
 zbus = { version = "5", features = ["blocking"] }
@@ -47,6 +50,7 @@ raw-window-handle = "0.6"
 libc = "0.2"
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-sys = { version = "0.31", features = ["client", "dlopen"] }
 x11rb = { version = "0.13", features = ["shape"] }
 

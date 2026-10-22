@@ -24,6 +24,10 @@ mod imp;
 #[path = "chrome/windows.rs"]
 mod imp;
 #[cfg(target_os = "linux")]
+pub mod gtk_album;
+#[cfg(target_os = "linux")]
+pub mod gtk_layer;
+#[cfg(target_os = "linux")]
 #[path = "chrome/linux.rs"]
 mod imp;
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -54,6 +58,14 @@ const HIDE_MS: f64 = 280.0; // slide-away
 const UNHIDE_MS: f64 = 200.0; // slide-back
                               // thumbs slide fully off-screen when hidden — the edge-docked chip
                               // is the grab handle (a sliver + chip read as two disjoint artifacts)
+
+/// Corner shelf panel — wide enough for a pinned fan, short enough not
+/// to read as a fullscreen overlay (Linux/macOS compact chrome).
+pub(super) fn shelf_logical_size() -> (f64, f64) {
+    let w = MARGIN * 2.0 + TW + (MAX_VIS_PINNED as f64 - 1.0) * FAN;
+    let h = MARGIN * 2.0 + TH + FAN + 48.0; // chip + clear pill
+    (w, h)
+}
 
 /* ---- ui-2026 tokens ---- */
 const CARD: u32 = 0x0A0A0A;
@@ -298,6 +310,15 @@ impl Stack {
             press: None,
             corner,
         }
+    }
+
+    pub(super) fn set_corner(&mut self, corner: Corner) {
+        self.corner = corner;
+    }
+
+    /// Lightbox or in-chrome menu — layer-shell needs exclusive keyboard.
+    pub(super) fn modal_open(&self) -> bool {
+        self.lightbox.is_some() || self.menu.is_some()
     }
 
     /// Queue the fly-in; `from` is the selection rect in window-local
@@ -1919,6 +1940,16 @@ impl Chrome {
     pub fn pos(&self) -> &str {
         &self.pos
     }
+
+    /// Settings → Appearance dock corner; existing stacks retarget in place.
+    pub fn set_popup_pos(&mut self, pos: &str) {
+        self.pos = pos.to_string();
+        let corner = Corner::from_popup_pos(pos);
+        for w in &mut self.wins {
+            w.set_dock_corner(corner);
+            w.redraw();
+        }
+    }
 }
 
 /* ==================== entry point (shared by every backend) ========== */
@@ -1960,13 +1991,17 @@ fn mon_key(m: &MonitorHandle) -> String {
 /// so the host can fall back to the quick-access card.
 fn land(chrome: &mut Chrome, el: &ActiveEventLoop, l: Land) -> Result<(), Land> {
     let Some(mon) = monitor_for(el, l.sel) else {
+        eprintln!("chrome land: no monitor for selection {:?}", l.sel);
         return Err(l);
     };
     let key = mon_key(&mon);
     if chrome.wins.iter().all(|w| w.mon_key() != key) {
         let font = Rc::new(match crate::settings::system_font() {
             Ok(f) => f,
-            Err(_) => return Err(l),
+            Err(e) => {
+                eprintln!("chrome land: system font: {e:#}");
+                return Err(l);
+            }
         });
         let corner = Corner::from_popup_pos(chrome.pos());
         let w = match ChromeWin::new(el, &mon, corner, font, chrome.accent()) {

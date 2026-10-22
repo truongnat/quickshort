@@ -28,6 +28,9 @@ impl ChromeWin {
     pub fn id(&self) -> WindowId {
         unreachable!()
     }
+    pub(super) fn set_dock_corner(&mut self, _corner: super::Corner) {
+        unreachable!()
+    }
     pub(super) fn mon_key(&self) -> &str {
         unreachable!()
     }

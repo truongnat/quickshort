@@ -169,9 +169,7 @@ impl QuickAccess {
             .with_inner_size(LogicalSize::new(W, H));
         let win = Rc::new(el.create_window(attrs).context("card window")?);
         crate::widgets::round_window(&win, 11.0);
-        if let Some(m) = crate::widgets::popup_monitor(el) {
-            win.set_outer_position(crate::widgets::dock_pos(pos, &m, W, H));
-        }
+        crate::widgets::place_popup(&win, el, pos, W, H);
         let surf = SbContext::new(win.clone())
             .and_then(|c| Surface::new(&c, win.clone()))
             .map_err(|e| anyhow::anyhow!("card surface: {e}"))?;

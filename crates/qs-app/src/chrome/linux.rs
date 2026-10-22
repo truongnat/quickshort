@@ -1,8 +1,6 @@
-//! Linux chrome backend: one undecorated borderless-fullscreen winit
-//! window per monitor, presented as a `wl_shm` buffer on Wayland or an
-//! XPutImage onto winit's 32-bit ARGB visual on X11 — picked from the
-//! raw window handle winit actually produced, so `XDG_SESSION_TYPE` and
-//! distro session quirks can't mismatch our upload path.
+//! Linux chrome backend: on Wayland a **layer-shell** corner shelf (desktop
+//! overlay, not an app toplevel); on X11 a positioned winit window with
+//! skip-taskbar. Pixels go through `wl_shm` on Wayland or XPutImage on X11.
 //!
 //! Click-through comes from the compositor's own input routing:
 //! `wl_surface_set_input_region` / XSHAPE `SK_INPUT` confine delivery to
@@ -20,21 +18,25 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use qs_overlay::sdf::Canvas;
+#[cfg(target_os = "linux")]
+use winit::platform::wayland::WindowAttributesExtWayland;
+#[cfg(target_os = "linux")]
+use winit::platform::x11::{WindowAttributesExtX11, WindowType as X11WindowType};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-use winit::dpi::PhysicalPosition;
+use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::monitor::MonitorHandle;
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
-use super::{ChromeCmd, ChromeEv, Corner, FRect, Key, Land, Stack};
+use super::{shelf_logical_size, ChromeCmd, ChromeEv, Corner, FRect, Key, Land, Stack};
 
 /* ==================== window ==================== */
 
 /// One chrome surface per monitor.
 pub struct ChromeWin {
-    win: Window,
+    win: Rc<Window>,
     imp: Imp,
     pub stack: Stack,
     /// premul `A<<24|B<<16|G<<8|R` — memory RGBA, the wl_shm ABGR8888 layout
@@ -56,6 +58,17 @@ pub struct ChromeWin {
     scale: f64,
     font: Rc<fontdue::Font>,
     accent: u32,
+    /// macOS paints before `setVisible:` — map only after the first
+    /// frame with stack pixels so GNOME doesn't flash a fullscreen black
+    /// layer while the buffer is still empty.
+    shown: bool,
+    /// Wayland layer-shell: logical shelf size is fixed; winit only holds
+    /// a 1×1 handle for WindowId (not the visible surface).
+    fixed_shelf: bool,
+    /// macOS-style full-monitor overlay (gtk-layer-shell on GNOME).
+    full_monitor: bool,
+    /// Pixels go to winit's surface — must map the window (GNOME has no zwlr).
+    winit_maps: bool,
 }
 
 /// The presenter — chosen once from the raw handle; Wayland marshals
@@ -63,7 +76,125 @@ pub struct ChromeWin {
 /// private xcb connection.
 enum Imp {
     Wl(Wl),
+    Gtk(super::gtk_layer::GtkLayer),
     X11(X11),
+    /// GTK utility overlay on the tray thread (GNOME — no "Unknown" app).
+    GtkAlbum(super::gtk_album::GtkAlbum),
+}
+
+/// Physical outer position for the shelf panel on `mon`.
+fn shelf_outer_pos(
+    mon: &MonitorHandle,
+    corner: Corner,
+    sw: f64,
+    sh: f64,
+) -> PhysicalPosition<f64> {
+    let sf = mon.scale_factor();
+    let mp = mon.position();
+    let ms = mon.size();
+    let side = 20.0 * sf;
+    let top = 20.0 * sf;
+    let x = if corner.right() {
+        mp.x as f64 + ms.width as f64 - sw * sf - side
+    } else if corner == Corner::TC || corner == Corner::BC {
+        mp.x as f64 + (ms.width as f64 - sw * sf) / 2.0
+    } else {
+        mp.x as f64 + side
+    };
+    let y = if corner.bottom() {
+        mp.y as f64 + ms.height as f64 - sh * sf - side
+    } else {
+        mp.y as f64 + top
+    };
+    PhysicalPosition::new(x, y)
+}
+
+thread_local! {
+    /// One hidden winit handle for GTK album stacks — avoids a wl_surface per
+    /// monitor (GNOME protocol errors after overlay teardown).
+    static GTK_HANDLE: RefCell<Option<Rc<Window>>> = const { RefCell::new(None) };
+}
+
+fn gtk_winit_handle(el: &ActiveEventLoop) -> Result<Rc<Window>> {
+    GTK_HANDLE.with(|h| {
+        if let Some(w) = h.borrow().as_ref() {
+            return Ok(w.clone());
+        }
+        let attrs = Window::default_attributes()
+            .with_title("quickshort-chrome")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_visible(false)
+            .with_active(false)
+            .with_inner_size(LogicalSize::new(2.0, 2.0));
+        let win = Rc::new(
+            el.create_window(attrs)
+                .context("chrome gtk winit handle")?,
+        );
+        *h.borrow_mut() = Some(win.clone());
+        Ok(win)
+    })
+}
+
+fn winit_chrome_window(
+    el: &ActiveEventLoop,
+    mon: &MonitorHandle,
+    corner: Corner,
+    sw: f64,
+    sh: f64,
+) -> Result<Rc<Window>> {
+    let outer = shelf_outer_pos(mon, corner, sw, sh);
+    let mut attrs = Window::default_attributes()
+        .with_title("Quickshort")
+        .with_transparent(true)
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_visible(false)
+        .with_active(false)
+        .with_window_level(WindowLevel::AlwaysOnTop)
+        .with_inner_size(LogicalSize::new(sw, sh))
+        .with_position(outer);
+    #[cfg(wayland_platform)]
+    {
+        use winit::platform::wayland::WindowAttributesExtWayland as _;
+        attrs = attrs.with_name("quickshort", "quickshort-chrome");
+    }
+    #[cfg(x11_platform)]
+    {
+        use winit::platform::x11::WindowAttributesExtX11 as _;
+        attrs = attrs.with_x11_window_type(vec![
+            X11WindowType::Utility,
+            X11WindowType::Notification,
+        ]);
+        attrs = attrs.with_name("quickshort", "quickshort-chrome");
+    }
+    Ok(Rc::new(el.create_window(attrs).context("chrome window")?))
+}
+
+fn try_gtk_album(
+    mon: &MonitorHandle,
+    corner: Corner,
+    sw: f64,
+    sh: f64,
+    scale: f64,
+) -> Result<super::gtk_album::GtkAlbum> {
+    if std::env::var("WAYLAND_DISPLAY")
+        .ok()
+        .is_none_or(|s| s.is_empty())
+    {
+        anyhow::bail!("not wayland");
+    }
+    let out = mon.name();
+    let pos = mon.position();
+    super::gtk_album::GtkAlbum::new(
+        corner,
+        sw,
+        sh,
+        scale,
+        out.clone(),
+        pos.x,
+        pos.y,
+    )
 }
 
 impl ChromeWin {
@@ -75,27 +206,60 @@ impl ChromeWin {
         accent: u32,
     ) -> Result<Self> {
         let sf = mon.scale_factor();
-        let attrs = Window::default_attributes()
-            .with_title("quickshort chrome")
-            .with_transparent(true)
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_visible(true)
-            // don't steal focus on map — keyboard nav is picked up on
-            // first click instead
-            .with_active(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
-            // fullscreen is a state, so the compositor positions us —
-            // no fragile override-redirect or manual stacking games
-            .with_fullscreen(Some(Fullscreen::Borderless(Some(mon.clone()))));
-        let win = el.create_window(attrs).context("chrome window")?;
-        let imp = Imp::new(&win)?;
-
-        let size = win.inner_size();
-        let (pw, ph) = (size.width as usize, size.height as usize);
-        let (lw, lh) = (pw as f64 / sf, ph as f64 / sf);
         let pos = mon.position();
-        let (mx, my) = (pos.x as f64 / sf, pos.y as f64 / sf);
+        let ms = mon.size();
+        let (mlw, mlh) = (ms.width as f64 / sf, ms.height as f64 / sf);
+        let (sw, sh) = shelf_logical_size();
+        let (win, imp) = match try_gtk_album(mon, corner, sw, sh, sf) {
+            Ok(album) => (gtk_winit_handle(el)?, Imp::GtkAlbum(album)),
+            Err(e) => {
+                eprintln!("chrome: gtk-album unavailable ({e:#}) — wl/x11 fallback");
+                let win = winit_chrome_window(el, mon, corner, sw, sh)?;
+                (win.clone(), Imp::new(&win, mon, corner, mlw, mlh, sw, sh, sf)?)
+            }
+        };
+        if let Imp::GtkAlbum(a) = &imp {
+            a.bind_winit(win.id());
+        }
+        let gtk_shelf = matches!(imp, Imp::GtkAlbum(_));
+        let fixed_shelf = imp.layer_mode();
+        let winit_maps = matches!(&imp, Imp::X11(_));
+        // macOS / layer-shell: full-monitor canvas. GNOME gtk-album: shelf only.
+        let mut full_monitor = if gtk_shelf {
+            false
+        } else {
+            matches!(imp, Imp::Gtk(_)) || fixed_shelf || winit_maps
+        };
+        let mut sf = sf;
+        if winit_maps {
+            win.set_fullscreen(Some(Fullscreen::Borderless(Some(mon.clone()))));
+        }
+        let (mut lw, mut lh) = if full_monitor {
+            (mlw, mlh)
+        } else {
+            let size = win.inner_size();
+            (size.width as f64 / sf, size.height as f64 / sf)
+        };
+        if let Imp::Gtk(g) = &imp {
+            lw = g.lw;
+            lh = g.lh;
+            sf = g.scale;
+        }
+        if let Imp::GtkAlbum(g) = &imp {
+            lw = g.lw;
+            lh = g.lh;
+            sf = g.scale;
+        }
+        let (pw, ph) = (
+            (lw * sf).round().max(1.0) as usize,
+            (lh * sf).round().max(1.0) as usize,
+        );
+        let (mx, my) = if gtk_shelf {
+            let outer = shelf_outer_pos(mon, corner, sw, sh);
+            (outer.x / sf, outer.y / sf)
+        } else {
+            (pos.x as f64 / sf, pos.y as f64 / sf)
+        };
 
         Ok(Self {
             win,
@@ -114,11 +278,42 @@ impl ChromeWin {
             scale: sf,
             font,
             accent,
+            shown: false,
+            fixed_shelf,
+            full_monitor,
+            winit_maps,
         })
+    }
+
+    fn reveal_if_ready(&mut self, painted: bool) {
+        // zwlr/gtk layer — winit is only a 1×1 handle; mapping it lands
+        // a shelf-sized surface in the compositor's default placement.
+        if !self.winit_maps {
+            if painted {
+                self.shown = true;
+            }
+            return;
+        }
+        if !self.shown && painted {
+            self.win.set_visible(true);
+            self.win.request_redraw();
+            self.shown = true;
+        }
     }
 
     pub fn id(&self) -> WindowId {
         self.win.id()
+    }
+
+    /// Settings → Appearance: retarget layer-shell anchor (Wayland) or
+    /// stack layout (all paths).
+    pub(super) fn set_dock_corner(&mut self, corner: Corner) {
+        self.stack.set_corner(corner);
+        match &mut self.imp {
+            Imp::Wl(w) => w.set_layer_corner(corner),
+            Imp::Gtk(g) => g.set_layer_corner(corner),
+            _ => {}
+        }
     }
     pub(super) fn mon_key(&self) -> &str {
         &self.mon_key
@@ -149,11 +344,17 @@ impl ChromeWin {
         // track size/scale drift (fractional-scale flips, mode changes)
         // here instead of a dedicated resize path - buffers simply
         // follow inner_size each frame
-        let size = self.win.inner_size();
         self.scale = self.win.scale_factor();
-        let (pw, ph) = (size.width.max(1) as usize, size.height.max(1) as usize);
-        self.lw = pw as f64 / self.scale;
-        self.lh = ph as f64 / self.scale;
+        if !self.fixed_shelf && !self.full_monitor {
+            let size = self.win.inner_size();
+            let (pw, ph) = (size.width.max(1) as usize, size.height.max(1) as usize);
+            self.lw = pw as f64 / self.scale;
+            self.lh = ph as f64 / self.scale;
+        }
+        let (pw, ph) = (
+            (self.lw * self.scale).round().max(1.0) as usize,
+            (self.lh * self.scale).round().max(1.0) as usize,
+        );
         if self.buf.len() != pw * ph {
             self.buf = vec![0; pw * ph];
         }
@@ -185,9 +386,6 @@ impl ChromeWin {
         // commit. Without it FrameCallbackState stays None and every
         // request_redraw delivers RedrawRequested immediately - an
         // unthrottled busy-loop instead of vsync-paced animation.
-        if matches!(self.imp, Imp::Wl(_)) {
-            self.win.pre_present_notify();
-        }
         // dirty in physical px for the backends
         let dirty = bounds.map(|b| FRect {
             x: b.x * self.scale,
@@ -195,8 +393,15 @@ impl ChromeWin {
             w: b.w * self.scale,
             h: b.h * self.scale,
         });
+        if self.fixed_shelf {
+            if let Imp::Wl(w) = &mut self.imp {
+                w.sync_layer_keyboard(self.stack.modal_open());
+            }
+        }
+        let show = self.shown || bounds.is_some() || self.stack.animating();
         self.imp
-            .present(&self.buf, pw, ph, &rects, self.scale, dirty);
+            .present(&self.buf, pw, ph, &rects, self.scale, dirty, show);
+        self.reveal_if_ready(bounds.is_some() || self.stack.animating());
     }
 
     /// Fly a finished shot into this monitor's stack.
@@ -215,12 +420,48 @@ impl ChromeWin {
                 w: 120.0,
                 h: 80.0,
             });
-        // no reduce-motion query wired up on Linux — `instant` stands in
-        let rm = l.instant;
+        let rm = l.instant || !self.full_monitor;
         let scale = self.scale;
         self.stack
             .land(l.img, l.kind, l.path, from, rm, scale, l.dur_s, l.shared);
-        self.present();
+        if self.winit_maps {
+            if !self.shown {
+                self.win.set_visible(true);
+                self.shown = true;
+            }
+            self.win.request_redraw();
+        } else {
+            self.present();
+        }
+    }
+
+    fn apply_wl_input(&mut self, ev: WlChromeInput) {
+        match ev {
+            WlChromeInput::Move { x, y } => {
+                self.cursor = PhysicalPosition::new(x * self.scale, y * self.scale);
+                self.emit(if self.held {
+                    ChromeEv::Dragged { x, y }
+                } else {
+                    ChromeEv::Move { x, y }
+                });
+            }
+            WlChromeInput::Leave => {
+                self.held = false;
+                self.emit(ChromeEv::Leave);
+            }
+            WlChromeInput::Down { x, y } => {
+                self.held = true;
+                self.emit(ChromeEv::Down { x, y });
+            }
+            WlChromeInput::Up { x, y } => {
+                self.held = false;
+                self.emit(ChromeEv::Up { x, y });
+            }
+            WlChromeInput::RightDown { x, y } => {
+                self.emit(ChromeEv::RightDown { x, y });
+            }
+            WlChromeInput::Key(k) => self.emit(ChromeEv::Key(k)),
+        }
     }
 
     /// Platform event → stack → optional host command. Redraw is handled
@@ -333,26 +574,41 @@ impl ChromeWin {
     /// reliable vsync so it keeps the 16ms timer.
     pub fn pump(&mut self) -> Option<Instant> {
         if let Imp::Wl(wl) = &mut self.imp {
-            // winit reads the display fd; our queue's buffered events
-            // (buffer.release) still need dispatching by us
             wl.dispatch();
+            for ev in wl.take_inputs() {
+                self.apply_wl_input(ev);
+            }
         }
         let now = Instant::now();
         let was = self.stack.animating();
         self.stack.settle(now); // may kick off the idle-hide tween
-        match self.imp {
-            Imp::Wl(_) => {
+        match &self.imp {
+            Imp::Wl(w) if self.fixed_shelf && !w.is_live() => {
+                // layer-shell still wiring — keep trying each tick
+                Some(now + Duration::from_millis(16))
+            }
+            Imp::Wl(_) if self.fixed_shelf => {
+                if was || self.stack.animating() || !self.shown {
+                    self.present();
+                }
                 if self.stack.animating() {
-                    // vsync chain: RedrawRequested presents, then
-                    // re-requests — the 16ms wake only backstops a
-                    // coalesced-away request (occluded output)
+                    Some(now + Duration::from_millis(16))
+                } else {
+                    self.stack.idle_deadline()
+                }
+            }
+            Imp::Wl(_) => {
+                if was || self.stack.animating() || !self.shown {
+                    self.present();
+                }
+                if self.stack.animating() {
                     self.win.request_redraw();
                     Some(now + Duration::from_millis(16))
                 } else {
                     self.stack.idle_deadline()
                 }
             }
-            Imp::X11(_) => {
+            Imp::GtkAlbum(_) | Imp::Gtk(_) | Imp::X11(_) => {
                 // present while flying, plus the one settle that lands
                 // on the end-state — else the tween freezes a frame shy
                 if was || self.stack.animating() {
@@ -374,7 +630,16 @@ impl ChromeWin {
 }
 
 impl Imp {
-    fn new(win: &Window) -> Result<Self> {
+    fn new(
+        win: &Window,
+        mon: &MonitorHandle,
+        corner: Corner,
+        mlw: f64,
+        mlh: f64,
+        sw: f64,
+        sh: f64,
+        scale: f64,
+    ) -> Result<Self> {
         match win
             .window_handle()
             .map_err(|e| anyhow!("chrome handle: {e}"))?
@@ -388,12 +653,29 @@ impl Imp {
                 else {
                     anyhow::bail!("wayland surface without wayland display");
                 };
-                Wl::new(dh.display.as_ptr(), h.surface.as_ptr()).map(Self::Wl)
+                let display = dh.display.as_ptr();
+                let out = mon.name();
+                match Wl::new_layer_foreign(display, corner, mlw, mlh, scale, out.as_deref()) {
+                    Ok(w) => {
+                        eprintln!("chrome: layer-shell on winit display");
+                        return Ok(Self::Wl(w));
+                    }
+                    Err(e) => eprintln!("chrome: foreign layer: {e:#}"),
+                }
+                match Wl::new_layer(corner, mlw, mlh, scale, out.as_deref()) {
+                    Ok(w) => return Ok(Self::Wl(w)),
+                    Err(e) => eprintln!("chrome: env layer: {e:#}"),
+                }
+                anyhow::bail!("wayland chrome: gtk album should be created before winit window");
             }
             RawWindowHandle::Xlib(h) => X11::new(h.window as u32).map(Self::X11),
             RawWindowHandle::Xcb(h) => X11::new(h.window.get()).map(Self::X11),
             other => anyhow::bail!("chrome: unsupported linux display backend {other:?}"),
         }
+    }
+
+    fn layer_mode(&self) -> bool {
+        matches!(self, Self::Wl(w) if w.layer_mode())
     }
 
     fn present(
@@ -404,9 +686,12 @@ impl Imp {
         rects: &[FRect],
         scale: f64,
         dirty: Option<FRect>,
+        visible: bool,
     ) {
         match self {
             Self::Wl(w) => w.present(buf, pw, ph, rects, dirty),
+            Self::Gtk(g) => g.present(buf, pw, ph, rects, scale, dirty),
+            Self::GtkAlbum(g) => g.present(buf, pw, ph, rects, scale, dirty, visible),
             Self::X11(x) => x.present(buf, pw, ph, rects, scale, dirty),
         }
     }
@@ -414,18 +699,51 @@ impl Imp {
 
 /* ==================== wayland ==================== */
 
-use std::os::unix::io::{BorrowedFd, RawFd};
+use std::os::fd::AsFd;
+use std::os::unix::io::{AsRawFd, BorrowedFd, RawFd};
 
 use wayland_client::protocol::{
     wl_buffer::{self, WlBuffer},
     wl_compositor::{self, WlCompositor},
+    wl_keyboard::{self, WlKeyboard},
+    wl_output::{self, WlOutput},
+    wl_pointer::{self, WlPointer},
     wl_region::{self, WlRegion},
     wl_registry::{self, WlRegistry},
+    wl_seat::{self, Capability, WlSeat},
     wl_shm::{self, WlShm},
     wl_shm_pool::{self, WlShmPool},
+    wl_surface::{self, WlSurface},
 };
 use wayland_client::{Connection as WlConn, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+use wayland_protocols_wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1::{self, Layer, ZwlrLayerShellV1},
+    zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
+};
 use wayland_sys::client::{wayland_client_handle, wl_proxy};
+
+/// Pointer events from a zwlr_layer_surface (winit doesn't route these).
+enum WlChromeInput {
+    Move { x: f64, y: f64 },
+    Leave,
+    Down { x: f64, y: f64 },
+    Up { x: f64, y: f64 },
+    RightDown { x: f64, y: f64 },
+    Key(Key),
+}
+
+/// Linux evdev scancode (wl keycode = evdev + 8).
+fn wl_keycode(code: u32) -> Option<Key> {
+    match code {
+        9 => Some(Key::Esc),
+        22 => Some(Key::Back),
+        36 => Some(Key::Enter),
+        113 => Some(Key::Left),
+        114 => Some(Key::Right),
+        65 => Some(Key::Space),
+        _ => None,
+    }
+}
 
 /// wl_surface request opcodes (the core protocol is wire-stable).
 const SURFACE_ATTACH: u32 = 1;
@@ -450,6 +768,40 @@ struct Wl {
     conn: WlConn,
     queue: EventQueue<WlState>,
     state: WlState,
+    /// Desktop overlay — not winit's xdg-toplevel surface.
+    layer_mode: bool,
+    /// Layer surface configured — safe to attach buffers.
+    live: bool,
+}
+
+fn layer_anchor_full() -> Anchor {
+    Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right
+}
+
+fn layer_anchor(corner: Corner) -> Anchor {
+    let mut a = Anchor::empty();
+    match corner {
+        Corner::TL | Corner::TC | Corner::TR => a |= Anchor::Top,
+        Corner::BL | Corner::BC | Corner::BR => a |= Anchor::Bottom,
+    }
+    match corner {
+        Corner::TL | Corner::BL => a |= Anchor::Left,
+        Corner::TR | Corner::BR => a |= Anchor::Right,
+        _ => {}
+    }
+    a
+}
+
+fn layer_margins(corner: Corner) -> (i32, i32, i32, i32) {
+    let m = 20;
+    match corner {
+        Corner::TR => (m, m, 0, 0),
+        Corner::TL => (m, 0, 0, m),
+        Corner::BR => (0, m, m, 0),
+        Corner::BL => (0, 0, m, m),
+        Corner::TC => (m, 0, 0, 0),
+        Corner::BC => (0, 0, m, 0),
+    }
 }
 
 /// One pooled shm buffer. `busy` flips off on wl_buffer.release — the
@@ -479,6 +831,13 @@ struct WlBuf {
 struct WlState {
     compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
+    layer_shell: Option<ZwlrLayerShellV1>,
+    layer_surface: Option<ZwlrLayerSurfaceV1>,
+    chrome_surface: Option<WlSurface>,
+    outputs: Vec<(WlOutput, String)>,
+    seat: Option<WlSeat>,
+    pointer: Option<WlPointer>,
+    keyboard: Option<WlKeyboard>,
     /// formats the compositor advertised on wl_shm — argb8888/xrgb8888
     /// are the only guaranteed ones; abgr8888 (our native packing) is
     /// optional and weston refuses create_buffer with it
@@ -486,10 +845,58 @@ struct WlState {
     bufs: Vec<Option<WlBuf>>,
     /// slot indices released by the server since the last dispatch
     released: Vec<usize>,
+    inputs: Vec<WlChromeInput>,
+    pointer_scale: f64,
+    pointer_x: f64,
+    pointer_y: f64,
+    layer_configured: bool,
+    /// registry globals seen (debug when layer-shell is missing)
+    wl_globals: Vec<String>,
 }
 
 impl Wl {
-    fn new(display: *mut c_void, surface: *mut c_void) -> Result<Self> {
+    fn layer_mode(&self) -> bool {
+        self.layer_mode
+    }
+
+    fn is_live(&self) -> bool {
+        !self.layer_mode || self.live
+    }
+
+    fn take_inputs(&mut self) -> Vec<WlChromeInput> {
+        std::mem::take(&mut self.state.inputs)
+    }
+
+    fn set_layer_corner(&mut self, corner: Corner) {
+        if !self.layer_mode {
+            return;
+        }
+        if let Some(layer) = &self.state.layer_surface {
+            let _ = corner;
+            layer.set_anchor(layer_anchor_full());
+            layer.set_margin(0, 0, 0, 0);
+            let _ = self.conn.flush();
+        }
+    }
+
+    fn sync_layer_keyboard(&mut self, modal: bool) {
+        if !self.layer_mode {
+            return;
+        }
+        if let Some(layer) = &self.state.layer_surface {
+            let ki = if modal {
+                KeyboardInteractivity::Exclusive
+            } else {
+                KeyboardInteractivity::OnDemand
+            };
+            layer.set_keyboard_interactivity(ki);
+            let _ = self.conn.flush();
+        }
+    }
+
+    /// Present on winit's wl_surface (corner shelf window) when layer-shell
+    /// isn't offered — no roundtrip (winit already owns the registry).
+    fn new_foreign(display: *mut c_void, surface: *mut c_void) -> Result<Self> {
         let backend =
             unsafe { wayland_backend::client::Backend::from_foreign_display(display.cast()) };
         let conn = WlConn::from_backend(backend);
@@ -499,27 +906,178 @@ impl Wl {
         let mut state = WlState::default();
         queue
             .roundtrip(&mut state)
-            .context("wl registry roundtrip")?;
-        // wl_registry has no destroy request — dropping it is enough
+            .context("foreign wl registry")?;
         drop(registry);
-        if state.compositor.is_none() {
-            anyhow::bail!("compositor offers no wl_compositor");
+        if state.compositor.is_none() || state.shm.is_none() {
+            anyhow::bail!("foreign wl missing compositor/shm");
         }
-        if state.shm.is_none() {
-            anyhow::bail!("compositor offers no wl_shm");
-        }
+        eprintln!("chrome: winit shelf present (no layer-shell)");
         Ok(Self {
             surface: surface as *mut wl_proxy,
             conn,
             queue,
             state,
+            layer_mode: false,
+            live: true,
         })
+    }
+
+    fn new_layer_foreign(
+        display: *mut c_void,
+        corner: Corner,
+        lw: f64,
+        lh: f64,
+        scale: f64,
+        output_name: Option<&str>,
+    ) -> Result<Self> {
+        let backend =
+            unsafe { wayland_backend::client::Backend::from_foreign_display(display.cast()) };
+        let conn = WlConn::from_backend(backend);
+        Self::finish_layer(conn, corner, lw, lh, scale, output_name)
+    }
+
+    /// zwlr_layer_shell on a **separate** socket — try when foreign display
+    /// doesn't advertise the global (some compositors are picky).
+    fn new_layer(
+        corner: Corner,
+        lw: f64,
+        lh: f64,
+        scale: f64,
+        output_name: Option<&str>,
+    ) -> Result<Self> {
+        let conn = WlConn::connect_to_env().context("WAYLAND_DISPLAY for album layer")?;
+        Self::finish_layer(conn, corner, lw, lh, scale, output_name)
+    }
+
+    fn finish_layer(
+        conn: WlConn,
+        corner: Corner,
+        lw: f64,
+        lh: f64,
+        scale: f64,
+        output_name: Option<&str>,
+    ) -> Result<Self> {
+        let mut queue = conn.new_event_queue();
+        let qh = queue.handle();
+        let registry = conn.display().get_registry(&qh, ());
+        let mut state = WlState {
+            pointer_scale: scale,
+            ..WlState::default()
+        };
+        queue
+            .roundtrip(&mut state)
+            .context("layer wl registry")?;
+        let _ = queue.roundtrip(&mut state);
+        drop(registry);
+        let compositor = state
+            .compositor
+            .as_ref()
+            .context("layer: no wl_compositor")?;
+        let layer_shell = state.layer_shell.as_ref().with_context(|| {
+            format!(
+                "layer: no zwlr_layer_shell_v1 (compositor={}, shm={}, outputs={}, globals=[{}])",
+                state.compositor.is_some(),
+                state.shm.is_some(),
+                state.outputs.len(),
+                state.wl_globals.join(", ")
+            )
+        })?;
+        let output = output_name.and_then(|want| {
+            state
+                .outputs
+                .iter()
+                .find(|(_, n)| n == want)
+                .map(|(o, _)| o)
+        });
+        if output_name.is_some() && output.is_none() {
+            eprintln!(
+                "chrome: wl_output {:?} not found — anchoring layer to default output",
+                output_name
+            );
+        }
+        let surface = compositor.create_surface(&qh, ());
+        let layer = layer_shell.get_layer_surface(
+            &surface,
+            output,
+            Layer::Overlay,
+            "quickshort-album".into(),
+            &qh,
+            (),
+        );
+        // Full output like macOS — stack layout picks the dock corner.
+        layer.set_anchor(layer_anchor_full());
+        layer.set_margin(0, 0, 0, 0);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        let pw = (lw * scale).round().max(1.0) as u32;
+        let ph = (lh * scale).round().max(1.0) as u32;
+        layer.set_size(pw, ph);
+        state.layer_surface = Some(layer);
+        state.chrome_surface = Some(surface);
+        if let Some(seat) = state.seat.as_ref() {
+            seat.get_pointer(&qh, ());
+            seat.get_keyboard(&qh, ());
+        }
+        queue
+            .roundtrip(&mut state)
+            .context("layer surface configure")?;
+        if !state.layer_configured {
+            anyhow::bail!("layer surface never configured");
+        }
+        let surface_ptr = state
+            .chrome_surface
+            .as_ref()
+            .context("layer surface missing")?
+            .id()
+            .as_ptr() as *mut wl_proxy;
+        eprintln!(
+            "chrome: layer-shell album docked ({}×{} logical)",
+            lw, lh
+        );
+        Ok(Self {
+            surface: surface_ptr,
+            conn,
+            queue,
+            state,
+            layer_mode: true,
+            live: true,
+        })
+    }
+
+    /// Non-blocking read + dispatch for our private Wayland connection.
+    fn pump_connection(&mut self) {
+        let _ = self.conn.flush();
+        loop {
+            if self.queue.dispatch_pending(&mut self.state).unwrap_or(0) == 0 {
+                break;
+            }
+        }
+        if let Some(guard) = self.conn.prepare_read() {
+            let fd = {
+                let backend = self.conn.backend();
+                backend.poll_fd().as_fd().as_raw_fd()
+            };
+            let mut p = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut p, 1, 0) } > 0 && p.revents & libc::POLLIN != 0 {
+                let _ = guard.read();
+            }
+        }
+        loop {
+            if self.queue.dispatch_pending(&mut self.state).unwrap_or(0) == 0 {
+                break;
+            }
+        }
     }
 
     /// Drain buffered events — marks released buffers reusable. Called
     /// from `pump` because winit owns the display fd's read path.
     fn dispatch(&mut self) {
-        if self.queue.dispatch_pending(&mut self.state).is_err() {
+        if self.layer_mode {
+            self.pump_connection();
+        } else if self.queue.dispatch_pending(&mut self.state).is_err() {
             return;
         }
         for i in self.state.released.drain(..) {
@@ -667,6 +1225,9 @@ impl Wl {
         rects: &[FRect],
         dirty: Option<FRect>,
     ) {
+        if self.layer_mode && (!self.live || self.surface.is_null()) {
+            return;
+        }
         let (w, h) = (pw as i32, ph as i32);
         let qh = self.queue.handle();
         let Some(idx) = self.slot(&qh, buf, w, h, dirty) else {
@@ -857,6 +1418,167 @@ fn write_shm_rows(
     Some(())
 }
 
+impl Dispatch<WlSurface, ()> for WlState {
+    fn event(
+        _: &mut Self,
+        _: &WlSurface,
+        _: wl_surface::Event,
+        _: &(),
+        _: &WlConn,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+impl Dispatch<ZwlrLayerShellV1, ()> for WlState {
+    fn event(
+        _: &mut Self,
+        _: &ZwlrLayerShellV1,
+        _: zwlr_layer_shell_v1::Event,
+        _: &(),
+        _: &WlConn,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+impl Dispatch<ZwlrLayerSurfaceV1, ()> for WlState {
+    fn event(
+        state: &mut Self,
+        layer: &ZwlrLayerSurfaceV1,
+        ev: zwlr_layer_surface_v1::Event,
+        _: &(),
+        _: &WlConn,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = ev {
+            layer.ack_configure(serial);
+            state.layer_configured = true;
+        }
+    }
+}
+impl Dispatch<WlSeat, ()> for WlState {
+    fn event(
+        state: &mut Self,
+        seat: &WlSeat,
+        ev: wl_seat::Event,
+        _: &(),
+        _: &WlConn,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(caps),
+        } = ev
+        {
+            if caps.contains(Capability::Pointer) && state.pointer.is_none() {
+                state.pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if caps.contains(Capability::Keyboard) && state.keyboard.is_none() {
+                state.keyboard = Some(seat.get_keyboard(qh, ()));
+            }
+        }
+    }
+}
+impl Dispatch<WlKeyboard, ()> for WlState {
+    fn event(
+        state: &mut Self,
+        _: &WlKeyboard,
+        ev: wl_keyboard::Event,
+        _: &(),
+        _: &WlConn,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Key {
+            key,
+            state: WEnum::Value(wl_keyboard::KeyState::Pressed),
+            ..
+        } = ev
+        {
+            if let Some(k) = wl_keycode(key) {
+                state.inputs.push(WlChromeInput::Key(k));
+            }
+        }
+    }
+}
+impl Dispatch<WlOutput, ()> for WlState {
+    fn event(
+        state: &mut Self,
+        output: &WlOutput,
+        ev: wl_output::Event,
+        _: &(),
+        _: &WlConn,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = ev {
+            if let Some((_, n)) = state.outputs.iter_mut().find(|(o, _)| o == output) {
+                *n = name.to_string();
+            }
+        }
+    }
+}
+impl Dispatch<WlPointer, ()> for WlState {
+    fn event(
+        state: &mut Self,
+        _: &WlPointer,
+        ev: wl_pointer::Event,
+        _: &(),
+        _: &WlConn,
+        _: &QueueHandle<Self>,
+    ) {
+        let scale = state.pointer_scale;
+        let on_surface = |surf: &WlSurface| {
+            state
+                .chrome_surface
+                .as_ref()
+                .is_some_and(|s| s == surf)
+        };
+        match ev {
+            wl_pointer::Event::Enter { surface, surface_x, surface_y, .. } => {
+                if on_surface(&surface) {
+                    state.pointer_x = surface_x / scale;
+                    state.pointer_y = surface_y / scale;
+                    state.inputs.push(WlChromeInput::Move {
+                        x: state.pointer_x,
+                        y: state.pointer_y,
+                    });
+                }
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_x = surface_x / scale;
+                state.pointer_y = surface_y / scale;
+                state.inputs.push(WlChromeInput::Move {
+                    x: state.pointer_x,
+                    y: state.pointer_y,
+                });
+            }
+            wl_pointer::Event::Leave { .. } => state.inputs.push(WlChromeInput::Leave),
+            wl_pointer::Event::Button {
+                state: WEnum::Value(st),
+                button,
+                ..
+            } => {
+                let x = state.pointer_x;
+                let y = state.pointer_y;
+                match (st, button) {
+                    (wl_pointer::ButtonState::Pressed, 0x110) => {
+                        state.inputs.push(WlChromeInput::Down { x, y });
+                    }
+                    (wl_pointer::ButtonState::Released, 0x110) => {
+                        state.inputs.push(WlChromeInput::Up { x, y });
+                    }
+                    (wl_pointer::ButtonState::Pressed, 0x111) => {
+                        state.inputs.push(WlChromeInput::RightDown { x, y });
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<WlRegistry, ()> for WlState {
     fn event(
         state: &mut Self,
@@ -870,12 +1592,27 @@ impl Dispatch<WlRegistry, ()> for WlState {
             name, interface, ..
         } = event
         {
+            state.wl_globals.push(interface.to_string());
             match interface.as_str() {
                 "wl_compositor" => {
                     state.compositor = Some(registry.bind::<WlCompositor, _, _>(name, 1, qh, ()));
                 }
                 "wl_shm" => {
                     state.shm = Some(registry.bind::<WlShm, _, _>(name, 1, qh, ()));
+                }
+                "zwlr_layer_shell_v1" if state.layer_shell.is_none() => {
+                    state.layer_shell =
+                        Some(registry.bind::<ZwlrLayerShellV1, _, _>(name, 1, qh, ()));
+                }
+                other if other.contains("layer") => {
+                    eprintln!("chrome: wl global {other} (ignored)");
+                }
+                "wl_seat" if state.seat.is_none() => {
+                    state.seat = Some(registry.bind::<WlSeat, _, _>(name, 7, qh, ()));
+                }
+                "wl_output" => {
+                    let o = registry.bind::<WlOutput, _, _>(name, 4, qh, ());
+                    state.outputs.push((o, String::new()));
                 }
                 _ => {}
             }

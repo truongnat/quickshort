@@ -66,6 +66,7 @@ pub fn dispatch(
         Action::Save => {
             let p = save(&img, target)?;
             if copy_after_save {
+                eprintln!("copy_after_save (clipboard only — album uses Save above)");
                 copy_image_to_clipboard(&img, wait_clipboard);
             }
             Outcome::Saved(p)
@@ -460,8 +461,10 @@ fn wl_copy(mime: &str, data: &[u8]) -> bool {
 /// On Wayland the clipboard dies with the owning process — `set().wait()`
 /// keeps us alive serving paste requests until another app takes over.
 fn copy_image_to_clipboard(img: &RgbaImage, wait: bool) {
+    // Wayland: wl-copy forks a helper — survives after this call returns,
+    // so paste works without blocking the worker on `set().wait()`.
     #[cfg(target_os = "linux")]
-    if wait {
+    {
         let mut png = std::io::Cursor::new(Vec::new());
         if img.write_to(&mut png, image::ImageFormat::Png).is_ok()
             && wl_copy("image/png", &png.into_inner())

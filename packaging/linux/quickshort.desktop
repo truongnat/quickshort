@@ -7,3 +7,4 @@ Type=Application
 Categories=Utility;Graphics;
 Keywords=screenshot;snip;ocr;region;
 StartupNotify=false
+StartupWMClass=quickshort

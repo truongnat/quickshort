@@ -4,6 +4,7 @@
 //! mechanism it actually honors:
 //!
 //!   GNOME(-like)  gsettings custom keybindings → spawns `quickshort --capture`
+//!                 (relays to the resident app over a unix socket when running)
 //!   KDE Plasma    org.freedesktop.portal.GlobalShortcuts → in-process signal
 //!   sway          `swaymsg bindsym`          → spawns `quickshort --capture`
 //!   Hyprland      `hyprctl keyword bind`     → spawns `quickshort --capture`
@@ -483,8 +484,17 @@ mod gnome {
     const PATH_FULL: &str =
         "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/quickshort1/";
 
+    fn gsettings_bin() -> &'static str {
+        for p in ["/usr/bin/gsettings", "/bin/gsettings"] {
+            if std::path::Path::new(p).is_file() {
+                return p;
+            }
+        }
+        "gsettings"
+    }
+
     fn gsettings(args: &[&str]) -> Result<String> {
-        let out = Command::new("gsettings")
+        let out = Command::new(gsettings_bin())
             .args(args)
             .output()
             .context("spawn gsettings")?;
@@ -525,13 +535,16 @@ mod gnome {
             );
             gsettings(&["set", SCHEMA, "custom-keybindings", &list])?;
         }
-        let path_arg = format!(":{path}");
+        // SCHEMA and relocatable PATH must be one argv (`schema:/path/`),
+        // not two — otherwise gsettings prints Usage and the hotkey never
+        // points at the running resident app.
+        let schema_path = format!("{BIND_SCHEMA}:{path}");
         for (key, val) in [
             ("name", format!("'{name}'")),
             ("binding", format!("'{binding}'")),
             ("command", format!("'{command}'")),
         ] {
-            gsettings(&["set", BIND_SCHEMA, &path_arg, key, &val])?;
+            gsettings(&["set", &schema_path, key, &val])?;
         }
         Ok(())
     }
@@ -552,11 +565,10 @@ mod gnome {
     }
 
     fn set_binding_at(path: &str, binding: &str) -> Result<()> {
-        let path_arg = format!(":{path}");
+        let schema_path = format!("{BIND_SCHEMA}:{path}");
         gsettings(&[
             "set",
-            BIND_SCHEMA,
-            &path_arg,
+            &schema_path,
             "binding",
             &format!("'{binding}'"),
         ])?;

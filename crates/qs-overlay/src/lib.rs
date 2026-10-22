@@ -181,7 +181,7 @@ impl Overlay {
     pub fn about_to_wait(&mut self) {
         if self.s.dirty && !self.s.done {
             self.s.dirty = false;
-            self.s.redraw_all();
+            self.s.redraw_dirty();
         }
     }
 }
@@ -301,6 +301,9 @@ struct WinCtx {
     /// physical-res ARGB layer of committed strokes (lazy — allocated on
     /// the first commit so zero-annotation runs cost nothing)
     layer: Option<Vec<u32>>,
+    /// dimmed frame for this monitor — rebuilt when the surface resizes;
+    /// selection drags only patch the bright rect on top
+    base_dim: Option<Vec<u32>>,
 }
 
 /// Pixelate undo record: canvas-space rect + the pixels it overwrote.
@@ -829,6 +832,74 @@ impl Session {
         }
     }
 
+    /// Coalesced dirty pass — during a selection drag only the monitor(s)
+    /// touched by the preview rect need a full present.
+    fn redraw_dirty(&self) {
+        let preview = self
+            .anchor
+            .map(|a| Rect::from_drag(a, self.cursor))
+            .or(self.sel);
+        if let Some(r) = preview {
+            let mut any = false;
+            for w in &self.wins {
+                if r.intersection(&w.vrect).is_some() {
+                    w.win.request_redraw();
+                    any = true;
+                }
+            }
+            if !any {
+                self.redraw_all();
+            }
+        } else {
+            self.redraw_all();
+        }
+    }
+
+    fn fill_base_dim(
+        vrect: Rect,
+        bounds: Rect,
+        dim: &[u32],
+        cscale: f64,
+        sw: usize,
+        sh: usize,
+        scale: f64,
+    ) -> Vec<u32> {
+        let k = cscale / scale;
+        let (oxc, oyc) = (
+            (vrect.x - bounds.x) as f64 * cscale,
+            (vrect.y - bounds.y) as f64 * cscale,
+        );
+        let (cw, ch) = (
+            (bounds.w as f64 * cscale).round() as i32,
+            (bounds.h as f64 * cscale).round() as i32,
+        );
+        let colmap: Vec<i32> = (0..sw).map(|x| (oxc + x as f64 * k) as i32).collect();
+        let rowmap: Vec<i32> = (0..sh).map(|y| (oyc + y as f64 * k) as i32).collect();
+        let mut buf = vec![0u32; sw * sh];
+        let mut rowbuf: Vec<u32> = Vec::new();
+        let mut rowbuf_cy = -1i32;
+        for (y, &cy) in rowmap.iter().enumerate() {
+            if !(0..ch).contains(&cy) {
+                continue;
+            }
+            if cy != rowbuf_cy {
+                rowbuf.clear();
+                rowbuf.reserve(sw);
+                let src = cy as usize * cw as usize;
+                for &cx in &colmap {
+                    rowbuf.push(if (0..cw).contains(&cx) {
+                        dim[src + cx as usize]
+                    } else {
+                        0
+                    });
+                }
+                rowbuf_cy = cy;
+            }
+            buf[y * sw..y * sw + sw].copy_from_slice(&rowbuf);
+        }
+        buf
+    }
+
     /// MonitorHandle -> monitor rect in virtual coords.
     /// winit reports position/size in physical px; divide by scale_factor.
     fn vrect_of(m: &MonitorHandle) -> Rect {
@@ -859,9 +930,6 @@ impl Session {
         if wctx.surf.resize(sw, sh).is_err() {
             return;
         }
-        let Ok(mut buf) = wctx.surf.buffer_mut() else {
-            return;
-        };
         let (sw, sh) = (sw.get() as usize, sh.get() as usize);
         // Surface coords and canvas coords are both *physical* px — the
         // canvas is `logical * cscale`; the window surface is `logical *
@@ -880,28 +948,26 @@ impl Session {
         // surface (x,y) -> canvas (cx, cy); precompute per-row/col mapping
         let colmap: Vec<i32> = (0..sw).map(|x| (oxc + x as f64 * k) as i32).collect();
         let rowmap: Vec<i32> = (0..sh).map(|y| (oyc + y as f64 * k) as i32).collect();
-        // Expand each canvas row to physical width once, then memcpy it into
-        // every physical row that maps to it (consecutive rows share cy).
-        let mut rowbuf: Vec<u32> = Vec::new();
-        let mut rowbuf_cy = -1i32;
-        for (y, &cy) in rowmap.iter().enumerate() {
-            if !(0..ch).contains(&cy) {
-                continue;
-            }
-            if cy != rowbuf_cy {
-                rowbuf.clear();
-                rowbuf.reserve(sw);
-                let src = cy as usize * cw as usize;
-                for &cx in &colmap {
-                    rowbuf.push(if (0..cw).contains(&cx) {
-                        self.dim[src + cx as usize]
-                    } else {
-                        0
-                    });
-                }
-                rowbuf_cy = cy;
-            }
-            buf[y * sw..y * sw + sw].copy_from_slice(&rowbuf);
+        let vrect = wctx.vrect;
+        if wctx.base_dim.as_ref().is_none_or(|b| b.len() != sw * sh) {
+            wctx.base_dim = Some(Self::fill_base_dim(
+                vrect,
+                self.bounds,
+                &self.dim,
+                self.cscale,
+                sw,
+                sh,
+                scale,
+            ));
+        }
+        // softbuffer's buffer_mut() borrows `surf`; clone so we don't also
+        // hold an imm borrow of `base_dim` on the same WinCtx.
+        let base_dim = wctx.base_dim.clone().unwrap_or_default();
+        let Ok(mut buf) = wctx.surf.buffer_mut() else {
+            return;
+        };
+        if base_dim.len() == sw * sh {
+            buf.copy_from_slice(&base_dim);
         }
         // undim the part of the selection inside this monitor + border;
         // dragging preview takes priority over the confirmed selection
@@ -1169,6 +1235,7 @@ impl Session {
                     surf,
                     vrect: Self::vrect_of(&m),
                     layer: None,
+                    base_dim: None,
                 }),
                 Err(e) => eprintln!("overlay surface creation failed: {e}"),
             }
@@ -1284,6 +1351,7 @@ impl Session {
                         }
                         match item {
                             Item::Act(action) => {
+                                eprintln!("overlay action: {action:?} (toolbar click)");
                                 self.finish(Some(action));
                             }
                             Item::Undo => self.undo(),
@@ -1562,14 +1630,16 @@ impl Session {
                     self.finish(None);
                     return;
                 }
-                // ⌘/Ctrl shortcuts in the toolbar phase — same actions as
-                // the buttons. Keys come from prefs; undo's ⇧-variant = redo.
-                if self.sel.is_some() && (self.mods.super_key() || self.mods.control_key()) {
+                // Toolbar actions — same keys as the buttons. Ctrl/⌘+key is
+                // the documented path; plain keys (S/C/…) work too so Linux
+                // users aren't stuck when they skip the modifier.
+                if self.sel.is_some() && self.toolbar.is_some() {
                     if let Key::Character(c) = &event.logical_key {
                         let Some(ch) = c.chars().next().map(|c| c.to_ascii_lowercase()) else {
                             return;
                         };
-                        if ch == self.prefs.keys.undo {
+                        let modded = self.mods.super_key() || self.mods.control_key();
+                        if modded && ch == self.prefs.keys.undo {
                             if self.mods.shift_key() {
                                 self.redo();
                             } else {
@@ -1577,23 +1647,25 @@ impl Session {
                             }
                             return;
                         }
+                        // save/copy: plain S/C or Ctrl/⌘+key; rest need modifier
                         let k = &self.prefs.keys;
                         let act = if ch == k.save {
                             Some(Action::Save)
                         } else if ch == k.copy {
                             Some(Action::Copy)
-                        } else if ch == k.ocr {
-                            Some(Action::Ocr)
-                        } else if ch == k.share {
-                            Some(Action::Share)
-                        } else if ch == k.scroll {
-                            Some(Action::Scroll)
-                        } else if ch == k.record {
-                            Some(Action::Record)
+                        } else if modded {
+                            match ch {
+                                x if x == k.ocr => Some(Action::Ocr),
+                                x if x == k.share => Some(Action::Share),
+                                x if x == k.scroll => Some(Action::Scroll),
+                                x if x == k.record => Some(Action::Record),
+                                _ => None,
+                            }
                         } else {
                             None
                         };
                         if let Some(a) = act {
+                            eprintln!("overlay action: {a:?} (key '{ch}')");
                             self.finish(Some(a));
                         }
                     }

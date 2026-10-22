@@ -190,6 +190,8 @@ pub mod linux_tray {
                 }
             }
             RX.with(|s| *s.borrow_mut() = Some(rx));
+            crate::chrome::gtk_layer::spawn_channel();
+            crate::chrome::gtk_album::spawn_channel();
             // gtk::main iterates the default context — publish it so other
             // threads can wake the loop via invoke()
             let _ = CTX.set(glib::MainContext::default());
@@ -202,6 +204,8 @@ pub mod linux_tray {
 
     /// Runs on the tray thread via MainContext::invoke.
     fn drain() {
+        crate::chrome::gtk_layer::drain_pending();
+        crate::chrome::gtk_album::drain_pending();
         RX.with(|rx| {
             let rx = rx.borrow();
             let Some(rx) = rx.as_ref() else { return };
@@ -229,9 +233,18 @@ pub mod linux_tray {
         });
     }
 
-    fn wake() {
+    pub fn wake() {
         if let Some(ctx) = CTX.get() {
             ctx.invoke(drain);
+        }
+    }
+
+    /// Run `f` on the tray GTK thread (after `spawn`).
+    pub fn gtk_invoke<F: FnOnce() + Send + 'static>(f: F) {
+        if let Some(ctx) = CTX.get() {
+            ctx.invoke(f);
+        } else {
+            eprintln!("chrome: gtk_invoke before tray init");
         }
     }
 

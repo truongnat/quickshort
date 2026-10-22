@@ -269,6 +269,14 @@ impl Run {
     /// Errors and plain-text outcomes land on a toast — one-shot mode
     /// has no tray, and an eprintln dies unseen in a GUI session.
     fn notify(&mut self, el: &ActiveEventLoop, msg: &str, ok: bool) {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = el;
+            self.toast = None;
+            crate::linux_notify::send(msg, ok);
+            return;
+        }
+        #[cfg(not(target_os = "linux"))]
         match &mut self.toast {
             Some(t) => t.done(msg.to_string(), ok),
             None => match Toast::open(el, msg, self.accent, &self.popup_pos) {
@@ -314,6 +322,13 @@ impl Run {
                 return;
             }
         };
+        // Linux hotkeys relay to the resident app for the corner album.
+        // When relay misses, the PNG is already on disk — skip the
+        // one-shot card (GNOME shows it centered like a toast).
+        #[cfg(target_os = "linux")]
+        if saved.is_some() {
+            return;
+        }
         self.open_card(el, d.img, &msg, saved);
     }
 

@@ -242,6 +242,10 @@ impl ChromeWin {
     pub fn id(&self) -> WindowId {
         self.win.id()
     }
+
+    pub(super) fn set_dock_corner(&mut self, corner: Corner) {
+        self.stack.set_corner(corner);
+    }
     pub(super) fn mon_key(&self) -> &str {
         &self.mon_key
     }

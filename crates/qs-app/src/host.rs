@@ -75,6 +75,11 @@ pub fn run(cfg: Config) -> Result<()> {
     el.set_control_flow(ControlFlow::Wait);
     let proxy = el.create_proxy();
 
+    #[cfg(target_os = "linux")]
+    if let Err(e) = crate::ipc_linux::spawn_listener(proxy.clone()) {
+        eprintln!("ipc listener: {e:#} — hotkeys will use one-shot capture");
+    }
+
     // Menu clicks arrive on an mpsc channel — pump them into the event loop.
     let px = proxy.clone();
     std::thread::spawn(move || {
@@ -150,6 +155,15 @@ struct Host {
 impl Host {
     fn new(cfg: Config, proxy: EventLoopProxy<HostEvent>) -> Self {
         let px = proxy.clone();
+        #[cfg(target_os = "linux")]
+        {
+            let px_gtk = px.clone();
+            crate::chrome::gtk_album::set_chrome_push(std::sync::Arc::new(
+                move |wid, ev| {
+                    let _ = px_gtk.send_event(HostEvent::Chrome(wid, ev));
+                },
+            ));
+        }
         let chrome = Chrome::new(
             cfg.accent_rgb(),
             &cfg.popup_pos,
@@ -474,6 +488,7 @@ impl Host {
     /// called after the settings window mutates `cfg`.
     fn apply_cfg(&mut self, el: &ActiveEventLoop) {
         self.cfg.save();
+        self.chrome.set_popup_pos(&self.cfg.popup_pos);
         let (region, full) = (self.cfg.hotkey.clone(), self.cfg.hotkey_full.clone());
         self.rebind_slot(el, &region, false);
         self.rebind_slot(el, &full, true);
@@ -492,9 +507,8 @@ impl Host {
         self.rebuild_menu();
     }
 
-    /// Fly the shot into the corner album; where the chrome layer can't
-    /// take it (unsupported platform or a window failure) the quick-access
-    /// card keeps working as the fallback completion surface.
+    /// Fly the shot into the corner album (macOS/Windows). Linux uses the
+    /// status toast only — GNOME/Wayland album chrome is too brittle here.
     fn land_shot(
         &mut self,
         el: &ActiveEventLoop,
@@ -507,6 +521,14 @@ impl Host {
         msg: &str,
     ) {
         self.toast = None;
+        #[cfg(target_os = "linux")]
+        {
+            let _ = (sel, img, kind, saved, dur_s, shared);
+            let ok = !msg.contains("No text found");
+            eprintln!("linux: post-capture toast ({msg})");
+            self.toast_done(el, msg.to_string(), ok);
+            return;
+        }
         if sel.is_some() {
             let l = Land {
                 img,
@@ -518,9 +540,23 @@ impl Host {
                 shared,
             };
             match self.chrome.land(el, l) {
-                Ok(()) => return,
-                Err(l) => {
-                    self.open_card(el, l.img, msg, l.path);
+                Ok(()) => {
+                    eprintln!("chrome: shot queued in corner album");
+                    let _ = self.chrome.pump();
+                    return;
+                }
+                Err(mut l) => {
+                    eprintln!("chrome: fly-in missed — settling stack at corner");
+                    l.instant = true;
+                    match self.chrome.land(el, l) {
+                        Ok(()) => {
+                            let _ = self.chrome.pump();
+                        }
+                        Err(l) => {
+                            eprintln!("chrome: album unavailable ({msg})");
+                            self.open_card(el, l.img, msg, l.path);
+                        }
+                    }
                     return;
                 }
             }
@@ -730,6 +766,14 @@ impl Host {
     /// Mirror a finished action into the toast (opened for OCR; lazily
     /// created for failures so errors are visible even for fast actions).
     fn toast_done(&mut self, el: &ActiveEventLoop, msg: String, ok: bool) {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = el;
+            self.toast = None;
+            crate::linux_notify::send(&msg, ok);
+            return;
+        }
+        #[cfg(not(target_os = "linux"))]
         match &mut self.toast {
             Some(t) => t.done(msg, ok),
             None => match Toast::open(el, &msg, self.cfg.accent_rgb(), &self.cfg.popup_pos) {
@@ -815,7 +859,10 @@ impl ApplicationHandler<HostEvent> for Host {
         let recents = actions::recent_captures(&self.cfg.save_dir(), self.cfg.recent_max as usize);
         // rehydrate the album from disk — recents are newest-first, so
         // land the tail five oldest→newest to end with the newest on top;
-        // `instant` skips the fly-in
+        // `instant` skips the fly-in. On Linux defer until the first
+        // capture: opening fullscreen chrome surfaces at tray startup
+        // reads as a black-screen flash on GNOME/Wayland.
+        #[cfg(not(target_os = "linux"))]
         for p in recents.iter().take(5).rev() {
             if let Ok(img) = image::open(p) {
                 let _ = self.chrome.land(
@@ -827,7 +874,6 @@ impl ApplicationHandler<HostEvent> for Host {
                         sel: None,
                         instant: true,
                         dur_s: None,
-                        // a share that outlived the app restores its chip
                         shared: self.shares.get(p).cloned(),
                     },
                 );
@@ -999,6 +1045,8 @@ impl ApplicationHandler<HostEvent> for Host {
                     // nothing to act on later, so it confirms on the toast
                     Ok(d) => match d.outcome {
                         Outcome::Saved(p) => {
+                            self.card = None;
+                            self.toast = None;
                             self.rebuild_menu();
                             let name = p
                                 .file_name()
@@ -1370,8 +1418,12 @@ impl ApplicationHandler<HostEvent> for Host {
             let w = r.pump();
             wake = Some(wake.map_or(w, |x| x.min(w)));
         }
-        if let Some(w) = self.chrome.pump() {
-            wake = Some(wake.map_or(w, |x| x.min(w)));
+        // Album chrome shares winit's Wayland display — pumping it during
+        // region selection steals compositor time and makes the drag janky.
+        if self.overlay.is_none() {
+            if let Some(w) = self.chrome.pump() {
+                wake = Some(wake.map_or(w, |x| x.min(w)));
+            }
         }
         el.set_control_flow(match wake {
             Some(w) => ControlFlow::WaitUntil(w),

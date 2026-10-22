@@ -13,6 +13,10 @@ mod config;
 mod host;
 #[cfg(target_os = "linux")]
 mod hotkey_linux;
+#[cfg(target_os = "linux")]
+mod ipc_linux;
+#[cfg(target_os = "linux")]
+mod linux_notify;
 mod oneshot;
 mod pin;
 mod quick_access;
@@ -155,6 +159,22 @@ fn capture_lock() -> Result<Option<std::fs::File>> {
 /// One-shot pipeline: capture all monitors to RAM -> overlay selection ->
 /// worker-thread stitch -> action.
 fn run_one_shot(args: Args) -> Result<()> {
+    // Wayland desktops spawn this binary for hotkeys — hand off to the
+    // resident app when it's up so post-save chrome matches macOS.
+    #[cfg(target_os = "linux")]
+    if args.delay_secs == 0.0 && args.out.is_none() {
+        use ipc_linux::{try_delegate, Request};
+        let req = if args.capture_full {
+            Request::Full
+        } else {
+            Request::Region
+        };
+        if try_delegate(req) {
+            return Ok(());
+        }
+        eprintln!("relay: tray app not reachable — running one-shot capture");
+    }
+
     // one capture at a time — a second --capture while an overlay is up
     // exits quietly instead of stacking another fullscreen layer
     let lock = match capture_lock() {

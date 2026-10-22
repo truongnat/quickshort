@@ -12,13 +12,30 @@ use winit::monitor::MonitorHandle;
 /// expose the global cursor position at window-creation time, so this
 /// is the stable, predictable choice.
 pub fn popup_monitor(el: &winit::event_loop::ActiveEventLoop) -> Option<MonitorHandle> {
-    el.primary_monitor()
-        .or_else(|| el.available_monitors().next())
+    el.primary_monitor().or_else(|| {
+        let mut mons = el.available_monitors();
+        mons.next()
+    })
 }
 
 /// Physical-px outer position that docks a `w`×`h` logical popup at
 /// `pos` (a key from `crate::config::POPUP_POS`) inside monitor `m`.
 /// Unknown keys fall back to top-right.
+/// Dock a popup window — winit leaves new windows at the screen center
+/// when no position is set, which reads as a "middle toast" on GNOME.
+pub fn place_popup(
+    win: &winit::window::Window,
+    el: &winit::event_loop::ActiveEventLoop,
+    pos: &str,
+    w: f64,
+    h: f64,
+) {
+    let at = popup_monitor(el)
+        .map(|m| dock_pos(pos, &m, w, h))
+        .unwrap_or(PhysicalPosition::new(40.0, 40.0));
+    let _ = win.set_outer_position(at);
+}
+
 pub fn dock_pos(pos: &str, m: &MonitorHandle, w: f64, h: f64) -> PhysicalPosition<f64> {
     let pos = if crate::config::POPUP_POS.iter().any(|(k, _)| *k == pos) {
         pos
