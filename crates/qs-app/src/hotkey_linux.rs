@@ -780,7 +780,7 @@ mod kde {
             };
             let gs = Proxy::new(&self.conn, DESKTOP, ROOT, GS)?;
             let tok = token();
-            let mut rx = response_rx(&self.conn, &request_path(&conn, &tok))?;
+            let mut rx = response_rx(&self.conn, &request_path(&self.conn, &tok))?;
             let mut opts = Opts::new();
             opts.insert("handle_token".into(), vstr(&tok));
             let _: OwnedObjectPath = gs
