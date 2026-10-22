@@ -430,6 +430,8 @@ impl ChromeWin {
                         PhysicalKey::Code(KeyCode::Backspace) => Some(Key::Back),
                         PhysicalKey::Code(KeyCode::Space) => Some(Key::Space),
                         PhysicalKey::Code(KeyCode::KeyC) if self.ctrl => Some(Key::Copy),
+                        PhysicalKey::Code(KeyCode::KeyO) if !self.ctrl => Some(Key::Open),
+                        PhysicalKey::Code(KeyCode::KeyS) if !self.ctrl => Some(Key::Share),
                         _ => None,
                     };
                     if let Some(k) = k {

@@ -2,10 +2,20 @@
 //! reports long-running action progress (OCR) and auto-dismisses.
 
 use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
+use block2::RcBlock;
 use fontdue::Font;
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSAnimatablePropertyContainer, NSAnimationContext, NSView, NSWindow};
 use qs_overlay::sdf::{ellipse_sdf, fill_cov, seg_sdf, stroke_cov, Canvas};
+#[cfg(target_os = "macos")]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use softbuffer::{Context as SbContext, Surface};
 use std::num::NonZeroU32;
+#[cfg(target_os = "macos")]
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use winit::dpi::LogicalSize;
@@ -46,6 +56,15 @@ pub struct Toast {
     pulse: f64,
     deadline: Option<Instant>,
     dirty: bool,
+    /// native alpha fade-in runs once, after the first frame is on
+    /// screen — an empty transparent window rising to full alpha would
+    /// flash before the card exists
+    #[cfg(target_os = "macos")]
+    faded_in: bool,
+    /// fade-out started at expiry; the host drops the window only after
+    /// this deadline
+    #[cfg(target_os = "macos")]
+    closing: Option<Instant>,
 }
 
 impl Toast {
@@ -67,7 +86,7 @@ impl Toast {
         let surf = SbContext::new(win.clone())
             .and_then(|c| Surface::new(&c, win.clone()))
             .map_err(|e| anyhow::anyhow!("toast surface: {e}"))?;
-        Ok(Self {
+        let t = Self {
             win,
             surf,
             font: system_font()?,
@@ -77,11 +96,46 @@ impl Toast {
             pulse: 0.0,
             deadline: None,
             dirty: true,
-        })
+            #[cfg(target_os = "macos")]
+            faded_in: false,
+            #[cfg(target_os = "macos")]
+            closing: None,
+        };
+        // start invisible; draw() fades in once the card is rendered
+        #[cfg(target_os = "macos")]
+        if let Some(w) = t.ns_window() {
+            w.setAlphaValue(0.0);
+        }
+        Ok(t)
     }
 
     pub fn win_id(&self) -> WindowId {
         self.win.id()
+    }
+
+    /// AppKit window behind winit's view, for native alpha fades.
+    #[cfg(target_os = "macos")]
+    fn ns_window(&self) -> Option<Retained<NSWindow>> {
+        let RawWindowHandle::AppKit(h) = self.win.window_handle().ok()?.as_raw() else {
+            return None;
+        };
+        let view: &NSView = unsafe { &*(h.ns_view.as_ptr() as *const NSView) };
+        view.window()
+    }
+
+    /// Animate the window's alpha through AppKit — WindowServer runs
+    /// the fade, so it stays smooth even while the main thread works.
+    #[cfg(target_os = "macos")]
+    fn fade_window(&self, alpha: f64, secs: f64) {
+        let Some(w) = self.ns_window() else {
+            return;
+        };
+        let animator = w.animator();
+        let block = RcBlock::new(move |ctx: NonNull<NSAnimationContext>| {
+            unsafe { ctx.as_ref() }.setDuration(secs);
+            animator.setAlphaValue(alpha);
+        });
+        NSAnimationContext::runAnimationGroup(&block);
     }
 
     /// Switch to the finished look; the toast lingers for `DONE_TTL`.
@@ -90,6 +144,11 @@ impl Toast {
         self.state = if ok { State::Ok } else { State::Err };
         self.deadline = Some(Instant::now() + DONE_TTL);
         self.dirty = true;
+        // a late completion can land while the window is fading out
+        #[cfg(target_os = "macos")]
+        if self.closing.take().is_some() {
+            self.fade_window(1.0, 0.12);
+        }
         self.win.request_redraw();
     }
 
@@ -101,6 +160,20 @@ impl Toast {
     /// while alive, `None` once expired — the host should then drop the toast.
     pub fn pump(&mut self) -> Option<Instant> {
         if self.expired() {
+            // let AppKit fade the window before the host drops it
+            #[cfg(target_os = "macos")]
+            {
+                let now = Instant::now();
+                if self.closing.is_none() {
+                    self.fade_window(0.0, 0.14);
+                    self.closing = Some(now + Duration::from_millis(150));
+                }
+                if let Some(end) = self.closing {
+                    if now < end {
+                        return Some(end);
+                    }
+                }
+            }
             return None;
         }
         if self.dirty || self.state == State::Working || self.deadline.is_some() {
@@ -203,6 +276,11 @@ impl Toast {
         }
 
         let _ = buf.present();
+        #[cfg(target_os = "macos")]
+        if !self.faded_in {
+            self.faded_in = true;
+            self.fade_window(1.0, 0.16);
+        }
     }
 }
 

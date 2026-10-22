@@ -32,6 +32,7 @@ mod imp;
 
 pub use imp::ChromeWin;
 
+use crate::config;
 use crate::widgets::Txt;
 
 /* ---- layout constants (logical px) ---- */
@@ -133,7 +134,10 @@ pub enum Hit {
     MenuPanel,
     /// lightbox backdrop (click = close)
     Backdrop,
+    /// lightbox action button `i` (BOX_ACTIONS order)
+    BoxAction(usize),
 }
+
 
 /// What the host must run in response to a chrome click/key.
 #[derive(Debug)]
@@ -165,6 +169,14 @@ pub const MENU_SHARE: &str = "qs-chrome.share";
 pub const MENU_REVOKE: &str = "qs-chrome.revoke";
 pub const MENU_DEL: &str = "qs-chrome.del";
 pub const MENU_CLEAR: &str = "qs-chrome.clear";
+
+/// Lightbox action ids — same MENU_* namespace so host handling routes
+/// through the existing on_chrome_menu match.
+pub const MENU_OPEN: &str = "qs-chrome.open";
+const BOX_ACTIONS: &[&str] = &[MENU_COPY, MENU_OPEN, MENU_SHARE, MENU_DEL];
+const BOX_BTN_W: f64 = 104.0;
+const BOX_BTN_H: f64 = 32.0;
+const BOX_BTN_GAP: f64 = 10.0;
 
 /// Which screen corner the stack docks to.
 #[derive(Clone, Copy, PartialEq)]
@@ -216,6 +228,10 @@ const MENU_W: f64 = 210.0;
 pub struct Stack {
     pub shots: Vec<Shot>, // newest LAST
     fly: Option<Fly>,
+    /// newest thumb is reserved but withheld from the canvas while a
+    /// native (Core Animation) fly layer carries it in — macOS only;
+    /// the software path leaves this false and draws its own flight
+    native_flight: bool,
     hover: Option<Hit>,
     /// cursor within the wider retention zone — hover hysteresis so a
     /// moving rect can't slide out from under a resting cursor (fan
@@ -257,6 +273,7 @@ impl Stack {
         Self {
             shots: Vec::new(),
             fly: None,
+            native_flight: false,
             hover: None,
             inside: false,
             fan_t: 0.0,
@@ -325,6 +342,22 @@ impl Stack {
 
     pub fn is_empty(&self) -> bool {
         self.shots.is_empty() && self.fly.is_none()
+    }
+
+    /// Withhold the newest thumb from the canvas while a native flight
+    /// layer carries it in; the reserved slot still counts in the chip
+    /// and paint bounds, so landing swaps in cleanly.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn hold_newest(&mut self, hold: bool) {
+        self.native_flight = hold;
+    }
+
+    /// Where a native fly should land — the newest thumb at the settled
+    /// fan/hide endpoints, so it can't miss a target that is still
+    /// tweening when the flight starts.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn landing_rect(&self, w: f64, h: f64) -> FRect {
+        self.thumb_rect_at(0, w, h, self.fan_to, self.hide_to)
     }
 
     /// The anchor point of the newest thumb (fan index 0).
@@ -411,7 +444,7 @@ impl Stack {
         FRect { x, y, w: cw, h: ch }
     }
 
-    /// "CLEAR ALL" pill centred under the fanned row — like the
+    /// "CLEAR SHELF" pill centred under the fanned row — like the
     /// Clear All at the edge of Notification Centre's list, it only
     /// dismisses the shelf; files on disk are untouched. Exists once
     /// the fan is mostly open (hit/live gating matches `input_rects`).
@@ -524,13 +557,20 @@ impl Stack {
                 }
             }
             MENU_SAVE => "Save to Screenshots",
+            MENU_OPEN => {
+                if cfg!(target_os = "macos") {
+                    "Open in Preview"
+                } else {
+                    "Open in Editor"
+                }
+            }
             MENU_COPY => "Copy Image",
             MENU_PIN => "Pin",
             MENU_BEAUTIFY => "Beautify",
             MENU_SHARE => "Share Link",
             MENU_REVOKE => "Revoke Link",
-            MENU_DEL => "Delete",
-            MENU_CLEAR => "Clear All",
+            MENU_DEL => "Remove from Shelf",
+            MENU_CLEAR => "Clear Shelf",
             _ => "?",
         }
     }
@@ -560,7 +600,7 @@ impl Stack {
                 for i in 0..n {
                     v.push(self.thumb_rect_at(i, w, h, ft, ht));
                 }
-                if self.shots.len() >= 2 {
+                if !self.shots.is_empty() {
                     v.push(self.chip_rect_at(w, h, ht));
                 }
             }
@@ -665,7 +705,9 @@ impl Stack {
             .shots
             .len()
             .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
-        for i in 0..n {
+        // a native flight has not landed yet — its slot must not catch
+        // clicks at a position where no thumb is drawn
+        for i in usize::from(self.native_flight)..n {
             let mut r = self.thumb_rect(i, w, h);
             r.x -= 12.0;
             r.y -= 12.0;
@@ -673,7 +715,7 @@ impl Stack {
             r.h += 24.0;
             v.push((r, Hit::Thumb(i)));
         }
-        if self.shots.len() >= 2 {
+        if !self.shots.is_empty() {
             v.push((self.chip_rect(w, h), Hit::Chip));
         }
         v
@@ -708,7 +750,7 @@ impl Stack {
             .min(if self.pinned { MAX_VIS_PINNED } else { MAX_VIS });
         for &ht in hide_opts {
             for &ft in fan_opts {
-                for i in 0..n {
+                for i in usize::from(self.native_flight)..n {
                     let r = self.thumb_rect_at(i, w, h, ft, ht);
                     if x >= r.x - pad
                         && x <= r.x + r.w + pad
@@ -718,7 +760,7 @@ impl Stack {
                         return true;
                     }
                 }
-                if self.shots.len() >= 2 {
+                if !self.shots.is_empty() {
                     let c = self.chip_rect_at(w, h, ht);
                     if x >= c.x - pad
                         && x <= c.x + c.w + pad
@@ -756,6 +798,16 @@ impl Stack {
                 }
             }
         }
+        // lightbox action bar sits inside the backdrop — check its
+        // buttons first so a click hits the action, not "close"
+        if self.lightbox.is_some() {
+            for (i, r) in self.box_action_rects(w, h).iter().enumerate() {
+                if x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h {
+                    return Some(Hit::BoxAction(i));
+                }
+            }
+            return Some(Hit::Backdrop);
+        }
         for (r, hit) in self.input_rects(w, h) {
             if x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h {
                 return Some(hit);
@@ -770,6 +822,43 @@ impl Stack {
         } else {
             (r.x + r.w - 4.0, r.y + r.h + 4.0)
         }
+    }
+
+    /// Settled-position image rect the lightbox draws into — shared by
+    /// the action bar layout and hit testing.
+    fn box_img_rect(&self, w: f64, h: f64) -> FRect {
+        let fit = (w * 0.8 / self.box_iw as f64).min(h * 0.8 / self.box_ih as f64);
+        let dw = self.box_iw as f64 * fit;
+        let dh = self.box_ih as f64 * fit;
+        FRect {
+            x: (w - dw) / 2.0,
+            y: (h - dh) / 2.0 - 10.0,
+            w: dw,
+            h: dh,
+        }
+    }
+
+    /// One rect per BOX_ACTIONS entry, centred under the preview.
+    fn box_action_rects(&self, w: f64, h: f64) -> Vec<FRect> {
+        let img = self.box_img_rect(w, h);
+        let n = BOX_ACTIONS.len() as f64;
+        let total = n * BOX_BTN_W + (n - 1.0) * BOX_BTN_GAP;
+        let x0 = (w - total) / 2.0;
+        let mut y = img.y + img.h + 18.0;
+        if y + BOX_BTN_H > h - 12.0 {
+            // tall images: dock the bar over the bottom margin instead
+            y = img.y + img.h - BOX_BTN_H - 14.0;
+        }
+        BOX_ACTIONS
+            .iter()
+            .enumerate()
+            .map(|(i, _)| FRect {
+                x: x0 + i as f64 * (BOX_BTN_W + BOX_BTN_GAP),
+                y,
+                w: BOX_BTN_W,
+                h: BOX_BTN_H,
+            })
+            .collect()
     }
 
     /// Platform events distilled into state transitions; the returned
@@ -832,6 +921,11 @@ impl Stack {
                         }
                     }
                     Some(Hit::MenuPanel) => None, // swallowed, menu stays
+                    Some(Hit::BoxAction(i)) => self.lightbox.and_then(|idx| {
+                        BOX_ACTIONS
+                            .get(i)
+                            .map(|&id| ChromeCmd::MenuAction { idx, id })
+                    }),
                     Some(Hit::Backdrop) => {
                         self.lightbox = None;
                         self.menu = None;
@@ -899,7 +993,8 @@ impl Stack {
     }
 
     /// Keyboard input while the chrome window is key — arrows move the
-    /// ring, Enter previews, ⌫ removes, Esc peels a layer off.
+    /// ring, Enter previews, O/S open and share a preview, ⌫ removes,
+    /// Esc peels a layer off.
     pub fn key(&mut self, k: Key) -> Option<ChromeCmd> {
         self.touch();
         let n = self
@@ -941,6 +1036,16 @@ impl Stack {
             (Key::Enter, Some(_)) => self.key_target(n).map(|i| ChromeCmd::MenuAction {
                 idx: i,
                 id: MENU_COPY,
+            }),
+            // the lightbox legend's O / S — the same actions the bar
+            // buttons expose, without a mouse
+            (Key::Open, Some(_)) => self.key_target(n).map(|i| ChromeCmd::MenuAction {
+                idx: i,
+                id: MENU_OPEN,
+            }),
+            (Key::Share, Some(_)) => self.key_target(n).map(|i| ChromeCmd::MenuAction {
+                idx: i,
+                id: MENU_SHARE,
             }),
             (Key::Copy, _) => self.key_target(n).map(|i| ChromeCmd::MenuAction {
                 idx: i,
@@ -1123,6 +1228,7 @@ impl Stack {
     pub fn clear_all(&mut self) {
         self.shots.clear();
         self.fly = None;
+        self.native_flight = false;
         self.lightbox = None;
         self.box_t0 = None;
         self.box_img.clear();
@@ -1201,6 +1307,10 @@ pub enum Key {
     /// ⌘C / Ctrl+C — copy the focused shot (backends supply the
     /// modifier check)
     Copy,
+    /// O — open the shot being previewed
+    Open,
+    /// S — share the shot being previewed
+    Share,
 }
 
 /* ==================== rendering ==================== */
@@ -1354,14 +1464,12 @@ impl Stack {
             cv.buf.fill(dim);
             if self.shot(i).is_some() {
                 let grow = 0.94 + 0.06 * ease_out_back(bp);
-                let fit = (lw * 0.8 / self.box_iw as f64).min(lh * 0.8 / self.box_ih as f64);
-                let dw = self.box_iw as f64 * fit * grow;
-                let dh = self.box_ih as f64 * fit * grow;
+                let settled = self.box_img_rect(lw, lh);
                 let r = FRect {
-                    x: (lw - dw) / 2.0,
-                    y: (lh - dh) / 2.0 - 10.0,
-                    w: dw,
-                    h: dh,
+                    x: settled.x + settled.w * (1.0 - grow) / 2.0,
+                    y: settled.y + settled.h * (1.0 - grow) / 2.0,
+                    w: settled.w * grow,
+                    h: settled.h * grow,
                 };
                 blit_img(cv, &self.box_img, self.box_iw, self.box_ih, r, 8.0);
                 let fr = FRect {
@@ -1372,24 +1480,59 @@ impl Stack {
                 };
                 rrect(cv, fr, 9.0, CARD, 0.0, Some(LINE));
                 if bp >= 1.0 {
-                    t.draw_over(
-                        cv,
-                        r.x,
-                        r.y + r.h + 24.0,
-                        11.0,
-                        "ESC / CLICK TO CLOSE",
-                        MUTED,
-                    );
+                    // action bar — the mouse path out of the preview
+                    // (keys: Esc close, Enter copy, O open, S share,
+                    // ⌫ remove)
+                    for (bi, br) in self.box_action_rects(lw, lh).iter().enumerate() {
+                        let hot = self.hover == Some(Hit::BoxAction(bi));
+                        let danger = BOX_ACTIONS[bi] == MENU_DEL;
+                        // white labels need the deepened accent — raw
+                        // orange/pink carry white at only ~2-3:1
+                        let fill = if hot { config::deepen(accent) } else { CARD };
+                        let fa = if hot { 0.9 } else { 0.92 };
+                        rrect(cv, *br, 8.0, fill, fa, Some(LINE));
+                        let label = Self::menu_label(BOX_ACTIONS[bi]);
+                        let tw = t.width(10.0, label);
+                        t.draw_over(
+                            cv,
+                            br.x + (br.w - tw) / 2.0,
+                            br.y + 12.5,
+                            10.0,
+                            label,
+                            if danger && !hot { RED } else { 0xFFFFFF },
+                        );
+                    }
+                    // shortcut legend, on its own pill so it stays legible
+                    // over any wallpaper; skipped when a tall image leaves
+                    // no room below the action bar
+                    let hint = "ESC CLOSE · O OPEN · S SHARE · ⌫ REMOVE";
+                    let hw = t.width(9.5, hint);
+                    let hy = settled.y + settled.h + 58.0;
+                    if hy + 22.0 <= lh - 8.0 {
+                        let hr = FRect {
+                            x: (lw - hw) / 2.0 - 10.0,
+                            y: hy,
+                            w: hw + 20.0,
+                            h: 22.0,
+                        };
+                        rrect(cv, hr, 11.0, CARD, 0.92, Some(LINE));
+                        t.draw_over(cv, hr.x + 10.0, hr.y + 15.0, 9.5, hint, MUTED);
+                    }
                 }
             }
             return;
         }
 
         // count chip
-        if self.shots.len() >= 2 {
+        if !self.shots.is_empty() {
             let cr = self.chip_rect(lw, lh);
             rrect(cv, cr, 10.0, CARD, 0.92, Some(LINE));
-            let label = format!("{} SHOTS", self.shots.len());
+            let n = self.shots.len();
+            let label = if n == 1 {
+                "1 SHOT".to_string()
+            } else {
+                format!("{n} SHOTS")
+            };
             let tw = t.width(9.5, &label);
             t.draw_over(
                 cv,
@@ -1412,9 +1555,10 @@ impl Stack {
             let Some(shot) = self.shots.get(idx) else {
                 continue;
             };
-            let in_flight = self.fly.is_some() && idx == self.shots.len() - 1;
+            let in_flight =
+                idx == self.shots.len() - 1 && (self.fly.is_some() || self.native_flight);
             if in_flight {
-                continue; // its pixels are mid-flight
+                continue; // its pixels travel on the (native) fly layer
             }
             let r = self.thumb_rect(i, lw, lh);
             blit_img(cv, &shot.thumb, shot.tw, shot.th, r, 6.0);
@@ -1423,61 +1567,71 @@ impl Stack {
                 || self.ring == Some(i);
             rrect(cv, r, 6.0, CARD, 0.0, Some(if hot { accent } else { LINE }));
 
-            // badge
-            let (bg, glyph) = match shot.kind {
-                ShotKind::Saved | ShotKind::Copied | ShotKind::Ocr | ShotKind::Scroll => (GRN, "✓"),
-                ShotKind::Shared => (accent, "⧉"),
-                ShotKind::Record => (accent, "▶"),
-            };
-            let (bx, by) = (r.x + 6.0, r.y + r.h - 6.0);
-            disc(cv, bx, by, 8.0, bg, 0.95);
-            t.draw_over(
-                cv,
-                bx - t.width(9.0, glyph) / 2.0,
-                by + 3.4,
-                9.0,
-                glyph,
-                0x000000,
-            );
-
-            // a live share link gets its own chip on the opposite
-            // corner — the kind badge marks provenance, ↗ marks "this
-            // file is still public until revoked/expired"
-            if shot.shared.is_some() {
-                let lx = r.x + r.w - 6.0;
-                let ly = r.y + r.h - 6.0;
-                disc(cv, lx, ly, 8.0, accent, 0.95);
+            // badges are corner-anchored: while the stack is collapsed
+            // only the top card can wear them, or every offset card
+            // piles a badge into the same corner
+            let detailed = i == 0 || self.fan_t >= 0.5;
+            if detailed {
+                // distinct marks per outcome — four different actions all
+                // showing "✓" told the user nothing at a glance
+                let (bg, glyph) = match shot.kind {
+                    ShotKind::Saved => (GRN, "✓"),
+                    ShotKind::Copied => (GRN, "⧉"),
+                    ShotKind::Ocr => (GRN, "T"),
+                    ShotKind::Scroll => (GRN, "↕"),
+                    ShotKind::Shared => (accent, "↗"),
+                    ShotKind::Record => (accent, "▶"),
+                };
+                let (bx, by) = (r.x + 6.0, r.y + r.h - 6.0);
+                disc(cv, bx, by, 8.0, bg, 0.95);
                 t.draw_over(
                     cv,
-                    lx - t.width(9.0, "↗") / 2.0,
-                    ly + 3.4,
+                    bx - t.width(9.0, glyph) / 2.0,
+                    by + 3.4,
                     9.0,
-                    "↗",
+                    glyph,
                     0x000000,
                 );
-            }
 
-            // recordings also carry their length — a `m:ss` pill hugging
-            // the ▶ disc, bottom-left like CleanShot's duration label
-            if shot.kind == ShotKind::Record {
-                if let Some(d) = shot.dur_s {
-                    let label = format!("{}:{:02}", d / 60, d % 60);
-                    let tw = t.width(8.5, &label);
-                    let (px, py) = (bx + 10.0, by + 5.5);
-                    rrect(
+                // a live share link gets its own dot on the opposite
+                // corner — the kind badge marks provenance, ● marks
+                // "this file is still public until revoked/expired"
+                if shot.shared.is_some() {
+                    let lx = r.x + r.w - 6.0;
+                    let ly = r.y + r.h - 6.0;
+                    disc(cv, lx, ly, 8.0, accent, 0.95);
+                    t.draw_over(
                         cv,
-                        FRect {
-                            x: px - 4.0,
-                            y: py - 5.0,
-                            w: tw + 8.0,
-                            h: 11.0,
-                        },
-                        5.5,
-                        CARD,
-                        0.9,
-                        None,
+                        lx - t.width(9.0, "●") / 2.0,
+                        ly + 3.4,
+                        9.0,
+                        "●",
+                        0x000000,
                     );
-                    t.draw_over(cv, px, py, 8.5, &label, 0xFFFFFF);
+                }
+
+                // recordings also carry their length — a `m:ss` pill
+                // hugging the ▶ disc, bottom-left like CleanShot
+                if shot.kind == ShotKind::Record {
+                    if let Some(d) = shot.dur_s {
+                        let label = format!("{}:{:02}", d / 60, d % 60);
+                        let tw = t.width(8.5, &label);
+                        let (px, py) = (bx + 10.0, by + 5.5);
+                        rrect(
+                            cv,
+                            FRect {
+                                x: px - 4.0,
+                                y: py - 5.0,
+                                w: tw + 8.0,
+                                h: 11.0,
+                            },
+                            5.5,
+                            CARD,
+                            0.9,
+                            None,
+                        );
+                        t.draw_over(cv, px, py, 8.5, &label, 0xFFFFFF);
+                    }
                 }
             }
 
@@ -1497,7 +1651,7 @@ impl Stack {
             }
         }
 
-        // "CLEAR ALL" pill under the row, fading in with the fan —
+        // "CLEAR SHELF" pill under the row, fading in with the fan —
         // red text on hover like the per-thumb × (dismiss-only)
         if let Some(cr) = self.clear_rect(lw, lh) {
             let a = ((self.fan_t - 0.4) / 0.6).clamp(0.0, 1.0);
@@ -1510,7 +1664,7 @@ impl Stack {
                 0.92 * a,
                 Some(if hot { accent } else { LINE }),
             );
-            let label = "× CLEAR ALL";
+            let label = "× CLEAR SHELF";
             let tw = t.width(9.5, label);
             t.draw_over(
                 cv,
@@ -1735,6 +1889,10 @@ impl Chrome {
 
     pub fn remove(&mut self, id: winit::window::WindowId, idx: usize) {
         if let Some(w) = self.wins.iter_mut().find(|w| w.id() == id) {
+            // a removal reshuffles the landing slot — the fly layer is
+            // pointing at geometry that no longer exists
+            #[cfg(target_os = "macos")]
+            w.cancel_native();
             w.stack_mut().remove(idx);
             w.redraw();
         }
@@ -1744,6 +1902,8 @@ impl Chrome {
     /// sweeps afterwards so the emptied window goes away.
     pub fn clear_all(&mut self, id: winit::window::WindowId) {
         if let Some(w) = self.wins.iter_mut().find(|w| w.id() == id) {
+            #[cfg(target_os = "macos")]
+            w.cancel_native();
             w.stack_mut().clear_all();
         }
     }
@@ -1863,7 +2023,8 @@ pub fn standalone(pos: &str, accent: u32) -> anyhow::Result<()> {
     }
     impl Demo {
         fn drop(&mut self, el: &ActiveEventLoop) {
-            if self.chrome.land(el, shot(self.drops)).is_ok() {
+            let n = self.drops;
+            if self.chrome.land(el, shot(n)).is_ok() {
                 self.drops += 1;
             }
             self.next_drop = Instant::now() + Duration::from_secs(1);
@@ -2271,6 +2432,62 @@ mod tests {
         assert!(st.lightbox.is_some());
         st.pointer(ChromeEv::Down { x: 700.0, y: 450.0 }, 1440.0, 900.0);
         assert!(st.lightbox.is_none());
+    }
+
+    /// O / S in the lightbox route to the same actions as the bar buttons.
+    #[test]
+    fn lightbox_keys_open_and_share() {
+        let mut st = Stack::new(Corner::TR);
+        st.land(
+            shot_img(1200, 800, [40, 60, 90]),
+            ShotKind::Saved,
+            None,
+            FRect {
+                x: 100.0,
+                y: 100.0,
+                w: 400.0,
+                h: 300.0,
+            },
+            true,
+            2.0,
+            None,
+            None,
+        );
+        let r = st.thumb_rect(0, 1440.0, 900.0);
+        st.pointer(
+            ChromeEv::Down {
+                x: r.x + r.w / 2.0,
+                y: r.y + r.h / 2.0,
+            },
+            1440.0,
+            900.0,
+        );
+        st.pointer(
+            ChromeEv::Up {
+                x: r.x + r.w / 2.0,
+                y: r.y + r.h / 2.0,
+            },
+            1440.0,
+            900.0,
+        );
+        assert!(st.lightbox.is_some());
+        assert!(matches!(
+            st.key(Key::Open),
+            Some(ChromeCmd::MenuAction {
+                idx: 0,
+                id: MENU_OPEN
+            })
+        ));
+        assert!(matches!(
+            st.key(Key::Share),
+            Some(ChromeCmd::MenuAction {
+                idx: 0,
+                id: MENU_SHARE
+            })
+        ));
+        // outside a preview, O/S have no shot to act on
+        st.lightbox = None;
+        assert!(st.key(Key::Open).is_none());
     }
 
     /// A thumb press that drifts ≥4px before release becomes a drag —

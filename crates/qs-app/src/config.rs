@@ -176,3 +176,59 @@ pub fn accent_rgb(name: &str) -> u32 {
         .map(|(_, rgb)| *rgb)
         .unwrap_or(ACCENTS[0].1)
 }
+
+/// Accent variant that can carry white text or glyphs — the raw presets
+/// are tuned for vibrancy, not legibility (white on orange is 2.0:1).
+/// Darkens the hue until white reaches 4.5:1.
+pub fn accent_deep(name: &str) -> u32 {
+    deepen(accent_rgb(name))
+}
+
+/// Same darkening for a raw accent value (chrome passes RGB, not names).
+pub fn deepen(rgb: u32) -> u32 {
+    let (mut r, mut g, mut b) = (
+        ((rgb >> 16) & 0xFF) as f64,
+        ((rgb >> 8) & 0xFF) as f64,
+        (rgb & 0xFF) as f64,
+    );
+    for _ in 0..32 {
+        if 1.05 / (luminance(r, g, b) + 0.05) >= 4.5 {
+            break;
+        }
+        r *= 0.92;
+        g *= 0.92;
+        b *= 0.92;
+    }
+    ((r.round() as u32) << 16) | ((g.round() as u32) << 8) | b.round() as u32
+}
+
+fn luminance(r: f64, g: f64, b: f64) -> f64 {
+    fn lin(c: f64) -> f64 {
+        let c = c / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_accent_carries_white_content() {
+        for (name, _) in ACCENTS {
+            let d = accent_deep(name);
+            let (r, g, b) = (
+                ((d >> 16) & 0xFF) as f64,
+                ((d >> 8) & 0xFF) as f64,
+                (d & 0xFF) as f64,
+            );
+            let ratio = 1.05 / (luminance(r, g, b) + 0.05);
+            assert!(ratio >= 4.5, "{name}: {ratio:.2}:1");
+        }
+    }
+}

@@ -297,6 +297,12 @@ impl ChromeWin {
                     WKey::Character(c) if self.mods.control_key() && c.as_str() == "c" => {
                         Some(Key::Copy)
                     }
+                    WKey::Character(c) if !self.mods.control_key() && c.as_str() == "o" => {
+                        Some(Key::Open)
+                    }
+                    WKey::Character(c) if !self.mods.control_key() && c.as_str() == "s" => {
+                        Some(Key::Share)
+                    }
                     _ => None,
                 };
                 if let Some(k) = key {

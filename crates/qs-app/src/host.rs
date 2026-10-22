@@ -603,6 +603,27 @@ impl Host {
                     self.revoke(el, e, Some((wid, idx)));
                 }
             }
+            chrome::MENU_OPEN => {
+                // Open the shot in the OS image editor (macOS Preview).
+                // Unsaved shots go to a cache-dir PNG first — Preview
+                // needs a path.
+                let shot_path = self.chrome.shot(wid, idx).and_then(|s| s.path.clone());
+                let mut p = shot_path;
+                if p.is_none() {
+                    if let Some(img) = self.chrome.shot(wid, idx).map(|s| s.img.clone()) {
+                        let dir = dirs::cache_dir()
+                            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                            .join("quickshort");
+                        match actions::save_to_dir(&img, &dir) {
+                            Ok(saved) => p = Some(saved),
+                            Err(e) => eprintln!("open: save failed: {e:#}"),
+                        }
+                    }
+                }
+                if let Some(p) = p {
+                    actions::open_path(&p);
+                }
+            }
             chrome::MENU_DEL => {
                 self.chrome.remove(wid, idx);
                 self.chrome.sweep();
@@ -974,8 +995,8 @@ impl ApplicationHandler<HostEvent> for Host {
             HostEvent::Done(res) => {
                 eprintln!("done: {:?}", res.as_ref().map(|d| &d.outcome));
                 match res {
-                    // image outcomes fly to the album stack; text-only
-                    // feedback still rides the toast
+                    // image outcomes fly to the album stack, except Copy —
+                    // nothing to act on later, so it confirms on the toast
                     Ok(d) => match d.outcome {
                         Outcome::Saved(p) => {
                             self.rebuild_menu();
@@ -994,16 +1015,11 @@ impl ApplicationHandler<HostEvent> for Host {
                                 &format!("Saved {name}"),
                             );
                         }
-                        Outcome::Copied => self.land_shot(
-                            el,
-                            Some(d.sel),
-                            d.img,
-                            ShotKind::Copied,
-                            None,
-                            None,
-                            None,
-                            "Copied to clipboard",
-                        ),
+                        // a copy has nothing to act on later — confirm it
+                        // with the toast instead of a shelf thumb
+                        Outcome::Copied => {
+                            self.toast_done(el, "Copied to clipboard".to_string(), true);
+                        }
                         Outcome::Shared(link, path) => {
                             let e = crate::share::entry(path.clone(), &link);
                             self.shares.put(e.clone());

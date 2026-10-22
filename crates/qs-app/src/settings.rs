@@ -17,11 +17,11 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Icon, Window, WindowId};
 
 use crate::actions;
-use crate::config::{Config, ACCENTS, POPUP_POS};
+use crate::config::{accent_deep, Config, ACCENTS, POPUP_POS};
 use crate::tray;
 
 const W: f64 = 820.0;
-const H: f64 = 600.0;
+const H: f64 = 620.0;
 const SIDE_W: f64 = 200.0;
 /// content column: x origin and width
 const CX: f64 = SIDE_W + 24.0;
@@ -43,7 +43,8 @@ const KEYCAP: u32 = 0xF3F4F6; // raised key top
 const KEYCAP_EDGE: u32 = 0xD4D8DF; // key bottom edge
 const FG: u32 = 0x24272D;
 const FG_DIM: u32 = 0x535A66;
-const FG_FAINT: u32 = 0x8A919C;
+/// helper/metadata text — 5.0:1 on white; the old #8A919C was 3.2:1
+const FG_FAINT: u32 = 0x667085;
 const SWITCH_OFF: u32 = 0xE1E4E9;
 const DANGER: u32 = 0xB4232D;
 
@@ -195,6 +196,11 @@ pub struct Settings {
     /// destructive action awaiting a second confirming click
     confirm: Option<Hit>,
     hover: Option<Hit>,
+    /// keyboard focus target — drawn as a ring only after Tab navigation
+    focus: Option<Hit>,
+    focus_visible: bool,
+    /// outcome of the last "Clean up now" run
+    clean_msg: Option<String>,
     /// clickable rects registered during the last draw — hit() scans them
     /// topmost-first, so popups drawn last naturally win
     hits: Vec<(LRect, Hit)>,
@@ -287,6 +293,9 @@ impl Settings {
             drop_open: None,
             confirm: None,
             hover: None,
+            focus: None,
+            focus_visible: false,
+            clean_msg: None,
             hits: Vec::new(),
             mods: ModifiersState::empty(),
             stats: actions::storage_stats(&cfg.save_dir()),
@@ -374,6 +383,11 @@ impl Settings {
                 let s = self.win.scale_factor();
                 let p = (position.x / s, position.y / s);
                 self.last_pos = p;
+                // pointer use retires the keyboard ring; focus itself stays
+                if self.focus_visible {
+                    self.focus_visible = false;
+                    self.dirty = true;
+                }
                 let h = self.hit(p);
                 if h != self.hover {
                     self.hover = h;
@@ -390,7 +404,10 @@ impl Settings {
                 button: MouseButton::Left,
                 ..
             } => {
-                return self.click(cfg, self.hit(self.last_pos));
+                let h = self.hit(self.last_pos);
+                self.focus = h;
+                self.focus_visible = false;
+                return self.click(cfg, h);
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
@@ -402,8 +419,41 @@ impl Settings {
                         self.dirty = true;
                         return Some(SettingsEvent::HotkeyRecord);
                     }
+                    if self.focus_visible {
+                        self.focus_visible = false;
+                        self.dirty = true;
+                        return None;
+                    }
                     self.closed = true;
                     return None;
+                }
+                // keyboard navigation only while not recording a hotkey
+                if self.recording.is_none() {
+                    if self.drop_open.is_some() {
+                        let dir = match event.logical_key {
+                            Key::Named(NamedKey::ArrowDown) => 1i64,
+                            Key::Named(NamedKey::ArrowUp) => -1,
+                            _ => 0,
+                        };
+                        if dir != 0 {
+                            self.step_option(dir);
+                            return None;
+                        }
+                    }
+                    match event.logical_key {
+                        Key::Named(NamedKey::Tab) => {
+                            self.move_focus(self.mods.shift_key());
+                            return None;
+                        }
+                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space)
+                            if self.focus_visible =>
+                        {
+                            if let Some(f) = self.focus {
+                                return self.click(cfg, Some(f));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 match self.recording {
                     Some(Rec::Global) | Some(Rec::GlobalFull) => {
@@ -509,6 +559,12 @@ impl Settings {
             Some(Hit::DropOpt(i)) => {
                 if let Some(d) = self.drop_open.take() {
                     drop_apply(cfg, d, i);
+                    if d == Drop::KeepDays {
+                        self.clean_msg = None;
+                    }
+                    // the chosen row vanishes with the popup — park focus
+                    // back on the button that owns it
+                    self.focus = Some(Hit::Drop(d));
                     self.refresh_files(cfg);
                     self.dirty = true;
                     return Some(SettingsEvent::Changed);
@@ -537,7 +593,16 @@ impl Settings {
                 actions::open_path(&cfg.save_dir());
             }
             Some(Hit::OcrAuto) => {
-                cfg.ocr_lang = "auto".into();
+                // a checked checkbox must be uncheckable: leaving auto
+                // starts a manual set from the first available language
+                cfg.ocr_lang = if cfg.ocr_lang.trim() == "auto" {
+                    self.ocr_langs
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "eng".into())
+                } else {
+                    "auto".into()
+                };
                 self.dirty = true;
                 return Some(SettingsEvent::Changed);
             }
@@ -648,9 +713,18 @@ impl Settings {
                 self.dirty = true;
             }
             Some(Hit::Clean) => {
+                if cfg.keep_days == 0 {
+                    self.clean_msg = Some("Retention is off — choose a period first.".into());
+                    self.dirty = true;
+                    return None;
+                }
                 if armed == Some(Hit::Clean) {
                     let n = actions::cleanup_captures(&cfg.save_dir(), cfg.keep_days);
-                    eprintln!("cleaned {n} captures");
+                    self.clean_msg = Some(match n {
+                        0 => "Nothing was old enough to remove.".into(),
+                        1 => "Removed 1 old capture.".into(),
+                        n => format!("Removed {n} old captures."),
+                    });
                     self.refresh_files(cfg);
                     self.dirty = true;
                     return Some(SettingsEvent::Changed);
@@ -693,6 +767,59 @@ impl Settings {
             .rev()
             .find(|(r, _)| x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3)
             .map(|&(_, h)| h)
+    }
+
+    /// Tab order = registration order from the last draw (sidebar, then
+    /// page controls). An open dropdown is modal, so only its rows cycle.
+    fn focusables(&self) -> Vec<Hit> {
+        let mut v = Vec::new();
+        for &(_, h) in &self.hits {
+            if self.drop_open.is_some() && !matches!(h, Hit::DropOpt(_)) {
+                continue;
+            }
+            if !v.contains(&h) {
+                v.push(h);
+            }
+        }
+        v
+    }
+
+    fn move_focus(&mut self, back: bool) {
+        let list = self.focusables();
+        if list.is_empty() {
+            return;
+        }
+        let cur = self.focus.and_then(|f| list.iter().position(|h| *h == f));
+        let next = match cur {
+            Some(i) if back => (i + list.len() - 1) % list.len(),
+            Some(i) => (i + 1) % list.len(),
+            None if back => list.len() - 1,
+            None => 0,
+        };
+        self.focus = Some(list[next]);
+        self.focus_visible = true;
+        self.dirty = true;
+    }
+
+    /// Arrow keys inside an open dropdown walk its rows.
+    fn step_option(&mut self, dir: i64) {
+        let opts: Vec<Hit> = self
+            .hits
+            .iter()
+            .filter_map(|&(_, h)| matches!(h, Hit::DropOpt(_)).then_some(h))
+            .collect();
+        if opts.is_empty() {
+            return;
+        }
+        let cur = self.focus.and_then(|f| opts.iter().position(|h| *h == f));
+        let i = match cur {
+            Some(i) => (i as i64 + dir).rem_euclid(opts.len() as i64) as usize,
+            None if dir < 0 => opts.len() - 1,
+            None => 0,
+        };
+        self.focus = Some(opts[i]);
+        self.focus_visible = true;
+        self.dirty = true;
     }
 
     fn draw(&mut self, cfg: &Config) {
@@ -748,6 +875,7 @@ impl Settings {
             ocr_langs: &self.ocr_langs,
             installing: self.install.is_some(),
             install_msg: self.install_msg.as_deref(),
+            clean_msg: self.clean_msg.as_deref(),
         };
         let Ok(mut buf) = self.surf.buffer_mut() else {
             return;
@@ -768,6 +896,7 @@ impl Settings {
             font: &self.font,
             scale,
             accent: cfg.accent_rgb(),
+            accent_deep: accent_deep(&cfg.accent),
         };
         let mut hits = std::mem::take(&mut self.hits);
         hits.clear();
@@ -803,7 +932,7 @@ impl Settings {
             let r = (10.0, ny, SIDE_W - 20.0, 36.0);
             let sel = v.page == i;
             if sel {
-                p.fill(&mut cv, r, 9.0, v.cfg.accent_rgb(), 1.0);
+                p.fill(&mut cv, r, 9.0, p.accent_deep, 1.0);
             } else if v.hover == Some(Hit::Nav(i)) {
                 p.fill(&mut cv, r, 9.0, ROW_HOV, 1.0);
             }
@@ -875,19 +1004,37 @@ impl Settings {
                         p.fill(&mut cv, ir, 6.0, ROW_HOV, 1.0);
                     }
                     if i == cur {
-                        p.text(
-                            &mut cv,
-                            ir.0 + 10.0,
-                            ir.1 + 20.0,
-                            12.0,
-                            "✓",
-                            v.cfg.accent_rgb(),
-                        );
+                        p.text(&mut cv, ir.0 + 10.0, ir.1 + 20.0, 12.0, "✓", p.accent_deep);
                         p.text(&mut cv, ir.0 + 26.0, ir.1 + 20.0, 12.0, o, FG);
                     } else {
                         p.text(&mut cv, ir.0 + 26.0, ir.1 + 20.0, 12.0, o, FG);
                     }
                     hits.push((ir, Hit::DropOpt(i)));
+                }
+            }
+        }
+
+        // keyboard focus ring — white halo + accent keeps it legible on
+        // both white cards and the accent-filled nav pill
+        if self.focus_visible {
+            if let Some(f) = self.focus {
+                if let Some(&(r, _)) = hits.iter().find(|(_, h)| *h == f) {
+                    p.stroke(
+                        &mut cv,
+                        (r.0 - 3.0, r.1 - 3.0, r.2 + 6.0, r.3 + 6.0),
+                        10.0,
+                        0xFFFFFF,
+                        1.0,
+                        3.0,
+                    );
+                    p.stroke(
+                        &mut cv,
+                        (r.0 - 1.0, r.1 - 1.0, r.2 + 2.0, r.3 + 2.0),
+                        9.0,
+                        p.accent,
+                        1.0,
+                        1.5,
+                    );
                 }
             }
         }
@@ -937,6 +1084,8 @@ struct View<'a> {
     /// a pack install is running — the Install button locks + pulses
     installing: bool,
     install_msg: Option<&'a str>,
+    /// outcome of the last manual clean-up
+    clean_msg: Option<&'a str>,
 }
 
 // layout helpers ------------------------------------------------------------
@@ -1074,7 +1223,14 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     p.card(cv, c);
     // row 1: region hotkey
     let r = (c.0, c.1, c.2, ROW);
-    row_label(p, cv, r, Glyph::Keys, "Capture hotkey", "Select a region on screen");
+    row_label(
+        p,
+        cv,
+        r,
+        Glyph::Keys,
+        "Capture hotkey",
+        "Select a region on screen",
+    );
     let rb = slot(r.1, 76.0);
     if v.recording == Some(Rec::Global) {
         let a = 0.55 + 0.45 * v.pulse.sin().abs();
@@ -1089,13 +1245,25 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         let (msg, col) = if v.want_mod {
             ("Needs a modifier, e.g. ⌘ ⌥ ⌃", FG_DIM)
         } else {
-            ("Press shortcut", v.cfg.accent_rgb())
+            ("Press shortcut", p.accent_deep)
         };
-        p.text(cv, rb.0 - p.text_w(msg, 11.5) - 12.0, r.1 + 29.0, 11.5, msg, col);
+        p.text(
+            cv,
+            rb.0 - p.text_w(msg, 11.5) - 12.0,
+            r.1 + 29.0,
+            11.5,
+            msg,
+            col,
+        );
     } else {
-        p.keycaps(cv, &v.cfg.hotkey, rb.0 - keycaps_w(p, &v.cfg.hotkey) - 10.0, r.1 + 12.0);
+        p.keycaps(
+            cv,
+            &v.cfg.hotkey,
+            rb.0 - keycaps_w(p, &v.cfg.hotkey) - 10.0,
+            r.1 + 12.0,
+        );
     }
-    p.ghost_button(cv, rb, "Record", v.hover == Some(Hit::Rec(Rec::Global)));
+    p.ghost_button(cv, rb, "Change", v.hover == Some(Hit::Rec(Rec::Global)));
     hits.push((rb, Hit::Rec(Rec::Global)));
 
     // row 2: fullscreen hotkey — saves the whole screen, no selection
@@ -1122,9 +1290,16 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         let (msg, col) = if v.want_mod {
             ("Needs a modifier, e.g. ⌘ ⌥ ⌃", FG_DIM)
         } else {
-            ("Press shortcut", v.cfg.accent_rgb())
+            ("Press shortcut", p.accent_deep)
         };
-        p.text(cv, rb.0 - p.text_w(msg, 11.5) - 12.0, r.1 + 29.0, 11.5, msg, col);
+        p.text(
+            cv,
+            rb.0 - p.text_w(msg, 11.5) - 12.0,
+            r.1 + 29.0,
+            11.5,
+            msg,
+            col,
+        );
     } else {
         p.keycaps(
             cv,
@@ -1133,15 +1308,16 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
             r.1 + 12.0,
         );
     }
-    p.ghost_button(
-        cv,
-        rb,
-        "Record",
-        v.hover == Some(Hit::Rec(Rec::GlobalFull)),
-    );
+    p.ghost_button(cv, rb, "Change", v.hover == Some(Hit::Rec(Rec::GlobalFull)));
     hits.push((rb, Hit::Rec(Rec::GlobalFull)));
 
-    section_title(p, cv, 268.0, "Save location", "Choose where captured images are saved.");
+    section_title(
+        p,
+        cv,
+        268.0,
+        "Save location",
+        "Choose where captured images are saved.",
+    );
     let c = card(CX, 302.0, 1);
     p.card(cv, c);
     row_label(
@@ -1156,7 +1332,13 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     p.ghost_button(cv, bb, "Change…", v.hover == Some(Hit::Browse));
     hits.push((bb, Hit::Browse));
 
-    section_title(p, cv, 368.0, "Options", "Additional settings for capture and workflow.");
+    section_title(
+        p,
+        cv,
+        368.0,
+        "Options",
+        "Additional settings for capture and workflow.",
+    );
     let c = card(CX, 402.0, 1);
     p.card(cv, c);
     switch_row(
@@ -1172,27 +1354,34 @@ fn draw_capture(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     );
 
     // recent captures
-    p.text(cv, CX, 464.0, 14.0, "Recent captures", FG);
-    let va = (CX + CW - 60.0, 452.0, 60.0, 24.0);
+    p.text(cv, CX, 482.0, 14.0, "Recent captures", FG);
+    let va = (CX + CW - 84.0, 470.0, 84.0, 24.0);
     p.text(
         cv,
-        va.0 + (va.2 - p.text_w("View all ›", 11.5)) / 2.0,
-        465.0,
+        va.0 + (va.2 - p.text_w("Open folder ›", 11.5)) / 2.0,
+        483.0,
         11.5,
-        "View all ›",
+        "Open folder ›",
         if v.hover == Some(Hit::ViewAll) {
             FG
         } else {
-            v.cfg.accent_rgb()
+            p.accent_deep
         },
     );
     hits.push((va, Hit::ViewAll));
     if v.recents.is_empty() {
-        p.text(cv, CX, 518.0, 12.0, "No captures yet", FG_DIM);
+        p.text(
+            cv,
+            CX,
+            540.0,
+            12.0,
+            "No captures yet — your latest shots will show up here.",
+            FG_DIM,
+        );
     }
     for (i, path) in v.recents.iter().enumerate() {
         let x = CX + i as f64 * (THUMB_W + 14.0);
-        let tr = (x, 482.0, THUMB_W, THUMB_H);
+        let tr = (x, 500.0, THUMB_W, THUMB_H);
         if v.hover == Some(Hit::Recent(i)) {
             p.fill(
                 cv,
@@ -1317,7 +1506,7 @@ fn draw_shortcuts(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect,
             let (msg, col) = if v.want_mod {
                 ("Hold ⌘ or ⌃ plus a key", FG_DIM)
             } else {
-                ("Press ⌘ + key", v.cfg.accent_rgb())
+                ("Press ⌘ + key", p.accent_deep)
             };
             p.text(
                 cv,
@@ -1331,7 +1520,7 @@ fn draw_shortcuts(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect,
             let ks = format!("⌘+{}", key_str(v.cfg, *rec).to_uppercase());
             p.keycaps(cv, &ks, rb.0 - keycaps_w(p, &ks) - 10.0, r.1 + 12.0);
         }
-        p.ghost_button(cv, rb, "Record", v.hover == Some(Hit::Rec(*rec)));
+        p.ghost_button(cv, rb, "Change", v.hover == Some(Hit::Rec(*rec)));
         hits.push((rb, Hit::Rec(*rec)));
     }
     p.text(
@@ -1431,7 +1620,7 @@ fn draw_appearance(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect
 /// imply exclusivity.
 fn check_box(p: &Painter, cv: &mut Canvas, x: f64, y: f64, on: bool, hover: bool) {
     if on {
-        p.fill(cv, (x, y, 20.0, 20.0), 5.0, p.accent, 1.0);
+        p.fill(cv, (x, y, 20.0, 20.0), 5.0, p.accent_deep, 1.0);
         p.seg(cv, x + 5.5, y + 10.5, x + 9.0, y + 14.0, 2.0, 0xFFFFFF);
         p.seg(cv, x + 9.0, y + 14.0, x + 15.0, y + 6.5, 2.0, 0xFFFFFF);
     } else {
@@ -1484,7 +1673,18 @@ fn draw_ocr(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>
         FG_DIM,
     );
 
-    section_title(p, cv, 112.0, "Mode", "How the language is picked.");
+    let auto = v.cfg.ocr_lang.trim() == "auto";
+    section_title(
+        p,
+        cv,
+        112.0,
+        "Mode",
+        if auto {
+            "Every installed script is scanned — choose a language below to limit it."
+        } else {
+            "Only checked languages run — uncheck them all to return to auto."
+        },
+    );
     let c = card(CX, 146.0, 1);
     p.card(cv, c);
     let r = (c.0, c.1, c.2, ROW);
@@ -1496,7 +1696,6 @@ fn draw_ocr(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>
         "Auto-detect",
         "Let the engine identify the script — recommended",
     );
-    let auto = v.cfg.ocr_lang.trim() == "auto";
     check_box(
         p,
         cv,
@@ -1508,10 +1707,12 @@ fn draw_ocr(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>
     hits.push((r, Hit::OcrAuto));
 
     // Media.Ocr is single-language; tesseract and Vision take lists
-    let sel_note = if cfg!(target_os = "windows") {
-        "Used when Auto-detect is off — the first checked language wins."
+    let sel_note = if auto {
+        "Auto-detect is on — ticking a language switches to manual."
+    } else if cfg!(target_os = "windows") {
+        "The first checked language wins — Media.Ocr takes one."
     } else {
-        "Used when Auto-detect is off — all checked languages run together."
+        "All checked languages run together."
     };
     section_title(p, cv, 214.0, "Languages", sel_note);
     // two-column checklist, 40px rows
@@ -1529,29 +1730,52 @@ fn draw_ocr(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>
         let y = gy + 6.0 + row as f64 * LROW;
         let hr = (x, y, col_w, LROW);
         let on = sel.iter().any(|s| s == e.0);
-        let hover = v.hover == Some(Hit::Lang(i));
+        // a language the engine can't use isn't a control — except an
+        // already-checked one, which must stay uncheckable
+        let missing = !v.ocr_langs.iter().any(|l| l == e.0);
+        let live = !missing || on;
+        let hover = live && v.hover == Some(Hit::Lang(i));
         if hover {
             p.fill(cv, hr, 6.0, ROW_HOV, 1.0);
         }
-        check_box(p, cv, x + 6.0, y + 10.0, on, hover);
-        p.text(cv, x + 34.0, y + 25.0, 13.0, e.1, FG);
-        let missing = !v.ocr_langs.iter().any(|l| l == e.0);
-        // installed → show the code; missing → the badge alone keeps the
-        // row from colliding with long names like "Chinese (Traditional)"
-        let note = if missing {
-            "not installed".to_owned()
+        if missing && !on {
+            p.fill(cv, (x + 6.0, y + 10.0, 20.0, 20.0), 5.0, TILE, 0.8);
+            p.stroke(cv, (x + 6.0, y + 10.0, 20.0, 20.0), 5.0, BORDER, 0.8, 1.0);
         } else {
-            e.0.to_owned()
-        };
+            check_box(p, cv, x + 6.0, y + 10.0, on, hover);
+        }
         p.text(
             cv,
-            x + col_w - 16.0 - p.text_w(&note, 10.5),
+            x + 34.0,
             y + 25.0,
-            10.5,
-            &note,
-            if missing { FG_DIM } else { FG_FAINT },
+            13.0,
+            e.1,
+            if missing { FG_FAINT } else { FG },
         );
-        hits.push((hr, Hit::Lang(i)));
+        if missing {
+            let note = "not installed";
+            p.text(
+                cv,
+                x + col_w - 16.0 - p.text_w(note, 10.5),
+                y + 25.0,
+                10.5,
+                note,
+                FG_FAINT,
+            );
+        } else {
+            // code sits beside the name so the two read as one option
+            p.text(
+                cv,
+                x + 34.0 + p.text_w(e.1, 13.0) + 8.0,
+                y + 25.0,
+                10.5,
+                e.0,
+                FG_FAINT,
+            );
+        }
+        if live {
+            hits.push((hr, Hit::Lang(i)));
+        }
     }
 
     // footer: install action / progress / outcome / per-OS hint
@@ -1652,48 +1876,28 @@ fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
     p.ghost_button(cv, bb, "Open in Finder", v.hover == Some(Hit::OpenDir));
     hits.push((bb, Hit::OpenDir));
 
-    // usage row: segmented bar — captures / other used / free
+    // second row: volume headroom — a segmented disk chart made a few
+    // MB of captures indistinguishable from rounding noise
     p.line(cv, c.0 + 14.0, c.1 + ROW, c.0 + c.2 - 14.0);
     let r = (c.0, c.1 + ROW, c.2, ROW);
-    let bar = (r.0 + 14.0, r.1 + 8.0, r.2 - 28.0, 8.0);
-    let (cap_b, other_b, free_b) = match v.disk {
-        Some((total, free)) => {
-            let cap = v.stats.1.min(total);
-            (cap, total.saturating_sub(free + cap), free)
-        }
-        None => (v.stats.1, 0, 0),
-    };
-    let total = (cap_b + other_b + free_b).max(1) as f64;
-    // min sliver so a tiny captures segment stays visible on a big disk
-    let w_cap = if cap_b > 0 {
-        (bar.2 * cap_b as f64 / total).round().max(3.0)
-    } else {
-        0.0
-    };
-    let w_other = (bar.2 * other_b as f64 / total).round();
-    let segs = [
-        (0.0, w_cap, v.cfg.accent_rgb()),
-        (w_cap, w_other, 0xAEB6C0),
-        (w_cap + w_other, bar.2 - w_cap - w_other, 0xE9ECF0),
-    ];
-    for &(off, w, col) in &segs {
-        if w > 0.0 {
-            p.fill(cv, (bar.0 + off, bar.1, w, bar.3), 0.0, col, 1.0);
-        }
-    }
-    p.stroke(cv, bar, 4.0, BORDER, 1.0, 1.0);
-    let mut lx = r.0 + 14.0;
-    for (col, txt) in [
-        (
-            v.cfg.accent_rgb(),
-            format!("Captures · {}", human_bytes(cap_b)),
-        ),
-        (0xAEB6C0, format!("Other · {}", human_bytes(other_b))),
-        (0xE9ECF0, format!("Free · {}", human_bytes(free_b))),
-    ] {
-        p.fill(cv, (lx, r.1 + 32.0, 5.0, 5.0), 1.5, col, 1.0);
-        p.text(cv, lx + 9.0, r.1 + 37.0, 10.5, &txt, FG_FAINT);
-        lx += 9.0 + p.text_w(&txt, 10.5) + 16.0;
+    row_label(
+        p,
+        cv,
+        r,
+        Glyph::Folder,
+        "Free space",
+        "On the disk holding your captures",
+    );
+    if let Some((total, free)) = v.disk {
+        let txt = format!("{} free of {}", human_bytes(free), human_bytes(total));
+        p.text(
+            cv,
+            r.0 + r.2 - 14.0 - p.text_w(&txt, 10.5),
+            r.1 + 32.0,
+            10.5,
+            &txt,
+            FG_DIM,
+        );
     }
 
     section_title(
@@ -1712,7 +1916,11 @@ fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         r,
         Glyph::Gear,
         "Keep captures",
-        "Older files are removed on launch",
+        if v.cfg.keep_days == 0 {
+            "Files stay until you remove them"
+        } else {
+            "Older files are removed automatically"
+        },
     );
     let kb = (r.0 + r.2 - 14.0 - 150.0, r.1 + 11.0, 150.0, 30.0);
     let label = match v.cfg.keep_days {
@@ -1737,18 +1945,31 @@ fn draw_storage(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, H
         r,
         Glyph::Folder,
         "Clean up now",
-        "Apply the retention policy immediately",
+        if v.cfg.keep_days == 0 {
+            "Choose a retention period first"
+        } else {
+            "Apply the retention policy immediately"
+        },
     );
     let rb = slot(r.1, 110.0);
-    ghost(
-        p,
-        cv,
-        rb,
-        "Clean up now",
-        v.hover == Some(Hit::Clean),
-        v.confirm == Some(Hit::Clean),
-    );
-    hits.push((rb, Hit::Clean));
+    if v.cfg.keep_days == 0 {
+        // no policy, no action — a live button that deletes nothing is
+        // worse than a visibly disabled one
+        p.ghost_disabled(cv, rb, "Clean now");
+    } else {
+        ghost(
+            p,
+            cv,
+            rb,
+            "Clean now",
+            v.hover == Some(Hit::Clean),
+            v.confirm == Some(Hit::Clean),
+        );
+        hits.push((rb, Hit::Clean));
+    }
+    if let Some(m) = v.clean_msg {
+        p.text(cv, CX + 8.0, c.1 + c.3 + 26.0, 11.5, m, FG_DIM);
+    }
 }
 
 fn draw_about(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit)>) {
@@ -1756,7 +1977,7 @@ fn draw_about(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit
     p.text(
         cv,
         mid - p.text_w("Quickshort", 22.0) / 2.0,
-        110.0,
+        140.0,
         22.0,
         "Quickshort",
         FG,
@@ -1765,7 +1986,7 @@ fn draw_about(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit
     p.text(
         cv,
         mid - p.text_w(ver, 12.5) / 2.0,
-        132.0,
+        162.0,
         12.5,
         ver,
         FG_DIM,
@@ -1773,7 +1994,7 @@ fn draw_about(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit
     p.text(
         cv,
         mid - p.text_w("Fast native screenshots — annotate, OCR, share.", 11.5) / 2.0,
-        156.0,
+        186.0,
         11.5,
         "Fast native screenshots — annotate, OCR, share.",
         FG_FAINT,
@@ -1783,7 +2004,7 @@ fn draw_about(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit
         Some(vr) => (format!("Update to v{vr} — Restart"), 240.0),
         None => ("Check for Updates…".to_string(), 180.0),
     };
-    let ub = (mid - w / 2.0, 190.0, w, 32.0);
+    let ub = (mid - w / 2.0, 220.0, w, 32.0);
     p.ghost_button(cv, ub, &label, v.hover == Some(Hit::Update));
     hits.push((ub, Hit::Update));
 
@@ -1799,26 +2020,26 @@ fn draw_about(p: &Painter, cv: &mut Canvas, v: &View, hits: &mut Vec<(LRect, Hit
         p.text(
             cv,
             lx,
-            262.0,
+            292.0,
             12.0,
             t,
             if v.hover == Some(Hit::Link(i)) {
                 FG
             } else {
-                v.cfg.accent_rgb()
+                p.accent_deep
             },
         );
         if v.hover == Some(Hit::Link(i)) {
-            p.seg(cv, lx, 268.0, lx + tw, 268.0, 1.0, FG);
+            p.seg(cv, lx, 298.0, lx + tw, 298.0, 1.0, FG);
         }
-        hits.push(((lx, 252.0, tw, 20.0), Hit::Link(i)));
+        hits.push(((lx, 282.0, tw, 20.0), Hit::Link(i)));
         lx += tw + 28.0;
     }
 
     p.text(
         cv,
         mid - p.text_w("Free and open source — MIT", 10.5) / 2.0,
-        540.0,
+        570.0,
         10.5,
         "Free and open source — MIT",
         FG_FAINT,
@@ -2162,6 +2383,8 @@ struct Painter<'a> {
     scale: f64,
     /// current accent preset — mirrors the mockup's `--accent` variable
     accent: u32,
+    /// accent darkened for white text/glyphs (nav pill, ticks, switches)
+    accent_deep: u32,
 }
 
 impl Painter<'_> {
@@ -2250,6 +2473,21 @@ impl Painter<'_> {
         );
     }
 
+    /// Unavailable action — dashed-looking hairline, no hover response.
+    fn ghost_disabled(&self, cv: &mut Canvas, r: LRect, label: &str) {
+        self.fill(cv, r, r.3 / 2.0, 0xFAFBFC, 1.0);
+        self.stroke(cv, r, r.3 / 2.0, BORDER, 1.0, 0.6);
+        let tw = self.text_w(label, 11.5);
+        self.text(
+            cv,
+            r.0 + (r.2 - tw) / 2.0,
+            r.1 + r.3 / 2.0 + 4.0,
+            11.5,
+            label,
+            FG_FAINT,
+        );
+    }
+
     /// Keyboard-style keycaps, one per token.
     fn keycaps(&self, cv: &mut Canvas, hotkey: &str, x: f64, y: f64) {
         let mut px = x;
@@ -2274,7 +2512,7 @@ impl Painter<'_> {
 
     /// macOS-style sliding switch. `t` = knob position 0..1.
     fn switch(&self, cv: &mut Canvas, r: LRect, t: f64) {
-        let track = mix(SWITCH_OFF, self.accent, t);
+        let track = mix(SWITCH_OFF, self.accent_deep, t);
         self.fill(cv, r, r.3 / 2.0, track, 1.0);
         let kr = r.3 / 2.0 - 1.5; // knob radius
         let kx = r.0 + r.3 / 2.0 + t * (r.2 - r.3);
@@ -2533,7 +2771,7 @@ impl Painter<'_> {
 
     /// App glyph — the tray's crop-corners mark in an accent squircle.
     fn icon(&self, cv: &mut Canvas, x: f64, y: f64, size: f64) {
-        self.fill(cv, (x, y, size, size), 9.0, self.accent, 1.0);
+        self.fill(cv, (x, y, size, size), 9.0, self.accent_deep, 1.0);
         let st = size * 0.10;
         let ins = size * 0.24;
         let len = size * 0.17;
